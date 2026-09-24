@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+.env.*
+*.pem
+*.key
+
+# 原始分钟数据、分片和研究产物体积很大，不进仓库
+/data_min/
+/data/
+/runs/
+
+# 研报原文
+docs/*.pdf
