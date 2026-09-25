@@ -1,17 +1,12 @@
-"""等权回测与分族合成。
+"""等权回测。
 
 单品种先按换手扣费，再在当年品种池里等权。组合信号是成员信号的等权平均，
-NaN 不投票，不再对组合做第二次参数搜索。
+NaN 不投票。
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
-from .. import config as C
-from . import panel
-from . import protocol as folds
-from . import stats as metrics
 
 
 def universe_mask(index: pd.Index,
@@ -114,48 +109,6 @@ def run_book(position: pd.DataFrame,
     return portfolio_return(net, universe)
 
 
-def evaluate_signal_grid(factor_raw: pd.DataFrame,
-                         name: str,
-                         day_ret: pd.DataFrame,
-                         universe: dict,
-                         windows: list[int],
-                         bands: list[tuple[float, float]],
-                         fee: float,
-                         std_window: int,
-                         test_years: list[int],
-                         lookback: int | None = None,
-                         pct: float | None = None,
-                         slippage: pd.DataFrame | float | None = None) -> pd.DataFrame:
-    """在已经算好的原始因子上扫描 W 与分位轨。
-
-    因子先乘方向符号，再做 MAD 标准化，再出信号。标准化对每个 (N, M) 只做一次。
-    绩效是各测试年拼接后的一条曲线；折内数字另存，避免只看一个混合值。
-
-    ``slippage`` 直通 :func:`run_book`。选参必须在**含滑点**的口径下做：
-    滑点按换手计费，它会系统性地惩罚高换手的窗口，无滑点时选出来的 W 偏小。
-    """
-    if name not in C.ALL_SIGNS:
-        raise KeyError(f"{name} 没有登记方向，拒绝扫描")
-    signed = factor_raw * C.ALL_SIGNS[name]
-    std = panel.mad_standardize(signed, window=std_window)
-    rows = []
-    for w in windows:
-        for lo, hi in bands:
-            sig = panel.quantile_signal(std, int(w), float(lo), float(hi))
-            port = run_book(panel.execute_position(sig), day_ret, universe, fee,
-                            slippage=slippage)
-            stitched = folds.stitch_test_years(port, test_years)
-            rec = metrics.performance(stitched)
-            rec.update(lookback=lookback, pct=pct,
-                       window=int(w), q_low=float(lo), q_high=float(hi))
-            for y in test_years:
-                fm = metrics.performance(port.loc[port.index.year == int(y)])
-                rec[f'y{y}_ann_return'] = fm['ann_return']
-                rec[f'y{y}_ret_risk'] = fm['ret_risk']
-            rows.append(rec)
-    return pd.DataFrame(rows)
-
-
 def average_signals(frames: list[pd.DataFrame]) -> pd.DataFrame:
     """等权平均。全 NaN 的位置保持 NaN。"""
     if not frames:
@@ -177,33 +130,3 @@ def average_signals(frames: list[pd.DataFrame]) -> pd.DataFrame:
     good = cnt > 0
     out[good] = acc[good] / cnt[good]
     return pd.DataFrame(out, index=idx, columns=list(cols))
-
-
-def member_signal(factor_raw: pd.DataFrame,
-                  name: str,
-                  window: int,
-                  q_low: float,
-                  q_high: float,
-                  std_window: int) -> pd.DataFrame:
-    if name not in C.ALL_SIGNS:
-        raise KeyError(f"{name} 没有登记方向")
-    signed = factor_raw * C.ALL_SIGNS[name]
-    std = panel.mad_standardize(signed, window=std_window)
-    return panel.quantile_signal(std, int(window), float(q_low), float(q_high))
-
-
-def combo_signal_from_specs(loader,
-                            members: list[str],
-                            selection: dict,
-                            std_window: int) -> pd.DataFrame:
-    """loader(name, lookback, pct) → 原始因子宽表。缺选参的成员直接报错。"""
-    missing = [m for m in members if m not in selection or 'center' not in selection[m]]
-    if missing:
-        raise KeyError(f"以下因子没有中心点参数，不能进组合: {missing}")
-    frames = []
-    for name in members:
-        spec = selection[name]['center']
-        raw = loader(name, spec.get('lookback'), spec.get('pct'))
-        frames.append(member_signal(
-            raw, name, spec['window'], spec['q_low'], spec['q_high'], std_window))
-    return average_signals(frames)

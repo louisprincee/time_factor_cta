@@ -21,7 +21,7 @@ from tfcta.factors import factor_cache as FC  # noqa: E402
 
 MIN_NON_NULL = 0.90
 SKEW_MIN = 3.0
-PROBE_COLS = ['closew', 'volume']
+PROBE_COLS = ['closew']
 PROBE_SYMBOLS = ['RB', 'CU', 'M']
 PROBE_YEARS = [2016, 2018, 2021]
 
@@ -63,8 +63,8 @@ def probe(values, day_codes, keep, lookback: int, pct: float) -> dict:
 
 def run_duration_probe() -> int:
     """抽查少数品种与年份。右偏不足或整段缺失时返回 1，拦住后面的因子计算。"""
-    lookback = C.THRESHOLD_LOOKBACKS[1]
-    pct = C.THRESHOLD_PCTS[2]
+    lookback = C.IC_REFERENCE_LOOKBACK
+    pct = C.IC_REFERENCE_PCT
     print(f"持续期抽查  品种 {PROBE_SYMBOLS}  年份 {PROBE_YEARS}"
           f"  N={lookback}  M={pct}")
     failed = False
@@ -117,54 +117,11 @@ def pick_symbols(explicit: list[str] | None) -> tuple[list[str], str]:
     return have, '全部研究期分片（未找到品种池，退回全量）'
 
 
-def night_mask(symbols: list[str]) -> pd.Series:
-    """``(trading_date, symbol) -> 该交易日是否有夜盘``。
-
-    **必须逐 (品种, 交易日)，不能逐品种。** 夜盘不是品种的固有属性而是挂牌历史：
-    2014 年以前中国商品期货完全没有夜盘，C / CS / FU / L / PP / V 这六个品种到
-    2019 年才挂（逐年夜盘 bar 中位数从 0 跳到 120）。按品种取全样本中位数归类，
-    这两件事各自会制造一个假验收失败：
-
-    * 那六个品种被判成"无夜盘"，于是它们 2019 年之后**真实存在**的夜盘因子值
-      会被反向检查当成违规；
-    * "有夜盘品种"这一组里混进了所有品种 2014 年前的年份，五个夜盘因子的非空率
-      被压到 67% 左右，卡在 90% 门槛下面。
-
-    同一个根因，两个症状。判定用 ``sessions.has_night_session``，和因子计算里
-    ``volume_ratio_factors`` / ``timestamp_factors`` 的门槛同源（``NIGHT_BARS_MIN``），
-    否则会出现"归类成有夜盘但因子按无夜盘算"的错位。
-    """
-    parts = []
-    for s in symbols:
-        df = shard_io.load_shard(s, columns=['closew', 'trading_date'])
-        has = sessions.has_night_session(df)
-        idx = pd.MultiIndex.from_arrays(
-            [pd.to_datetime(has.index), [s] * len(has)],
-            names=['trading_date', 'symbol'])
-        parts.append(pd.Series(has.to_numpy(dtype=bool), index=idx))
-    if not parts:
-        return pd.Series(dtype=bool, name='has_night')
-    return pd.concat(parts).rename('has_night')
-
-
-def night_by_year(mask: pd.Series) -> pd.DataFrame:
-    """逐 (品种, 年) 的夜盘交易日占比，留痕用。
-
-    这张表是判断"某品种哪一年开始挂夜盘"的直接依据，比一个逐品种的布尔值有用得多。
-    """
-    df = mask.reset_index()
-    df['year'] = pd.DatetimeIndex(df['trading_date']).year
-    g = df.groupby(['symbol', 'year'])['has_night']
-    out = pd.DataFrame({'n_days': g.size(), 'n_night_days': g.sum()})
-    out['night_ratio'] = out['n_night_days'] / out['n_days']
-    return out.reset_index()
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--symbols', nargs='*', default=None)
     ap.add_argument('--combos', nargs='*', default=None,
-                    help='形如 N250_M55；省略则跑全部 3x5=15 组')
+                    help='形如 N250_M55；省略则只算周频书用的那一组')
     ap.add_argument('--overwrite', action='store_true')
     ap.add_argument('--health-combo', default=None,
                     help='用哪个组合做因子健康度验收，默认取中间那组')
@@ -227,8 +184,7 @@ def main() -> int:
     if panel.empty:
         print("面板为空，无法验收")
         return 1
-    mask = night_mask(syms)
-    health = FC.panel_health(panel, night_class=mask)
+    health = FC.panel_health(panel)
     table = FC.check_acceptance(health, MIN_NON_NULL)
 
     with pd.option_context('display.width', 220, 'display.max_columns', 30,
@@ -236,39 +192,11 @@ def main() -> int:
         print(table[['scope', 'n', 'non_null_ratio', 'nunique',
                      'min', 'p50', 'max', 'passed', 'reason']])
 
-    # 反向检查：无夜盘的那些 (品种, 交易日) 上夜盘类因子必须全 NaN（而不是 0）
-    print("\n" + "-" * 92)
-    print("夜盘类因子的反向检查：无夜盘的 (品种, 交易日) 上必须全 NaN")
-    print("-" * 92)
-    has = FC.night_rows(panel, mask)
-    night_ok = True
-    n_no = int((~has).sum())
-    if n_no == 0:
-        print("  本次没有无夜盘的交易日，该项无法检验（真实池内必有，如 JD 全样本、2014 年前全品种）")
-    else:
-        sub = panel.loc[~has]
-        never = sorted(set(panel.index.get_level_values('symbol'))
-                       - set(mask[mask].index.get_level_values('symbol')))
-        print(f"  无夜盘格子 {n_no:,} 个（占 {n_no / len(panel):.1%}），"
-              f"其中全样本从无夜盘的品种 {len(never)} 个: {never}")
-        for f in sorted(C.NIGHT_DEPENDENT_FACTORS & set(panel.columns)):
-            v = sub[f]
-            all_nan = bool(v.isna().all())
-            zeros = int((v == 0).sum())
-            night_ok &= all_nan
-            print(f"  {f:<16} "
-                  f"{'全为 NaN 正确' if all_nan else f'存在非 NaN 值 {int(v.notna().sum())} 个'}"
-                  f"；其中 0 值 {zeros} 个 {'' if zeros == 0 else '<- 危险，结构性零值'}")
-
     # ---------------- 留痕 ----------------
     run = C.RUNS_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_step3"
     run.mkdir(parents=True, exist_ok=True)
     table.to_csv(run / 'factor_health.csv', encoding='utf-8-sig')
     pd.DataFrame(infos).to_csv(run / 'build_log.csv', index=False, encoding='utf-8-sig')
-    # 逐 (品种, 年) 的夜盘占比。逐 (品种, 交易日) 的原始掩码有十万行量级，
-    # 留痕留这张汇总表：要查"某品种哪一年开始挂夜盘"看它就够了。
-    night_by_year(mask).to_csv(run / 'night_by_year.csv',
-                               index=False, encoding='utf-8-sig')
     FC.write_manifest(run / 'manifest.json', {
         'generated': datetime.now().isoformat(),
         'symbols': syms, 'symbol_source': how,
@@ -292,13 +220,10 @@ def main() -> int:
     failed = table.index[~table['passed']].tolist()
     print(f"\n留痕 {run}")
     print(f"因子 {panel.shape[1]} 个，日频观测 {panel.shape[0]:,} 行")
-    if failed or not night_ok:
-        if failed:
-            print(f"验收不通过的因子 {len(failed)} 个:")
-            for f in failed:
-                print(f"    {f:<18} {table.loc[f, 'reason']}")
-        if not night_ok:
-            print("夜盘类因子在无夜盘的 (品种, 交易日) 上出现了非 NaN 值——必须先修掉再进入第 4 步")
+    if failed:
+        print(f"验收不通过的因子 {len(failed)} 个:")
+        for f in failed:
+            print(f"    {f:<18} {table.loc[f, 'reason']}")
         return 1
     print(f"全部 {len(table)} 个因子通过验收，可以进入第 4 步。")
     return 0

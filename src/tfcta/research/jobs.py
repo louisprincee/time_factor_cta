@@ -20,32 +20,8 @@ from . import costs
 from . import panel as returns
 
 
-def scan_dir() -> Path:
-    return C.RESEARCH_OUT_DIR / 'scan'
-
-
-def selection_path() -> Path:
-    return C.RESEARCH_OUT_DIR / 'selection.json'
-
-
 def ic_path() -> Path:
     return C.RESEARCH_OUT_DIR / 'ic_by_fold.csv'
-
-
-def combo_path() -> Path:
-    return C.RESEARCH_OUT_DIR / 'combo_metrics.csv'
-
-
-def fee_path() -> Path:
-    return C.RESEARCH_OUT_DIR / 'fee_sensitivity.csv'
-
-
-def backward_path() -> Path:
-    return C.RESEARCH_OUT_DIR / 'backward_ic.csv'
-
-
-def frozen_path() -> Path:
-    return C.CONFIG_DIR / 'frozen_config.yaml'
 
 
 def run_dir(step: str) -> Path:
@@ -112,10 +88,9 @@ def load_slippage(symbols: list[str],
                   index: pd.Index,
                   n_ticks: float,
                   rebuild: bool = False):
-    """滑点宽表 + 一行人话说明。第 5 步和第 6 步共用这一条路径。
+    """滑点宽表 + 一行人话说明。第 5 步走这一条路径。
 
-    ``n_ticks == 0`` 时不去建 tick 表（那要扫一遍分钟数据），直接返回 None 让
-    ``run_book`` 走"只有手续费"的老路——第 6 步的 0 档对照就靠这个。
+    ``n_ticks == 0`` 时不去建 tick 表，直接返回 None，``run_book`` 只扣手续费。
     """
     if float(n_ticks) == 0.0:
         return None, '滑点 0 个 tick（对照档，仅供比较，不得用于选参或结论）'
@@ -125,29 +100,3 @@ def load_slippage(symbols: list[str],
     note = (f"滑点 {float(n_ticks):g} 个 tick，按换手计费；"
             f"品种间 {bp.min():.1f}~{bp.max():.1f}bp，中位 {bp.median():.1f}bp")
     return wide, note
-
-
-def parse_bands(items: list[str] | None) -> list[tuple[float, float]]:
-    if not items:
-        return [(float(a), float(b)) for a, b in C.SIGNAL_BANDS]
-    out = []
-    for s in items:
-        if ':' not in s:
-            raise ValueError(f"分位轨应为 低:高，收到 {s}")
-        a, b = s.split(':', 1)
-        out.append((float(a), float(b)))
-    return out
-
-
-def parse_combos(items: list[str] | None,
-                 default_names: list[str]) -> dict[str, list[str]]:
-    """``NAME=a,b,c``；省略时用 default_names 里的 COMBO_GROUPS。"""
-    if not items:
-        return {k: list(C.COMBO_GROUPS[k]) for k in default_names}
-    out = {}
-    for s in items:
-        if '=' not in s:
-            raise ValueError(f"组合应为 NAME=f1,f2，收到 {s}")
-        name, members = s.split('=', 1)
-        out[name] = [m for m in members.split(',') if m]
-    return out

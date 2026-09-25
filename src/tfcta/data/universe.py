@@ -14,7 +14,7 @@
 --------
 ``has_night`` / ``night_class`` 是**逐年**的，不是逐品种的：多数商品在 2013-2016 年间
 陆续开出夜盘，同一个品种在 2014 年无夜盘、2016 年有夜盘是常态。夜盘类因子在无夜盘的
-品种-年份上必须取 NaN，绝不填 0（见 config.NIGHT_DEPENDENT_FACTORS）。
+品种-年份上必须取 NaN，绝不填 0。
 """
 from __future__ import annotations
 

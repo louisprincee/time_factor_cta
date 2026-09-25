@@ -138,41 +138,19 @@ PM_END = _dt.time(15, 30)
 EXPECTED_BARS_PER_DAY = {'no_night': 225, 'night_2300': 345, 'night_0100': 465, 'night_0230': 555}
 
 # --------------------------------------------------------------------------
-# 参数网格（设计文档第 7 节，数值取自论文原文）
+# 当前策略用到的阈值。周频书只读这一组，不再扫 N×M 网格。
 # --------------------------------------------------------------------------
-THRESHOLD_LOOKBACKS = [200, 250, 300]                 # 阈值回看期 N（交易日）
-THRESHOLD_PCTS = [50.0, 52.5, 55.0, 57.5, 60.0]       # 阈值分位数 M（%）
-SIGNAL_WINDOWS = [20, 25, 30, 35, 40, 45, 50, 55, 60] # 信号滚动期 W（交易日）
-SIGNAL_BANDS = [(30.0, 70.0), (25.0, 75.0), (20.0, 80.0)]  # (低轨, 高轨) 百分位
+THRESHOLD_LOOKBACKS = [250]
+THRESHOLD_PCTS = [55.0]
+FP_TOP_NS = [1, 3]
 
-FP_TOP_NS = [1, 3]             # 公允均衡价格取持续期前 N 大（论文用 1 和 3）
-EXTREME_SIGMA = 2.0            # 极端持续期判定：均值 + 2 倍标准差
+FEE_BASE = 0.00025
 
-# 手续费敏感性（框架默认 0.00025）
-FEE_GRID = [0.00025, 0.0005, 0.001]
-# 第 6 步回测默认用这一档；另外两档只做敏感性，不参与选参。
-FEE_BASE = FEE_GRID[0]
-
-# 滑点：按"每次换手穿越几个最小变动价位"计，比例成本由 research/costs.py 从数据
-# 估出的 tick / 当年价位中位数换算。写成 tick 数而不是一个比例数，是因为同样穿一个
-# tick，铁矿（价位 ~640、tick 0.5）要付 9.9bp，锡（~142000、tick 10）只付 0.7bp——
-# 本样本实测相差 13.7 倍（中位 3.3bp）。固定比例会把这个横截面差异抹平，而等权组合的
-# 成本恰恰由低价位品种主导。
-#
-# 基准取 1 个 tick：日频调仓、次日开盘成交，挂在对手价上一个 tick 是这个频率下
-# 偏保守但不夸张的假设。0 档只作为对照，**不能**用它选参或写结论——无滑点等于
-# 假装换手免费，选出来的信号窗口会系统性偏短。
+# 滑点按每次换手穿越几个最小变动价位计。同样穿一个 tick，低价位品种的比例成本
+# 远高于高价位品种（本样本约 0.7–9.9bp，中位 3.3bp）。
 SLIPPAGE_TICKS = 1.0
-SLIPPAGE_TICK_GRID = [0.0, 1.0, 2.0]
 
-# 框架 -std mad：滚动中位数，除以 5×MAD，clip 到 [-1, 1]。
-# 窗口含当日——当日因子值在收盘时已知，标准化可以用它；信号分位轨则不含当日。
-STD_WINDOW = 1000
-STD_MAD_MULT = 5.0
-STD_CLIP = 1.0
-
-# 第 4 步 IC 的参照阈值。取论文默认 N=250、M 区间中点，在选参之前做符号检查。
-# 这里不扫网格，避免用 IC 挑参数。
+# 第 4 步 IC 与周频书共用的阈值。不扫网格。
 IC_REFERENCE_LOOKBACK = 250
 IC_REFERENCE_PCT = 55.0
 IC_MIN_OBS = 60
@@ -192,97 +170,20 @@ IC_PERIOD_MIN_COUNT = 6     # 少于这么多期不给 t 值，宁可留空也�
 # 注意这**不是**放松闸门：显著的反向依然是 flip 并且照样拦。
 SIGN_T_MIN = 2.0
 
-# 第 9.2 节第三层的裁决标准。本阶段只写进 frozen_config，不执行。
-OOS_SR_DECAY_MAX = 0.40
-OOS_MDD_RATIO_MAX = 1.5
-
 # --------------------------------------------------------------------------
-# 因子方向（设计文档第 6 节，全部来自论文先验，不得事后按数据翻转）
+# 因子方向。符号来自研究期时序 IC，周频书按这张表定向。
+# +1 越大越看多，-1 越大越看空。
 # --------------------------------------------------------------------------
-# +1 表示"因子值越大越看多"；-1 表示"越大越看空"，实现时统一在因子定义处取负，
-# 使下游信号逻辑只有一套。任何对本表的修改都必须写进 frozen_config.yaml 并说明依据。
 FACTOR_SIGNS = {
-    # --- 持续期族主力 ---
-    'dfp_max': +1,      # 公允均衡价格高于收盘 -> 非理性超跌 -> 次日看多
+    'dfp_max': +1,
     'dfp_top3': +1,
-    'pmt': -1,          # 价格稳态时点越晚 -> 信息消化越慢 -> 次日看空
-    'vr': +1,           # 午前量能持续期相对午后越高 -> 早盘消化越充分 -> 看多
-    'vr_night': +1,     # 夜盘版（商品扩展，同向假设）
-    'vmt': -1,          # 量能稳态时点越晚 -> 看空
-    # --- 持续期族基础聚合（对照组，无强先验，暂设 +1 并在报告中标注为无先验） ---
-    'dur_mean': +1, 'dur_std': +1, 'dur_max': +1, 'dur_gap': +1, 'dur_extreme': +1,
-    'vdur_mean': +1, 'vdur_std': +1, 'vdur_max': +1, 'vdur_gap': +1, 'vdur_extreme': +1,
-    # --- 时间戳族 ---
-    'ts_high': -1,      # 上一轮小时频实测 IC 为负（t=-5.2），与论文预测一致
-    'ts_low': +1,       # 实测 IC 为正（t=+5.2）
-    'ts_vmax': -1,      # 实测 IC 为负（t=-3.8）
-    'ts_tomax': -1,     # 未实测，沿用量峰的同族先验
-    'night_vol_share': +1,   # 上一轮实测 t=+3.05，跨制度最稳
-    'night_day_range': +1,   # 上一轮实测 t=+2.23
+    'ts_high': -1,
+    'ts_low': +1,
 }
-
-# 探索性时间戳因子：论文列举但未在国债上给出方向，上一轮小时频也未实测。
-# 一律暂定 +1 并计入 NO_PRIOR_FACTORS——它们**不参与主结论**，只在因子层诊断中出现。
-# 严禁把这些因子事后按 IC 符号翻转后再放进主合成，那等于用样本内信息定向。
-EXPLORATORY_SIGNS = {
-    'ts_high_am': +1, 'ts_high_pm': +1, 'ts_low_am': +1, 'ts_low_pm': +1,
-    'ts_high_night': +1, 'ts_low_night': +1,
-    'cnt_high_am': +1, 'cnt_high_pm': +1, 'is_high_am': +1,
-}
-
-# 无强先验的对照组因子，报告中须单独标注（避免把"事后定向"混同为"先验定向"）
-NO_PRIOR_FACTORS = {
-    'dur_mean', 'dur_std', 'dur_max', 'dur_gap', 'dur_extreme',
-    'vdur_mean', 'vdur_std', 'vdur_max', 'vdur_gap', 'vdur_extreme',
-} | set(EXPLORATORY_SIGNS)
-
-# 全部已知因子的方向表（主力 + 探索性）
-ALL_SIGNS = {**FACTOR_SIGNS, **EXPLORATORY_SIGNS}
-
-# 因子分组（设计文档第 8.2 节：分族合成，不要一锅端）
-COMBO_GROUPS = {
-    'COMBO_DUR': ['dfp_max', 'dfp_top3', 'pmt', 'vr', 'vr_night', 'vmt'],
-    'COMBO_TS': ['ts_high', 'ts_low', 'ts_vmax', 'ts_tomax',
-                 'night_vol_share', 'night_day_range'],
-    'COMBO_BASE': sorted(NO_PRIOR_FACTORS),   # 对照组：应显著弱于上面两组
-}
-COMBO_GROUPS['COMBO_ALL'] = COMBO_GROUPS['COMBO_DUR'] + COMBO_GROUPS['COMBO_TS']
-# 基础同质化聚合，第 8.2 节的对照组。COMBO_BASE 还含无先验的探索性时间戳因子，
-# 那些因子不是「平凡统计量」，不拿来回答「超额是不是来自均值/波动」。
-COMBO_GROUPS['COMBO_AGG'] = [
-    'dur_mean', 'dur_std', 'dur_max', 'dur_gap', 'dur_extreme',
-    'vdur_mean', 'vdur_std', 'vdur_max', 'vdur_gap', 'vdur_extreme',
-]
-
-# 持续期族依赖 (N, M)；时间戳族不依赖。两张表的并集必须等于 ALL_SIGNS。
-DURATION_FACTORS = [
-    'dur_mean', 'dur_std', 'dur_max', 'dur_gap', 'dur_extreme',
-    'vdur_mean', 'vdur_std', 'vdur_max', 'vdur_gap', 'vdur_extreme',
-    'dfp_max', 'dfp_top3', 'pmt', 'vr', 'vr_night', 'vmt',
-]
-TIMESTAMP_FACTORS = [
-    'ts_high', 'ts_low', 'ts_vmax', 'ts_tomax',
-    'ts_high_am', 'ts_high_pm', 'ts_low_am', 'ts_low_pm',
-    'ts_high_night', 'ts_low_night',
-    'cnt_high_am', 'cnt_high_pm', 'is_high_am',
-    'night_vol_share', 'night_day_range',
-]
-# 有论文或上一轮小时频先验、允许做符号验收的因子。无先验的对照组不在此列。
-PRIOR_FACTORS = [k for k in FACTOR_SIGNS if k not in NO_PRIOR_FACTORS]
-
-# 依赖夜盘的因子：无夜盘品种上必须为 NaN，绝不填 0
-# （上一轮小时频踩过的坑：结构性零值把 t=3.05 的真因子压成 t=1.1）
-#
-# 本表必须**穷尽**所有"只在有夜盘时才有定义"的因子，两个用途都依赖它的完整性：
-#   1. 验收时按有无夜盘分组统计缺失率——漏登记的因子会被整池缺失率误判为不合格；
-#   2. 反向检查"无夜盘品种上是否真的是 NaN 而不是 0"——漏登记就等于没检查。
-# ts_high_night / ts_low_night 是第 3 步演练时补上的：它们在 timestamp_factors 里
-# 走的是 `if tag == 'night' and not has_night: continue` 分支，和 vr_night 一样是
-# 结构性缺失，只是当初写这张表时只想到了显式带 night_ 前缀的那几个。
-NIGHT_DEPENDENT_FACTORS = {
-    'vr_night', 'night_vol_share', 'night_day_range',
-    'ts_high_night', 'ts_low_night',
-}
+DURATION_FACTORS = ['dfp_max', 'dfp_top3']
+TIMESTAMP_FACTORS = ['ts_high', 'ts_low']
+PRIOR_FACTORS = list(FACTOR_SIGNS)
+BOOK_FACTORS = list(FACTOR_SIGNS)
 
 
 # --------------------------------------------------------------------------

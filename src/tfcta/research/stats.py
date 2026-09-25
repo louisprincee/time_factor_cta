@@ -152,7 +152,7 @@ def sign_status(ic: float, name: str, t: float | None = None) -> str:
         return 'no_prior'
     if not np.isfinite(ic) or ic == 0:
         return 'inconclusive'
-    if np.sign(ic) == np.sign(C.ALL_SIGNS[name]):
+    if np.sign(ic) == np.sign(C.FACTOR_SIGNS[name]):
         return 'ok'
     if t is None or not np.isfinite(t) or abs(float(t)) >= C.SIGN_T_MIN:
         return 'flip'

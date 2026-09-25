@@ -103,7 +103,7 @@ def test_timestamp_factors_identical_across_combos():
     dur_cols = set(FC.load_symbol('XX', *combos[0], root=root / 'factors',
                                   with_timestamp=False).columns)
     ts_cols = [c for c in a.columns if c not in dur_cols]
-    assert len(ts_cols) == 15, ts_cols
+    assert ts_cols == ['ts_high', 'ts_low']
     pd.testing.assert_frame_equal(a[ts_cols], b[ts_cols], check_exact=True)
 
 
@@ -113,7 +113,7 @@ def test_duration_factors_differ_across_combos():
     _build(root, combos)
     a = FC.load_symbol('XX', *combos[0], root=root / 'factors')
     b = FC.load_symbol('XX', *combos[2], root=root / 'factors')
-    assert not a['dur_mean'].equals(b['dur_mean'])
+    assert not a['dfp_max'].equals(b['dfp_max'])
 
 
 def test_injected_thresholds_match_recomputed():
@@ -147,53 +147,16 @@ def _panel(rows: dict) -> pd.DataFrame:
     return pd.concat(parts).sort_index()
 
 
-def test_night_factor_missing_ratio_scoped_to_night_symbols():
-    """无夜盘品种的 NaN 不该算进 vr_night 的缺失率——否则正确结果会被判不合格。"""
-    panel = _panel({
-        'RB': {'vr_night': [1.0] * 10, 'pmt': [0.5] * 10},
-        'JD': {'vr_night': [np.nan] * 10, 'pmt': [0.5] * 10},
-    })
-    flags = pd.Series({'RB': True, 'JD': False})
-    naive = FC.panel_health(panel)
-    scoped = FC.panel_health(panel, night_class=flags)
-    assert naive.loc['vr_night', 'non_null_ratio'] == pytest.approx(0.5)
-    assert scoped.loc['vr_night', 'non_null_ratio'] == pytest.approx(1.0)
-    assert scoped.loc['vr_night', 'scope'] == '有夜盘品种'
-    assert scoped.loc['pmt', 'scope'] == '全部'          # 非夜盘因子不分组
-
-
-def test_night_scope_is_per_symbol_day_not_per_symbol():
-    """夜盘判定必须逐 (品种, 交易日)。逐品种会同时造出两个假验收失败。
-
-    真实数据里 C/CS/FU/L/PP/V 都是 2019 年才挂夜盘，2014 年以前全市场没有夜盘。
-    拿一个逐品种的布尔值去判：这些品种被归成"无夜盘"，于是它们挂牌后**真实存在**
-    的夜盘因子值会被反向检查当成违规；归成"有夜盘"的话，挂牌前那些本该是 NaN 的
-    格子又会把非空率压到门槛以下。两种归法都错，因为问题本身不是逐品种的。
-    """
-    # C 前 5 天没夜盘（NaN）、后 5 天有夜盘（有值）
-    panel = _panel({'C': {'vr_night': [np.nan] * 5 + [1.0] * 5, 'pmt': [0.5] * 10}})
-    per_day = pd.Series(np.r_[[False] * 5, [True] * 5], index=panel.index)
-
-    scoped = FC.panel_health(panel, night_class=per_day)
-    assert scoped.loc['vr_night', 'n'] == 5                  # 只统计有夜盘的 5 天
-    assert scoped.loc['vr_night', 'non_null_ratio'] == pytest.approx(1.0)
-    assert scoped.loc['vr_night', 'scope'] == '有夜盘的品种-交易日'
-
-    # 逐品种口径两种归法都给不出 1.0
-    assert FC.panel_health(panel, night_class=pd.Series({'C': True})
-                           ).loc['vr_night', 'non_null_ratio'] == pytest.approx(0.5)
-    assert FC.panel_health(panel, night_class=pd.Series({'C': False})
-                           ).loc['vr_night', 'n'] == 0
-
-    # 反向检查的作用域：无夜盘的那 5 天，且那 5 天确实全是 NaN
-    no_night = ~FC.night_rows(panel, per_day)
-    assert int(no_night.sum()) == 5
-    assert bool(panel.loc[no_night, 'vr_night'].isna().all())
-
-
 def test_acceptance_flags_structural_zeros():
-    """全 0 必须判不通过。上一轮就是结构性零值把真因子压成噪声的。"""
-    panel = _panel({'RB': {'vr_night': [0.0] * 10}})
+    """全 0 必须判不通过。结构性零值会把因子压成噪声。"""
+    panel = _panel({'RB': {'ts_high': [0.0] * 10}})
     t = FC.check_acceptance(FC.panel_health(panel))
-    assert not bool(t.loc['vr_night', 'passed'])
-    assert '全为 0' in t.loc['vr_night', 'reason']
+    assert not bool(t.loc['ts_high', 'passed'])
+    assert '全为 0' in t.loc['ts_high', 'reason']
+
+
+def test_timepoint_outside_unit_interval_fails():
+    panel = _panel({'RB': {'ts_high': [1.5] * 10, 'dfp_max': [0.01] * 10}})
+    t = FC.check_acceptance(FC.panel_health(panel))
+    assert not bool(t.loc['ts_high', 'passed'])
+    assert bool(t.loc['dfp_max', 'passed'])

@@ -11,13 +11,13 @@
     factor_daily/timestamp/{品种}.ext          时间戳族，**不依赖参数**，每品种一份
     factor_daily/N{N}_M{M}/{品种}.ext          持续期族，每个 (N, M) 组合一份
 
-时间戳族单独放是有意的：它不含阈值参数，如果跟着 15 个组合各存一遍，不但浪费，
+时间戳族单独放是有意的：它不含阈值参数，如果跟着每个 (N, M) 各存一遍，不但浪费，
 更糟的是留下"它好像也依赖参数"的错觉，下游很容易写出按组合重算时间戳因子的代码。
 分开存之后，`load_panel` 负责把两边按 trading_date 对齐拼起来。
 
 断点续跑
 --------
-每个 (组合, 品种) 是独立文件，已存在即跳过。42 个品种 × 15 个组合，单品种全样本的
+每个 (组合, 品种) 是独立文件，已存在即跳过。单品种全样本的
 持续期计算是分钟级的，中断重来的代价很高，所以续跑不是锦上添花。
 
 纪律
@@ -76,7 +76,7 @@ def build_symbol(symbol: str,
     """算一个品种的全部日频因子并落盘，返回该品种的汇总信息。
 
     分钟表只读一次、坐标只算一次、阈值网格只算一次——这三件事各自都比因子聚合贵，
-    而它们在 15 个组合之间是可以共享的（阈值网格的池化切分与 M 无关）。
+    而它们在多个 (N, M) 之间是可以共享的（阈值网格的池化切分与 M 无关）。
     """
     combos = combos or combo_grid()
     root = root or C.FACTOR_DAILY_DIR
@@ -110,14 +110,10 @@ def build_symbol(symbol: str,
     n_dur_cols = 0
     if todo:
         price = df['closew'].to_numpy(dtype='float64')
-        vol = df['volume'].to_numpy(dtype='float64')
         grid_p = D.rolling_threshold_grid(
             D.intraday_abs_diff(price, codes), codes, lookbacks, pcts)
-        grid_v = D.rolling_threshold_grid(
-            D.intraday_abs_diff(vol, codes), codes, lookbacks, pcts)
         for n, m in todo:
-            dur = duration_factors(df, lookback=n, pct=m,
-                                   thr_p=grid_p[(n, m)], thr_v=grid_v[(n, m)])
+            dur = duration_factors(df, lookback=n, pct=m, thr_p=grid_p[(n, m)])
             d = combo_dir(n, m, root)
             d.mkdir(parents=True, exist_ok=True)
             shard_io.save_shard(dur, d, symbol, fmt)
@@ -228,17 +224,12 @@ def panel_health(panel: pd.DataFrame,
         进而诱导出 ``fillna(0)`` 这个致命修法。
     """
     rows = []
-    multi = night_class is not None and isinstance(night_class.index, pd.MultiIndex)
     for c in panel.columns:
         s = panel[c]
-        if night_class is not None and c in C.NIGHT_DEPENDENT_FACTORS:
-            s = s[night_rows(panel, night_class)]
         v = s.dropna()
         rows.append({
             'factor': c,
-            'scope': (('有夜盘的品种-交易日' if multi else '有夜盘品种')
-                      if (night_class is not None
-                          and c in C.NIGHT_DEPENDENT_FACTORS) else '全部'),
+            'scope': '全部',
             'n': int(len(s)),
             'non_null_ratio': float(v.size / len(s)) if len(s) else np.nan,
             'all_zero': bool(v.size and (v == 0).all()),
@@ -250,9 +241,7 @@ def panel_health(panel: pd.DataFrame,
     return pd.DataFrame(rows).set_index('factor')
 
 
-TIMEPOINT_FACTORS = ['pmt', 'vmt', 'ts_high', 'ts_low', 'ts_vmax', 'ts_tomax',
-                     'ts_high_am', 'ts_high_pm', 'ts_low_am', 'ts_low_pm',
-                     'ts_high_night', 'ts_low_night']
+TIMEPOINT_FACTORS = ['ts_high', 'ts_low']
 
 
 def check_acceptance(health: pd.DataFrame,
