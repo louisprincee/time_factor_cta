@@ -80,7 +80,7 @@ data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
 python -m pytest
 ```
 
-应该是 100 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
+应该是 81 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
 这套测试不测"跑得通"，测的是几件**做错了也不会报错**的事：
 夜盘因子在无夜盘品种上是 NaN 而非 0、阈值网格与逐个调用逐元素相同、
 时间戳族不随 (N, M) 变化、抽查统计不混入预热年、因子表的每行对应一个
@@ -160,19 +160,19 @@ DFP 必须除以收盘价归一化，否则铜和玻璃差几个数量级，等�
 
 ### 4. 全流程一览
 
-5 个脚本。**必须按顺序跑**，
+5 个脚本，编号 1–5 连续、不重复。**必须按顺序跑**，
 每一步都靠前一步的落盘产物。退出码约定：`0` 通过，`1` 验收不过（要处理），
 `2` 前置条件不满足（通常是上一步还没跑）。
 
-| 步 | 脚本 | 做什么 | 主要产物 |
+| 步 | 脚本 | 做什么 | 主要产物（`data/research/` 下） |
 |---|---|---|---|
 | 1 | `step1_shard_minutes.py` | 切分片，落盘后立刻验收 | `data/minute_shards/`、`data/roll_dates/` |
 | 2 | `step2_universe.py` | 时点有效品种池 | `data/universe/universe_by_year.json` |
 | 3 | `step3_build_factors.py` | 先抽查持续期，再算日频因子 | `data/factor_daily/` |
-| 4 | `step4_factor_ic.py` | 四个因子的时序 IC | `data/research/ic_by_fold.csv` |
-| 5 | `step5_weekly_book.py` | 周频等权回测 | `data/research/weekly_book.csv` |
+| 4 | `step4_factor_ic.py` | 符号闸门、全部因子事前 IC、逻辑组合周频回测 | `ic_by_fold.csv`、`factor_ic_all.csv`、`logic_combo_ic.csv` |
+| 5 | `step5_weekly_book.py` | 时间因子周频等权回测 | `weekly_book.csv` |
 
-分片、品种池、因子、IC、周频回测，各一步。
+因子装配集中在 `research/signals.py`，第 4、5 步共用，方向在那里一次性乘好。
 
 每一步都会在 `runs/{时间戳}_step{N}/` 下留一份快照（产物 + `params.json`/`manifest.json`），
 `data/research/` 下是下游接着读的**最新**一份。想复盘某次运行看 `runs/`，
@@ -301,11 +301,20 @@ data/factor_daily/
 （`factor_health.csv`、`build_log.csv`、`night_flags.csv`，以及
 `night_by_year.csv`——逐 (品种, 年) 的有夜盘天数占比，用来核对上面那件事）。
 
-#### 第 4 步　单因子 IC 与符号闸门
+#### 第 4 步　单因子 IC、符号闸门与逻辑组合
 
 ```bash
-python scripts/step4_factor_ic.py
+python scripts/step4_factor_ic.py            # --no-combos 跳过第 3 部分
 ```
+
+三部分输出：
+
+1. `ic_by_fold.csv`：有先验的四个时间戳/持续期因子逐折 IC，做符号闸门；
+2. `factor_ic_all.csv`：全部因子（时间组合、量价、时序动量、carry、反转代理、
+   无方向指标）的事前 IC 与逐年 `ic_ts`。量价因子方向取 `config.TECH_PRIOR_SIGNS`
+   （趋势先验），`er / vol_ratio / atr_pct / pv_corr` 无方向，只报 IC；
+3. `logic_combo_ic.csv`：按经济逻辑分组的等权组合，周频调仓、扣费回测，
+   报年化收益、年化波动、收益风险比、最大回撤、换手。
 
 在 `N=250, M=55`（论文默认 N、M 区间中点）这**一组**参数上算时序 IC，
 按 walk-forward 折分开，再给一行 `mean_of_folds`。
@@ -328,15 +337,20 @@ python scripts/step4_factor_ic.py
 商品同期高度相关（同一波宏观冲击推动整个板块），照这个口径"再加一个高度相关的
 品种"就能把 t 抬上去，这显然不是显著性。
 
-时序 t 的算法：**先在品种内按月算 Spearman IC，再在月内跨品种平均**，
+时序 t 的算法：**先在品种内按月求 `mean(z_t · r̃_{t+1})`，再在月内跨品种平均**，
 一个月只贡献一个观测（`IC_PERIOD='ME'`，月内至少 `IC_PERIOD_MIN_OBS=10` 个观测，
-至少 `IC_PERIOD_MIN_COUNT=6` 个月才给 t）。顺序反了就等于把约 40 个相关品种
-当成独立样本。标准误用 **Newey-West**（Bartlett 权重，截断滞后
-`floor(4·(n/100)^(2/9))`，落在 `nw_lag` 列），因为逐月 IC 是自相关的。
+至少 `IC_PERIOD_MIN_COUNT=6` 个月才给 t）。`z` 是用截至当日的 252 日均值、标准差
+标准化的因子，`r̃` 是除以事前 60 日波动的未来收益，所以 `ic_ts` 量级与相关系数可比。
+顺序反了就等于把约 40 个相关品种当成独立样本。标准误用 **Newey-West**
+（Bartlett 权重，截断滞后 `floor(4·(n/100)^(2/9))`，落在 `nw_lag` 列）。
 
-实测一句诚实的话：本数据上 `t_cross` 并没有虚高——强因子的时序 t 反而更大
-（`ts_high` t=−9.59、`ts_low` t=+9.29、`dfp_top3` t=+8.40、`dfp_max` t=+8.27）。
-换口径买到的是"t 回答了正确的问题"，不是"t 一律变小"。
+**不要在月内算相关系数。** 旧口径就是月内 Spearman，它要在月内去均值；对 RSI、
+均线乖离这类日间高度持续的因子，20 个观测的月内去均值有 Stambaugh 型负偏差——
+纯随机游走上的 RSI 能得到 ic_ts≈−0.20、t≈−49。量价因子当初"t≈−30 的显著反转"
+全部是这个假象。`tests/test_research.py::test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor`
+钉住了这一条。`ic` 列（逐品种全年 Spearman）对持续性因子同样有偏，只看方向时也要谨慎。
+
+修正后四个时间因子的 t 在 2.3–3.4 之间，等权组合 t=3.8，六年全为正。
 
 ##### 符号闸门
 
@@ -367,6 +381,11 @@ python scripts/step5_weekly_book.py
 成本是 2.5 个基点手续费加 1 个 tick 滑点。结果写在 `data/research/weekly_book.csv`。
 
 分位轨扫描、分族合成、向后检验和冻结配置已经拿掉。那些是扣费后为负的日频书，不是现在这条策略。
+
+这条周频书在 2022–2025 上扣费后年化 −4.4%，毛收益约 −2%，已记录，不再调整。
+
+**价格口径**：分片的 `closew` 是加法复权（`close − closew` 日内恒定、只在换月日跳变），
+比例类指标必须先经 `panel.multiplicative_prices` 转换，收益写成 `Δclosew / close`。
 
 ---
 
@@ -414,7 +433,7 @@ python scripts/step5_weekly_book.py
 
 ```bash
 conda activate factor-mining
-python -m pytest -q                              # 89 项应全过
+python -m pytest -q                              # 81 项应全过
 python scripts/step1_shard_minutes.py --dry-run
 python scripts/step1_shard_minutes.py
 python scripts/step2_universe.py
@@ -428,7 +447,7 @@ python scripts/step5_weekly_book.py
 能造出结构与真实面板一致的分钟数据，测试就是用它）。生产运行不要设这个变量。
 
 第 3 步最慢：品种数 × 一组阈值 × 每品种的分钟行数。第 5 步只读日频缓存。
-第 3 步支持 `--symbols` / `--combos`，第 4 步支持 `--factors`，可先缩小范围验证流程。
+第 3 步支持 `--symbols` / `--combos`，第 4 步支持 `--symbols` / `--no-combos`，可先缩小范围验证流程。
 
 ---
 

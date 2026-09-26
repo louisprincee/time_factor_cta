@@ -226,6 +226,26 @@ def test_ic_timeseries_t_is_far_smaller_than_cross_sectional_t():
     assert tab.loc['2016', 't_cross'] > 10 * tab.loc['2016', 't']
 
 
+def test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor():
+    """随机游走上的 RSI 不可能有预测力，时序 IC 必须测不出东西。
+
+    旧口径在月内算 Spearman，对日间高度持续的因子，月内去均值带来 Stambaugh 型
+    负偏差：这个样本上会给出 ic_ts≈-0.20、t≈-49，量价因子的"显著反转"就是这么来的。
+    """
+    from tfcta.factors import tech
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range('2014-01-01', periods=1500)
+    syms = [f'S{i}' for i in range(40)]
+    px = pd.DataFrame(np.exp(np.cumsum(rng.normal(0, 0.015, (len(idx), 40)), axis=0)),
+                      index=idx, columns=syms)
+    fwd = returns.forward_return(px.pct_change())
+    factor = tech.rsi(px)
+    ser = ic.ic_period_series(factor, fwd, syms)
+    res = ic.timeseries_t(ser)
+    assert abs(res['ic_ts']) < 0.02
+    assert abs(res['t']) < 3.0
+
+
 def test_newey_west_se_exceeds_plain_se_under_autocorrelation():
     """正自相关时 NW 标准误必须大于普通标准误，否则 t 值虚高。
 

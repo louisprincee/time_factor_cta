@@ -59,6 +59,44 @@ def load_day_returns(symbols: list[str],
     return out
 
 
+DAILY_FIELDS = ('open', 'openw', 'close', 'closew', 'highw', 'loww', 'volume')
+
+
+def load_daily_bars(symbols: list[str], directory=None) -> dict[str, pd.DataFrame]:
+    """每个字段一张 ``trading_date × 品种`` 宽表。开盘取首根，收盘取末根，高低取极值，量求和。"""
+    agg = {'open': 'first', 'openw': 'first', 'close': 'last', 'closew': 'last',
+           'highw': 'max', 'loww': 'min', 'volume': 'sum'}
+    cols: dict[str, dict[str, pd.Series]] = {k: {} for k in DAILY_FIELDS}
+    for s in symbols:
+        df = shard_io.load_shard(s, directory=directory,
+                                 columns=list(DAILY_FIELDS) + ['trading_date'])
+        td = pd.to_datetime(df['trading_date']).dt.normalize()
+        day = df.groupby(td, sort=True).agg(agg)
+        C.assert_no_holdout_dates(day.index, what=f"{s} 日频行情")
+        for k in DAILY_FIELDS:
+            cols[k][s] = day[k]
+    return {k: pd.DataFrame(v).sort_index() for k, v in cols.items()}
+
+
+def multiplicative_prices(bars: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """加法复权 → 乘法复权的收盘、最高、最低价。
+
+    分片的 ``closew`` 是加法复权，价差对、比例不对：远期价位被整体平移，
+    ``pct_change`` 和"相对均线偏离"这类比例指标会失真。这里用 ``Δclosew / close[t-1]``
+    重建一条乘法复权收盘价，当日高低价按与收盘价的真实价差折算。
+    """
+    close, closew = bars['close'], bars['closew']
+    prev = close.shift(1)
+    r = (closew.diff() / prev.where(prev > 0)).fillna(0.0).where(closew.notna())
+    px = (1.0 + r).cumprod()
+    base = close.where(close > 0)
+    return {
+        'close': px,
+        'high': px * (1.0 + (bars['highw'] - closew) / base),
+        'low': px * (1.0 + (bars['loww'] - closew) / base),
+    }
+
+
 def forward_return(day_ret: pd.DataFrame) -> pd.DataFrame:
     """factor[t] 所预测的那段收益：day_ret[t+1]。
 

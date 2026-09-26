@@ -47,21 +47,58 @@ def summarize_ics(ics: list[float]) -> dict:
     return out
 
 
+def exante_z(factor: pd.DataFrame,
+              window: int | None = None,
+              min_periods: int | None = None) -> pd.DataFrame:
+    """用截至当日的滚动均值、标准差标准化。只用过去，不含未来。"""
+    window = C.IC_Z_WINDOW if window is None else int(window)
+    min_periods = C.IC_Z_MIN if min_periods is None else int(min_periods)
+    mu = factor.rolling(window, min_periods=min_periods).mean()
+    sd = factor.rolling(window, min_periods=min_periods).std()
+    return ((factor - mu) / sd.where(sd > 0)).clip(-3, 3)
+
+
+def exante_scaled_return(fwd: pd.DataFrame,
+                         window: int | None = None,
+                         min_periods: int | None = None) -> pd.DataFrame:
+    """未来收益除以 t 日已知的波动。
+
+    ``fwd[t] = day_ret[t+1]``，``fwd.shift(2)[t] = day_ret[t-1]``，后者在 t 日收盘前
+    已经实现（t 日开盘时就知道了）。用 ``shift(1)`` 会用到 t+1 开盘的价格。
+    """
+    window = C.IC_VOL_WINDOW if window is None else int(window)
+    min_periods = C.IC_Z_MIN if min_periods is None else int(min_periods)
+    vol = fwd.shift(2).rolling(window, min_periods=min_periods).std()
+    return fwd / vol.where(vol > 0)
+
+
 def ic_period_series(factor: pd.DataFrame,
                      fwd: pd.DataFrame,
                      symbols: list[str],
                      min_obs: int | None = None,
-                     period: str | None = None) -> pd.Series:
-    """逐期（默认逐月）的 IC 序列，时序显著性检验的输入。
+                     period: str | None = None,
+                     prepared: bool = False) -> pd.Series:
+    """逐期（默认逐月）的事前 IC 序列，时序显著性检验的输入。
 
-    次序是**先在品种内算 Spearman，再在期内对品种取平均**，不能反过来。
-    这样一期只贡献一个观测，商品之间的同期相关（同一波宏观冲击推动整个板块）
-    被期内平均吸收掉；剩下的变异全部来自时间，这才是"这个因子在时间上稳不稳"
-    该有的分母。反过来做（先跨品种堆一起再按时间算）会把 42 个高度相关的品种
-    当成 42 个独立样本，t 值虚高一个量级。
+    每期的统计量是 ``mean(z_t · r̃_{t+1})``：``z`` 是事前标准化的因子，``r̃`` 是
+    除以事前波动的未来收益。两者都近似单位方差，所以量级与相关系数可比。
+
+    **不能在期内算相关系数。** 期内相关要在期内去均值，而对 RSI、均线乖离这类
+    日间高度持续的因子，20 个观测的期内去均值会带来 Stambaugh 型的小样本负偏差：
+    纯随机游走上的 RSI 用期内 Spearman 能得到 IC≈-0.20、t≈-49。事前标准化的
+    ``z_t`` 在 t 日可测，收益不可预测时 ``E[z_t · r̃_{t+1}] = 0`` 严格成立。
+
+    次序是**先在品种内按期求平均，再在期内对品种取平均**。一期只贡献一个观测，
+    商品之间的同期相关被期内平均吸收，分母只来自时间上的变异。
+
+    ``prepared=True`` 表示传入的已经是 ``z`` 与 ``r̃``（调用方需要在切片之前用完整
+    历史做标准化，否则每折开头的滚动窗口会空掉）。
     """
     period = C.IC_PERIOD if period is None else str(period)
     min_obs = C.IC_PERIOD_MIN_OBS if min_obs is None else int(min_obs)
+    if not prepared:
+        factor = exante_z(factor)
+        fwd = exante_scaled_return(fwd)
     cols = {}
     for s in symbols:
         if s not in factor.columns or s not in fwd.columns:
@@ -69,8 +106,10 @@ def ic_period_series(factor: pd.DataFrame,
         df = _pair(factor[s], fwd[s])
         if df.empty:
             continue
-        cols[s] = df.groupby(pd.Grouper(freq=period)).apply(
-            lambda g: _corr(g, min_obs))
+        prod = df['f'] * df['r']
+        g = prod.groupby(pd.Grouper(freq=period))
+        m = g.mean().where(g.count() >= min_obs)
+        cols[s] = m
     if not cols:
         return pd.Series(dtype='float64')
     out = pd.DataFrame(cols).mean(axis=1, skipna=True).dropna()
@@ -190,6 +229,7 @@ def factor_ic_table(factor: pd.DataFrame,
     读的是它；``ic_ts`` 是逐期 IC 的均值，两者差得多说明 IC 在折内极不均匀。
     """
     min_obs = C.IC_MIN_OBS if min_obs is None else int(min_obs)
+    z_all, r_all = exante_z(factor), exante_scaled_return(fwd)
     rows, series = [], []
     for y in years:
         y = int(y)
@@ -197,7 +237,8 @@ def factor_ic_table(factor: pd.DataFrame,
                 if s in factor.columns and s in fwd.columns]
         f_y, r_y = _slice_year(factor, y), _slice_year(fwd, y)
         rec = summarize_ics([spearman_ic(f_y[s], r_y[s], min_obs) for s in syms])
-        ser = ic_period_series(f_y, r_y, syms)
+        ser = ic_period_series(_slice_year(z_all, y), _slice_year(r_all, y), syms,
+                               prepared=True)
         series.append(ser)
         rec.update(timeseries_t(ser))
         rec.update(factor=name, fold=str(y), n_folds=1,
@@ -226,19 +267,18 @@ def factor_ic_table(factor: pd.DataFrame,
 
 PERIODS = 252
 
-METRIC_KEYS = [
-    'ann_return', 'ann_vol', 'ret_risk', 'calmar', 'win_rate', 'max_drawdown', 'n_days',
-]
 
-METRIC_LABELS = {
-    'ann_return': '年化收益',
-    'ann_vol': '年化波动',
-    'ret_risk': '收益风险比',
-    'calmar': '卡玛',
-    'win_rate': '日胜率',
-    'max_drawdown': '最大回撤',
-    'n_days': '天数',
-}
+def annual_turnover(pos: pd.DataFrame, universe: dict, years: list[int]) -> float:
+    """单品种年换手（|Δ仓位| 之和）按当年池内品种取均值，再对年份取均值。"""
+    cur = pos.fillna(0.0)
+    to = (cur - cur.shift(1).fillna(0.0)).abs()
+    per = []
+    for y in years:
+        cols = [s for s in universe.get(int(y), []) if s in to.columns]
+        block = to.loc[to.index.year == int(y), cols]
+        if cols and not block.empty:
+            per.append(float(block.sum().mean()))
+    return float(np.mean(per)) if per else float('nan')
 
 
 def _empty(n: int) -> dict:

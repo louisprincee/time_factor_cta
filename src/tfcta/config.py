@@ -156,12 +156,17 @@ IC_REFERENCE_PCT = 55.0
 IC_MIN_OBS = 60
 
 # IC 显著性的**时序**口径（research/stats.py::ic_period_series / timeseries_t）。
-# 一期（默认一个自然月）先在品种内算 Spearman、再在期内对品种取平均，得到一条
-# IC 时间序列，t 值是这条序列均值的 Newey-West t。分母来自时间上的变异，商品之间
+# 一期（默认一个自然月）先在品种内求 mean(事前 z × 事前波动标准化收益)、再在期内对
+# 品种取平均，得到一条 IC 时间序列，t 值是这条序列均值的 Newey-West t。
+# 不在期内算相关：持续性因子的期内去均值有 Stambaugh 型负偏差。分母来自时间上的变异，商品之间
 # 的同期相关性被期内平均吸收掉——跨品种口径把高度相关的商品当独立样本，t 会虚高。
 IC_PERIOD = 'ME'            # 月末重采样；一个测试年约 12 个观测
 IC_PERIOD_MIN_OBS = 10      # 一期至少这么多个有效 (因子, 收益) 配对才算一个观测
 IC_PERIOD_MIN_COUNT = 6     # 少于这么多期不给 t 值，宁可留空也不给一个假精度
+# 事前标准化窗口。因子 z 与收益的波动都只用 t 日已知的数据。
+IC_Z_WINDOW = 252
+IC_VOL_WINDOW = 60
+IC_Z_MIN = 20
 
 # 方向验收判「与先验相反」所需的最小 |t|（时序 t，不是横截面 t）。
 # 没有这道门槛，IC = +0.0008、t = 0.22 会被判成 flip 并拦在第 4 步——那不是"方向相反"，
@@ -180,6 +185,16 @@ FACTOR_SIGNS = {
     'ts_high': -1,
     'ts_low': +1,
 }
+# 传统量价因子的方向同样事前指定，不按 IC 定。依据是商品时序动量文献
+# （Moskowitz-Ooi-Pedersen 2012 及国内商品期货的同类实证）：2-6 周窗口的趋势类指标
+# 越高越看多。er / vol_ratio / atr_pct / pv_corr 本身不带方向，只能作条件变量，
+# 不单独做择时；er_signed 是给 er 乘上窗口内涨跌方向后的带方向版本。
+TECH_PRIOR_SIGNS = {
+    'po': +1, 'bias': +1, 'rsv': +1, 'rsi': +1,
+    'obv': +1, 'pvt': +1, 'er_signed': +1,
+}
+TECH_UNSIGNED = ['er', 'vol_ratio', 'atr_pct', 'pv_corr']
+
 DURATION_FACTORS = ['dfp_max', 'dfp_top3']
 TIMESTAMP_FACTORS = ['ts_high', 'ts_low']
 PRIOR_FACTORS = list(FACTOR_SIGNS)

@@ -9,47 +9,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tfcta import config as C                              # noqa: E402
-from tfcta.research import book, jobs, panel, protocol, stats  # noqa: E402
+from tfcta.research import book, execution, jobs, panel, protocol, signals, stats  # noqa: E402
 
 MEMBERS = {'ts_high': -1.0, 'ts_low': +1.0, 'dfp_max': +1.0, 'dfp_top3': +1.0}
-Z_WINDOW = 252
-Z_MIN = 120
-
-
-def trail_z(raw: pd.DataFrame) -> pd.DataFrame:
-    mu = raw.rolling(Z_WINDOW, min_periods=Z_MIN).mean()
-    sd = raw.rolling(Z_WINDOW, min_periods=Z_MIN).std()
-    return ((raw - mu) / sd.where(sd > 0)).clip(-3, 3)
-
-
-def weekly(sig: pd.DataFrame) -> pd.DataFrame:
-    s = pd.Series(sig.index, index=sig.index)
-    key = s.dt.isocalendar().year.astype(str) + '-' + s.dt.isocalendar().week.astype(str)
-    reb = set(pd.DatetimeIndex(s.groupby(key).tail(1).values))
-    held = pd.DataFrame(np.nan, index=sig.index, columns=sig.columns)
-    for dt in sig.index:
-        if dt in reb:
-            held.loc[dt] = sig.loc[dt]
-    return held.ffill()
-
-
-def turnover(pos, universe, years) -> float:
-    cur = pos.fillna(0.0)
-    to = (cur - cur.shift(1).fillna(0.0)).abs()
-    per_year = []
-    for y in years:
-        cols = [s for s in universe.get(int(y), []) if s in to.columns]
-        if not cols:
-            continue
-        block = to.loc[to.index.year == int(y), cols]
-        if not block.empty:
-            per_year.append(float(block.sum().mean()))
-    return float(np.mean(per_year)) if per_year else float('nan')
 
 
 def main() -> int:
@@ -63,8 +29,8 @@ def main() -> int:
     frames = []
     for name, sign in MEMBERS.items():
         raw = jobs.load_factor(name, C.IC_REFERENCE_LOOKBACK, C.IC_REFERENCE_PCT, symbols)
-        frames.append(trail_z(raw) * sign)
-    sig = weekly(book.average_signals(frames).clip(-1, 1))
+        frames.append(signals.trail_z(raw) * sign)
+    sig = execution.weekly(book.average_signals(frames).clip(-1, 1))
     slip, note = jobs.load_slippage(symbols, day_ret.index, C.SLIPPAGE_TICKS)
     pos = panel.execute_position(sig)
     port = book.run_book(pos, day_ret, universe, C.FEE_BASE, slippage=slip)
@@ -72,7 +38,7 @@ def main() -> int:
     rec = stats.performance(stitched)
     rec.update(name='ts_dfp', cost='net', fee=C.FEE_BASE,
                slippage_ticks=C.SLIPPAGE_TICKS,
-               turnover=round(turnover(pos, universe, years), 1),
+               turnover=round(stats.annual_turnover(pos, universe, years), 1),
                members=','.join(f'{n}×{int(s):+d}' for n, s in MEMBERS.items()))
     for y in years:
         fm = stats.performance(port.loc[port.index.year == int(y)])
