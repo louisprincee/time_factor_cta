@@ -12,6 +12,7 @@ import pandas as pd
 TSMOM_WINDOWS = (20, 60, 120, 250)
 VOL_WINDOW = 60
 CARRY_WINDOW = 250
+CS_MIN_SYMBOLS = 5
 
 
 def daily_close(minute: pd.DataFrame) -> pd.DataFrame:
@@ -49,6 +50,83 @@ def tsmom(close: pd.DataFrame, closew: pd.DataFrame,
     acc = np.where(ok, stacked, 0.0).sum(axis=0)
     out = np.where(cnt == len(parts), acc / np.maximum(cnt, 1), np.nan)
     return pd.DataFrame(out, index=close.index, columns=close.columns)
+
+
+def momentum_components(close: pd.DataFrame, closew: pd.DataFrame,
+                        windows=TSMOM_WINDOWS,
+                        vol_window: int = VOL_WINDOW) -> dict[str, pd.DataFrame]:
+    """各窗口累计动量及其波动率缩放值，所有输入只用到当日收盘。"""
+    daily_return = closew.diff() / close.shift(1).where(close.shift(1) > 0)
+    log_return = np.log1p(daily_return.where(daily_return > -1))
+    vol = daily_return.rolling(
+        vol_window, min_periods=max(2, vol_window // 2)).std()
+    out = {}
+    for window in windows:
+        total = log_return.rolling(int(window), min_periods=int(window)).sum()
+        scaled = total / (vol * np.sqrt(int(window)))
+        out[f'tsmom_{int(window)}'] = total
+        out[f'tsmom_ra_{int(window)}'] = scaled.clip(-3, 3) / 3
+    return out
+
+
+def cross_sectional_rank(factor: pd.DataFrame,
+                         universe: dict[int, list[str]],
+                         min_symbols: int = CS_MIN_SYMBOLS) -> pd.DataFrame:
+    """按每年事前确定的品种池做截面百分位排名，池外与样本不足日期保留 NaN。"""
+    out = pd.DataFrame(np.nan, index=factor.index, columns=factor.columns)
+    years = pd.DatetimeIndex(factor.index).year
+    for year in sorted(set(years)):
+        columns = [s for s in universe.get(int(year), []) if s in factor.columns]
+        if not columns:
+            continue
+        dates = factor.index[years == year]
+        block = factor.loc[dates, columns]
+        valid = block.notna().sum(axis=1) >= int(min_symbols)
+        ranks = block.rank(axis=1, method='average')
+        count = block.notna().sum(axis=1).replace(0, np.nan)
+        ranked = ranks.sub(0.5).div(count, axis=0) - 0.5
+        out.loc[dates[valid], columns] = ranked.loc[valid]
+    return out
+
+
+def cross_sectional_momentum(close: pd.DataFrame, closew: pd.DataFrame,
+                             universe: dict[int, list[str]],
+                             windows=TSMOM_WINDOWS,
+                             vol_window: int = VOL_WINDOW,
+                             min_symbols: int = CS_MIN_SYMBOLS
+                             ) -> dict[str, pd.DataFrame]:
+    """截面动量与风险调整截面动量，返回中心化百分位排名，不负责策略合成。"""
+    components = momentum_components(close, closew, windows, vol_window)
+    ranked = {}
+    for name, factor in components.items():
+        if name.startswith('tsmom_ra_'):
+            rank_name = name.replace('tsmom_ra_', 'cs_mom_ra_')
+        else:
+            rank_name = name.replace('tsmom_', 'cs_mom_')
+        ranked[rank_name] = cross_sectional_rank(factor, universe, min_symbols)
+    return ranked
+
+
+def rolling_return_skewness(close: pd.DataFrame, closew: pd.DataFrame,
+                            window: int = 60,
+                            min_periods: int | None = None) -> pd.DataFrame:
+    """截至当日的日收益偏度；不指定方向，供尾部风险假设做IC检验。"""
+    daily_return = closew.diff() / close.shift(1).where(close.shift(1) > 0)
+    minimum = max(3, int(window * 2 / 3)) if min_periods is None else int(min_periods)
+    return daily_return.rolling(int(window), min_periods=minimum).skew()
+
+
+def cross_sectional_low_volatility(close: pd.DataFrame,
+                                   closew: pd.DataFrame,
+                                   universe: dict[int, list[str]],
+                                   window: int = 60,
+                                   min_symbols: int = CS_MIN_SYMBOLS
+                                   ) -> pd.DataFrame:
+    """低已实现波动率的中心化截面秩；不称作特异性波动率。"""
+    daily_return = closew.diff() / close.shift(1).where(close.shift(1) > 0)
+    vol = daily_return.rolling(
+        int(window), min_periods=max(2, int(window) // 2)).std()
+    return cross_sectional_rank(-vol, universe, min_symbols)
 
 
 def roll_gap(close: pd.DataFrame, closew: pd.DataFrame) -> pd.DataFrame:

@@ -6,11 +6,11 @@ __pycache__/
 
 .env
 .env.*
+config/rqdata.env
 *.pem
 *.key
 
 # 原始分钟数据、分片和研究产物体积很大，不进仓库
-/data_min/
 /data/
 /runs/
 

@@ -26,6 +26,8 @@ LOGIC = {
     '均线偏离': ['po', 'bias'],
     '区间位置': ['rsv', 'rsi'],
     '资金流': ['obv', 'pvt'],
+    '反转代理': ['neg_clv', 'neg_ret_day'],
+    '慢信号': ['tsmom', 'carry'],
 }
 PV_LOGICS = ['趋势形态', '均线偏离', '区间位置', '资金流']
 
@@ -82,7 +84,11 @@ def main() -> int:
     # 2. 全部因子
     rows = []
     for name, wide in {**sig.signed, **sig.unsigned}.items():
-        tab = stats.factor_ic_table(wide, fwd, universe, name, years)
+        if sig.family[name].startswith('截面'):
+            tab = stats.cross_sectional_ic_table(
+                wide, fwd, universe, name, years)
+        else:
+            tab = stats.factor_ic_table(wide, fwd, universe, name, years)
         direction = ('先验已定向' if name in sig.signed else '无方向，仅报 IC')
         rows.append({'factor': name, 'family': sig.family[name], 'direction': direction,
                      **summary_row(tab)})
@@ -114,6 +120,12 @@ def main() -> int:
         pv_all = [n for g in PV_LOGICS for n in LOGIC[g]]
         plan = [(g, LOGIC[g]) for g in LOGIC]
         plan.append(('时间戳+持续期', ts + dur))
+        for factor in LOGIC['反转代理']:
+            plan.append((f'时间戳+持续期+{factor}', ts + dur + [factor]))
+        plan.append(('时间戳+持续期+反转代理', ts + dur + LOGIC['反转代理']))
+        for factor in LOGIC['慢信号']:
+            plan.append((f'时间戳+持续期+{factor}', ts + dur + [factor]))
+        plan.append(('时间戳+持续期+慢信号', ts + dur + LOGIC['慢信号']))
         for g in PV_LOGICS:
             plan += [(f'时间戳+{g}', ts + LOGIC[g]), (f'持续期+{g}', dur + LOGIC[g]),
                      (f'时间戳+持续期+{g}', ts + dur + LOGIC[g])]

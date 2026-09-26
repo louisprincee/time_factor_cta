@@ -265,6 +265,71 @@ def factor_ic_table(factor: pd.DataFrame,
     return pd.DataFrame(rows).reindex(columns=IC_COLUMNS)
 
 
+def cross_sectional_ic_table(factor: pd.DataFrame,
+                             fwd: pd.DataFrame,
+                             universe: dict,
+                             name: str,
+                             years: list[int],
+                             min_symbols: int = 5,
+                             min_days_per_period: int | None = None
+                             ) -> pd.DataFrame:
+    """每日跨品种 Spearman IC，按月平均后以时序 Newey-West t 检验。"""
+    min_days = (C.IC_PERIOD_MIN_OBS if min_days_per_period is None
+                else int(min_days_per_period))
+    rows, monthly_series = [], []
+    for year in years:
+        year = int(year)
+        symbols = [s for s in universe.get(year, [])
+                   if s in factor.columns and s in fwd.columns]
+        factor_year = _slice_year(factor, year).reindex(columns=symbols)
+        return_year = _slice_year(fwd, year).reindex(columns=symbols)
+        dates = factor_year.index.intersection(return_year.index).sort_values()
+        daily_ic, daily_n = [], []
+        for date in dates:
+            pair = pd.concat([factor_year.loc[date], return_year.loc[date]], axis=1)
+            pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
+            daily_n.append(len(pair))
+            if (len(pair) < int(min_symbols) or pair.iloc[:, 0].nunique() < 2
+                    or pair.iloc[:, 1].nunique() < 2):
+                daily_ic.append(np.nan)
+            else:
+                daily_ic.append(float(pair.iloc[:, 0].corr(
+                    pair.iloc[:, 1], method='spearman')))
+        daily = pd.Series(daily_ic, index=dates, dtype='float64')
+        grouped = daily.groupby(pd.Grouper(freq=C.IC_PERIOD))
+        monthly = grouped.mean().where(grouped.count() >= min_days).dropna()
+        monthly_series.append(monthly)
+        finite_daily = daily.dropna()
+        rec = {
+            'ic': float(finite_daily.mean()) if not finite_daily.empty else np.nan,
+            't_cross': np.nan,
+            'n_symbols': int(round(np.mean([n for n in daily_n if n])))
+            if any(daily_n) else 0,
+        }
+        rec.update(timeseries_t(monthly))
+        rec.update(factor=name, fold=str(year), n_folds=1,
+                   sign='no_prior')
+        rows.append(rec)
+
+    valid_rows = [row for row in rows if np.isfinite(row['ic'])]
+    pooled = (pd.concat(monthly_series).sort_index() if monthly_series
+              else pd.Series(dtype='float64'))
+    tail = {
+        'factor': name,
+        'fold': 'mean_of_folds',
+        'ic': float(np.mean([row['ic'] for row in valid_rows]))
+        if valid_rows else np.nan,
+        't_cross': np.nan,
+        'n_symbols': int(round(np.mean([row['n_symbols'] for row in valid_rows])))
+        if valid_rows else 0,
+        'n_folds': len(valid_rows),
+        'sign': 'no_prior',
+    }
+    tail.update(timeseries_t(pooled))
+    rows.append(tail)
+    return pd.DataFrame(rows).reindex(columns=IC_COLUMNS)
+
+
 PERIODS = 252
 
 

@@ -1,0 +1,56 @@
+{
+  "status": "frozen",
+  "frozen_on": "2026-09-26",
+  "validation_year": 2022,
+  "strict_oos_start": "2023-01-01",
+  "universe": {
+    "source": "data/universe/yearly_stats.csv",
+    "screen_year": 2022,
+    "lookback_years": 1,
+    "min_daily_turnover": 3000000000,
+    "min_valid_day_ratio": 0.9,
+    "min_valid_days": 200
+  },
+  "duration": {
+    "lookback": 250,
+    "percentile": 55
+  },
+  "normalization": {
+    "window": 252,
+    "min_periods": 120
+  },
+  "rebalance": "weekly_last_trading_day",
+  "execution": "next_trading_day_open",
+  "fee_rate": 0.00025,
+  "slippage_ticks": 1.0,
+  "slippage_source": "research-period tick table; missing years use last prior estimate",
+  "strategies": {
+    "baseline": {
+      "ts_high": -1,
+      "ts_low": 1,
+      "dfp_max": 1,
+      "dfp_top3": 1
+    },
+    "plus_er_signed": {
+      "ts_high": -1,
+      "ts_low": 1,
+      "dfp_max": 1,
+      "dfp_top3": 1,
+      "er_signed": 1
+    },
+    "plus_tsmom": {
+      "ts_high": -1,
+      "ts_low": 1,
+      "dfp_max": 1,
+      "dfp_top3": 1,
+      "tsmom": 1
+    },
+    "plus_carry_proxy": {
+      "ts_high": -1,
+      "ts_low": 1,
+      "dfp_max": 1,
+      "dfp_top3": 1,
+      "carry": 1
+    }
+  }
+}

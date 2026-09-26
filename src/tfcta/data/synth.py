@@ -61,12 +61,12 @@ def _day_timestamps(trading_day: pd.Timestamp, night_class: str,
         if kind == 'night':
             if prev is None:
                 continue          # 样本首日没有"前一交易日"，其夜盘不在数据范围内
-            start = prev + pd.Timedelta(hours=h0, minutes=m0)
-            end = prev + pd.Timedelta(hours=h1, minutes=m1)
+            start = prev + pd.to_timedelta(h0, unit='h') + pd.to_timedelta(m0, unit='m')
+            end = prev + pd.to_timedelta(h1, unit='h') + pd.to_timedelta(m1, unit='m')
         else:
-            start = trading_day + pd.Timedelta(hours=h0, minutes=m0)
-            end = trading_day + pd.Timedelta(hours=h1, minutes=m1)
-        stamps.append(pd.date_range(start + pd.Timedelta(minutes=1), end, freq='1min'))
+            start = trading_day + pd.to_timedelta(h0, unit='h') + pd.to_timedelta(m0, unit='m')
+            end = trading_day + pd.to_timedelta(h1, unit='h') + pd.to_timedelta(m1, unit='m')
+        stamps.append(pd.date_range(start + pd.to_timedelta(1, unit='min'), end, freq='1min'))
     return pd.DatetimeIndex(np.concatenate([s.values for s in stamps])).sort_values()
 
 

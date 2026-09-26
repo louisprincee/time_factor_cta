@@ -55,6 +55,39 @@ def test_load_shard_refuses_holdout_subdirectory():
         shard_io.load_shard('RB', C.HOLDOUT_DIR / 'anything')
 
 
+def test_validation_reader_only_accepts_2022(shard_dir, monkeypatch):
+    validation_dir = shard_dir / 'validation_2022'
+    validation_dir.mkdir()
+    df = _frame(start='2022-01-03', days=5)
+    shard_io.save_shard(df, validation_dir, 'RB', fmt='pickle')
+    monkeypatch.setattr(C, 'VALIDATION_DIR', validation_dir)
+
+    out = shard_io.load_validation_shard('RB')
+    assert out['trading_date'].dt.year.eq(2022).all()
+
+    bad = _frame(start='2022-12-28', days=8)
+    shard_io.save_shard(bad, validation_dir, 'CU', fmt='pickle')
+    with pytest.raises(C.HoldoutViolation, match='只含 2022'):
+        shard_io.load_validation_shard('CU')
+
+
+def test_validation_reader_refuses_locked_source(shard_dir, monkeypatch):
+    with pytest.raises(C.HoldoutViolation, match='必须来自'):
+        C.assert_validation_only(C.HOLDOUT_DIR / 'RB.pkl')
+
+
+def test_holdout_calendar_returns_only_strict_oos_dates(shard_dir, monkeypatch):
+    monkeypatch.setattr(C, 'HOLDOUT_DIR', shard_dir / 'holdout_locked')
+    df = _frame(start='2022-12-28', days=8)
+    shard_io.save_shard(df, C.HOLDOUT_DIR, 'RB', fmt='pickle')
+
+    dates = shard_io.load_holdout_trading_dates('RB')
+
+    assert dates.min() >= pd.Timestamp(C.STRICT_OOS_START)
+    assert dates.is_monotonic_increasing
+    assert dates.name == 'trading_date'
+
+
 def test_load_shard_rejects_holdout_dates_even_in_research_dir(shard_dir):
     """双重保险：即便文件放在 research/ 下，内容越界也必须拒绝。
 

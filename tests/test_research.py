@@ -197,6 +197,23 @@ def test_ic_fold_is_a_time_slice_not_just_a_symbol_pool():
     assert tab.loc['mean_of_folds', 'ic'] == pytest.approx(0.0)
 
 
+def test_cross_sectional_ic_uses_daily_cross_section_and_time_series_t():
+    dates = pd.bdate_range('2018-01-01', periods=252)
+    symbols = list('ABCDE')
+    factor = pd.DataFrame(
+        np.tile(np.arange(5, dtype='float64'), (len(dates), 1)),
+        index=dates, columns=symbols)
+    future = pd.DataFrame(
+        np.tile(np.arange(5, dtype='float64'), (len(dates), 1)),
+        index=dates, columns=symbols)
+    tab = ic.cross_sectional_ic_table(
+        factor, future, {2018: symbols}, 'cs_mom', [2018]).set_index('fold')
+    assert tab.loc['2018', 'ic'] == pytest.approx(1.0)
+    assert tab.loc['2018', 'n_symbols'] == 5
+    assert tab.loc['2018', 'n_periods'] == 12
+    assert tab.loc['mean_of_folds', 'sign'] == 'no_prior'
+
+
 def test_ic_timeseries_t_is_far_smaller_than_cross_sectional_t():
     """时序 t 与横截面 t 的差别，用一个共同驱动的样本量化出来。
 

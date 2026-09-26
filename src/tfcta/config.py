@@ -19,10 +19,10 @@ from pathlib import Path
 # src/tfcta/config.py -> src/tfcta -> src -> time_factor_cta
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 分钟频原始单体 pickle（扩展名是 .txt，内容是 pickle），在本项目根目录下。
-# 可用环境变量 TFCTA_MINUTE_DIR 指向别处，但默认就是仓库内的 data_min/——
+# 分钟频原始单体 pickle（扩展名是 .txt，内容是 pickle），在 data/data_min/ 下。
+# 可用环境变量 TFCTA_MINUTE_DIR 指向别处；默认数据目录受 /data/ 忽略规则保护。
 # 原始数据跟着项目走，不依赖同级的 backtest_cta_pack 是否存在。
-MINUTE_RAW_DIR = Path(_os.environ.get("TFCTA_MINUTE_DIR", PROJECT_ROOT / "data_min"))
+MINUTE_RAW_DIR = Path(_os.environ.get("TFCTA_MINUTE_DIR", PROJECT_ROOT / "data" / "data_min"))
 MINUTE_MONOLITH = MINUTE_RAW_DIR / "future_all1mdata_20100101-20251231.txt"
 
 # 数据根目录。设置环境变量 TFCTA_DATA_ROOT 可整体重定向——用于在合成数据上演练
@@ -33,6 +33,7 @@ DATA_ROOT = Path(_os.environ.get("TFCTA_DATA_ROOT", PROJECT_ROOT / "data"))
 SHARD_ROOT = DATA_ROOT / "minute_shards"
 RESEARCH_DIR = SHARD_ROOT / "research"                     # <= 2021-12-31，可自由使用
 HOLDOUT_DIR = SHARD_ROOT / "holdout_locked"                # >= 2022-01-01，本阶段禁止读取
+VALIDATION_DIR = SHARD_ROOT / "validation_2022"            # 仅 2022，一次性验证
 ROLL_DIR = DATA_ROOT / "roll_dates"
 
 # 因子缓存与运行留痕
@@ -48,6 +49,8 @@ RESEARCH_OUT_DIR = DATA_ROOT / "research"
 # 时间切分（设计文档第 5 节）
 # --------------------------------------------------------------------------
 HOLDOUT_START = _dt.date(2022, 1, 1)      # 研究期硬边界：>= 此日期禁止接触
+VALIDATION_END = _dt.date(2022, 12, 31)
+STRICT_OOS_START = _dt.date(2023, 1, 1)
 RESEARCH_END = _dt.date(2021, 12, 31)
 
 WARMUP_START = _dt.date(2014, 7, 1)       # 阈值+信号双层滚动预热（约 360 个交易日）
@@ -218,6 +221,48 @@ def assert_research_only(path) -> None:
         )
 
 
+def assert_validation_only(path) -> None:
+    """验证读取只允许来自专门的 2022 分片目录。"""
+    p = Path(path).resolve()
+    root = VALIDATION_DIR.resolve()
+    if root not in p.parents and p != root:
+        raise HoldoutViolation(f"2022 验证数据必须来自 {root}: {p}")
+
+
+def assert_holdout_only(path) -> None:
+    """Require a locked-file read to originate inside holdout_locked/."""
+    p = Path(path).resolve()
+    root = HOLDOUT_DIR.resolve()
+    if root not in p.parents and p != root:
+        raise HoldoutViolation(f"样本外日历只能来自 {root}: {p}")
+
+
+def assert_validation_2022_dates(index_or_series, what: str = "data") -> None:
+    """验证面板必须严格限于 2022 年，拒绝混入训练期或严格 OOS。"""
+    import pandas as pd
+
+    ts = pd.to_datetime(pd.Index(index_or_series))
+    if len(ts) == 0:
+        return
+    lo, hi = pd.Timestamp(HOLDOUT_START), pd.Timestamp(STRICT_OOS_START)
+    if ts.min() < lo or ts.max() >= hi:
+        raise HoldoutViolation(
+            f"{what} 必须只含 2022 年数据，实际范围 {ts.min().date()}..{ts.max().date()}"
+        )
+
+
+def assert_strict_oos_dates(index_or_series, what: str = "data") -> None:
+    """Require all returned holdout calendar dates to be 2023 or later."""
+    import pandas as pd
+
+    ts = pd.to_datetime(pd.Index(index_or_series))
+    if len(ts) and ts.min() < pd.Timestamp(STRICT_OOS_START):
+        raise HoldoutViolation(
+            f"{what} 必须只含 {STRICT_OOS_START} 及以后的日期，"
+            f"实际最早为 {ts.min().date()}"
+        )
+
+
 def assert_no_holdout_dates(index_or_series, what: str = "data") -> None:
     """校验时间索引未越过 HOLDOUT_START。"""
     import pandas as pd
@@ -233,7 +278,7 @@ def assert_no_holdout_dates(index_or_series, what: str = "data") -> None:
 
 
 def ensure_dirs() -> None:
-    for d in (SHARD_ROOT, RESEARCH_DIR, HOLDOUT_DIR, ROLL_DIR,
+    for d in (SHARD_ROOT, RESEARCH_DIR, HOLDOUT_DIR, VALIDATION_DIR, ROLL_DIR,
               FACTOR_DAILY_DIR, UNIVERSE_DIR, RUNS_DIR, CONFIG_DIR,
               RESEARCH_OUT_DIR):
         d.mkdir(parents=True, exist_ok=True)

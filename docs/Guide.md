@@ -5,6 +5,7 @@
 并给出一个没有被样本外信息污染的绩效结论。
 
 设计依据见 [Design.md](Design.md)，本文只讲怎么做。
+下一阶段的文献核验、因子可实现性和研究期候选结果见 [FactorResearchNotes.md](FactorResearchNotes.md)。
 文档里提到"第 N 节"时，指的都是那份设计文档。
 
 ---
@@ -16,13 +17,10 @@
 这三条是整个实验可信度的全部来源。破了任何一条，后面所有数字都失去意义，
 而且**不会有任何报错**——这才是危险的地方。
 
-**规矩一：2022-01-01 起的数据，本阶段一次都不看。**
-不读、不画、不统计、不"就瞄一眼"。`step1_shard_minutes.py` 把它们写进
-`data/minute_shards/holdout_locked/` 之后即锁定，那是全仓库唯一允许写该目录的地方。
-代码层面有三道闸：`config.assert_research_only(path)` 拒绝任何指向该目录的读取，
-`config.assert_no_holdout_dates(index)` 拒绝越界的时间索引，
-`shard_io.load_shard` 是唯一的分片读取入口且两者都调。
-`step1_shard_minutes.py` 的"守卫"项会主动去撞这道闸，撞不动才算通过。
+**规矩一：研究止于 2021；2022 只验证一次；2023 年及以后是严格 OOS。**
+研究期代码拒绝读取 `holdout_locked/`，2022 验证只读取 `validation_2022/`，验证 loader
+拒绝非 2022 日期。验证分片缺失时不得从包含 2023+ 的混合文件重建，必须先准备
+独立的 2022-only 数据源。
 
 **规矩二：因子方向是先验，不许事后按数据翻转。**
 `config.FACTOR_SIGNS` 里每个符号都来自论文原文或上一轮小时频的实测，
@@ -58,11 +56,11 @@ python scripts/step3_build_factors.py
 
 #### 1.2 原始数据
 
-`data_min/` 下五个文件全是 **pickle，只是扩展名写成了 `.txt`**，
+`data/data_min/` 下五个文件全是 **pickle，只是扩展名写成了 `.txt`**，
 必须用 `pickle.load` 读，`read_csv` 会直接乱码。本项目只用最后一个：
 
 ```
-data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
+data/data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
 ```
 
 两层 MultiIndex 列 `(品种, 字段)`，index 是分钟墙钟时间戳，83 品种 × 15 字段。
@@ -80,7 +78,7 @@ data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
 python -m pytest
 ```
 
-应该是 81 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
+当前应是 108 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
 这套测试不测"跑得通"，测的是几件**做错了也不会报错**的事：
 夜盘因子在无夜盘品种上是 NaN 而非 0、阈值网格与逐个调用逐元素相同、
 时间戳族不随 (N, M) 变化、抽查统计不混入预热年、因子表的每行对应一个
@@ -144,7 +142,8 @@ DFP 必须除以收盘价归一化，否则铜和玻璃差几个数量级，等�
 | 2010-01 .. 2014-12 | 向后时间外检验 | **只看 IC 符号**，不得选参、不得据此调整任何设定 |
 | 2014-07 .. 2015-12 | 预热 | 阈值（N 最长 300 日）+ 信号分位轨（W 最长 60 日）双层滚动的启动期，不计绩效 |
 | 2016-01 .. 2021-12 | 研究期 | 全部可用。6 折 walk-forward：训练 3 年 / 测试 1 年 / 步进 1 年，测试年 2016…2021 |
-| 2022-01 起 | 样本外 | **锁定**。本阶段完全不碰 |
+| 2022-01 .. 2022-12 | 一次性验证 | 冻结策略后运行一次，不调参 |
+| 2023-01 起 | 严格 OOS | 策略冻结前不读取、不统计、不调参 |
 
 2016 和 2017 这两折的训练窗口落在 2013-2015，那时夜盘尚未全面铺开，
 `config.WF_FOLDS_WITH_SPARSE_NIGHT` 记着这件事，最终报告里必须标注。
@@ -160,7 +159,7 @@ DFP 必须除以收盘价归一化，否则铜和玻璃差几个数量级，等�
 
 ### 4. 全流程一览
 
-5 个脚本，编号 1–5 连续、不重复。**必须按顺序跑**，
+主流程 6 个脚本，编号 1–6 连续、不重复。**必须按顺序跑**，
 每一步都靠前一步的落盘产物。退出码约定：`0` 通过，`1` 验收不过（要处理），
 `2` 前置条件不满足（通常是上一步还没跑）。
 
@@ -171,8 +170,27 @@ DFP 必须除以收盘价归一化，否则铜和玻璃差几个数量级，等�
 | 3 | `step3_build_factors.py` | 先抽查持续期，再算日频因子 | `data/factor_daily/` |
 | 4 | `step4_factor_ic.py` | 符号闸门、全部因子事前 IC、逻辑组合周频回测 | `ic_by_fold.csv`、`factor_ic_all.csv`、`logic_combo_ic.csv` |
 | 5 | `step5_weekly_book.py` | 时间因子周频等权回测 | `weekly_book.csv` |
+| 6 | `step6_validate_2022.py` | 比较冻结策略的一次性验证结果 | `data/validation_2022/` |
 
 因子装配集中在 `research/signals.py`，第 4、5 步共用，方向在那里一次性乘好。
+
+#### 外部因子支线（可选）
+
+外部数据下载与主流程隔离，按研究期、2022 验证期、2023+ 严格 OOS 分目录缓存，
+默认品种池与 `config.COMMODITY_SYMBOLS` 取交集。原始接口响应位于
+`data/external_rqdata/`。当前 RQData 服务不支持会员排名、near-main roll yield 和
+front/next-month 连续合约；社会库存/产业利润也未接入。
+
+账号写在 `config/rqdata.env`（已 git 忽略）。
+`RQDATAC_LICENSE` 和用户名密码二选一，已 export 的环境变量优先。
+
+```bash
+conda run -n gu python download/getRiceQuantExternalData.py \
+   --start-date 20100101 --end-date 20211231 --symbols all
+conda run -n gu python scripts/step7_build_external_factors.py --partitions research
+```
+
+该命令只构造研究期外部因子，写入 `data/factor_daily/external/research/`，供第 4 步做无方向 IC 筛查；不自动加入第 5 步策略。不要在策略冻结前构造或分析 `validation_2022`、`holdout_locked` 分区。
 
 每一步都会在 `runs/{时间戳}_step{N}/` 下留一份快照（产物 + `params.json`/`manifest.json`），
 `data/research/` 下是下游接着读的**最新**一份。想复盘某次运行看 `runs/`，
@@ -257,7 +275,7 @@ python scripts/step3_build_factors.py
 脚本内部有个容易做错且做错也不报错的地方：阈值要 N 个交易日预热，
 所以每次都多读两年数据，**汇总时必须把预热年排除**（`keep` 掩码）。
 混进去的话，预热年那些 NaN 会把缺失率稀释，看起来更干净，实则是错的。
-`tests/test_step3_probe.py` 把这条钉住了。
+预热排除由第 3 步抽查脚本按 `keep` 掩码执行；运行时应确认输出统计仅覆盖指定抽查年份。
 
 #### 因子计算
 
@@ -382,7 +400,20 @@ python scripts/step5_weekly_book.py
 
 分位轨扫描、分族合成、向后检验和冻结配置已经拿掉。那些是扣费后为负的日频书，不是现在这条策略。
 
-这条周频书在 2022–2025 上扣费后年化 −4.4%，毛收益约 −2%，已记录，不再调整。
+本项目只使用 2022 专用验证切片；2023 年及以后始终是严格 OOS。
+
+#### 第 6 步　2022 一次性验证
+
+确认 `config/validation_2022_plan.json` 已冻结且 `data/minute_shards/validation_2022/`
+存在后，只运行一次：
+
+```bash
+python scripts/step6_validate_2022.py
+```
+
+脚本只读 `research/` 和 `validation_2022/`，输出基准、`er_signed`、TSMOM、已实现 carry
+代理的增量比较。结果写到 `data/validation_2022/` 和 `runs/`。不得依据 2022 改参数后重跑。
+2023 年及以后不属于该脚本的输入路径，严格保持 OOS。
 
 **价格口径**：分片的 `closew` 是加法复权（`close − closew` 日内恒定、只在换月日跳变），
 比例类指标必须先经 `panel.multiplicative_prices` 转换，收益写成 `Δclosew / close`。
@@ -415,7 +446,8 @@ python scripts/step5_weekly_book.py
 
 一张清单，都是"做了不会报错但结论作废"的操作：
 
-- 读 `holdout_locked/`，或以任何方式统计 2022 年之后的数据。
+- 绕过研究/验证专用 loader 读取 `holdout_locked/`；在 OOS 策略冻结前读取或统计 2023 年及以后数据。
+- 根据 2022 验证结果反复修改参数并重跑验证。
 - 看了第 4 步的 IC 符号之后去改 `FACTOR_SIGNS`。
 - 在第 5 步以外另开地方扫参数，或按收益风险比改成员和符号。
 - 把 `NO_PRIOR_FACTORS` 里的因子按 IC 符号定向后放进主合成。
@@ -428,12 +460,12 @@ python scripts/step5_weekly_book.py
 
 ### 8. 从零重跑的完整序列
 
-确认 `data_min/future_all1mdata_20100101-20251231.txt` 在位之后，
+确认 `data/data_min/future_all1mdata_20100101-20251231.txt` 在位之后，
 按顺序执行。每一步都要看退出码：非 0 就停下处理，不要往后跑。
 
 ```bash
 conda activate factor-mining
-python -m pytest -q                              # 81 项应全过
+python -m pytest -q                              # 当前 108 项应全过
 python scripts/step1_shard_minutes.py --dry-run
 python scripts/step1_shard_minutes.py
 python scripts/step2_universe.py

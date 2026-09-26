@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from .. import config as C
-from ..factors import slow, tech
+from ..data import universe as U
+from ..factors import external_factor_cache, slow, tech
 from . import book, jobs, panel, stats
 
 Z_WINDOW = 252
@@ -63,6 +64,39 @@ def load(symbols: list[str]) -> SignalSet:
     out.family['tsmom'] = '慢信号'
     out.signed['carry'] = slow.carry(bars['close'], bars['closew'])
     out.family['carry'] = '慢信号'
+
+    universe = U.load_universe()
+    for n, factor in slow.cross_sectional_momentum(
+            bars['close'], bars['closew'], universe).items():
+        out.unsigned[n] = factor
+        out.family[n] = '截面动量(独立候选)'
+    out.unsigned['return_skew_60'] = slow.rolling_return_skewness(
+        bars['close'], bars['closew'], window=60)
+    out.family['return_skew_60'] = '尾部风险(独立候选)'
+    out.unsigned['cs_low_vol_60'] = slow.cross_sectional_low_volatility(
+        bars['close'], bars['closew'], universe, window=60)
+    out.family['cs_low_vol_60'] = '截面低波动(独立候选)'
+
+    external_families = {
+        'carry_main_sub_yield': '外部期限结构(候选)',
+        'carry_main_sub_annualized': '外部期限结构(候选)',
+        'carry_main_sub_annualized_trading': '外部期限结构(候选)',
+        'warehouse_on_warrant': '外部库存(候选)',
+        'warehouse_log_level': '外部库存(候选)',
+        'warehouse_low': '外部库存(候选)',
+        'warehouse_change_20d': '外部库存(候选)',
+        'warehouse_drawdown_20d': '外部库存(候选)',
+        'main_open_interest': '外部持仓(候选)',
+        'main_oi_change_20d': '外部持仓(候选)',
+        'main_oi_change_60d': '外部持仓(候选)',
+        'spot_basis_morning': '外部基差(候选)',
+        'spot_basis_morning_pct': '外部基差(候选)',
+        'spot_basis_noon': '外部基差(候选)',
+        'spot_basis_noon_pct': '外部基差(候选)',
+    }
+    for name, factor in external_factor_cache.load_external_panel(symbols).items():
+        out.unsigned[name] = factor.reindex(bars['close'].index)
+        out.family[name] = external_families.get(name, '外部数据(候选)')
 
     rev = reversal_proxies(bars)
     out.signed['neg_clv'] = -rev['clv']

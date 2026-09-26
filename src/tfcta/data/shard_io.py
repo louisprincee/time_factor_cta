@@ -110,3 +110,72 @@ def load_shard(symbol: str,
         if verify_dates:
             C.assert_no_holdout_dates(df['trading_date'], what=f"{symbol} 分片")
     return df.sort_index(kind='mergesort')
+
+
+def load_validation_shard(symbol: str,
+                          columns: list[str] | None = None) -> pd.DataFrame:
+    """读取专用 2022 验证分片；验证年份外的任何日期都会被拒绝。"""
+    directory = C.VALIDATION_DIR
+    C.assert_validation_only(directory)
+    p = find_shard(directory, symbol)
+    if p is None:
+        raise FileNotFoundError(f"找不到 {symbol} 的 2022 验证分片: {directory}")
+    C.assert_validation_only(p)
+
+    if p.suffix == PARQUET_EXT:
+        df = pd.read_parquet(p, columns=columns)
+    else:
+        df = pd.read_pickle(p)
+        if columns:
+            df = df[[c for c in columns if c in df.columns]]
+
+    if 'trading_date' not in df.columns:
+        raise KeyError(f"{symbol} 的验证分片缺少 trading_date")
+    df['trading_date'] = pd.to_datetime(df['trading_date'])
+    C.assert_validation_2022_dates(df['trading_date'], what=f"{symbol} 验证分片")
+    return df.sort_index(kind='mergesort')
+
+
+def load_holdout_trading_dates(symbol: str) -> pd.DatetimeIndex:
+    """Expose only strict-OOS trading dates for segregated feature alignment."""
+    directory = C.HOLDOUT_DIR
+    p = find_shard(directory, symbol)
+    if p is None:
+        raise FileNotFoundError(f"找不到 {symbol} 的锁定分片: {directory}")
+    C.assert_holdout_only(p)
+
+    if p.suffix == PARQUET_EXT:
+        df = pd.read_parquet(p, columns=['trading_date'])
+    else:
+        df = pd.read_pickle(p)[['trading_date']]
+
+    dates = pd.DatetimeIndex(pd.to_datetime(df['trading_date']).dt.normalize().unique())
+    dates = dates[dates >= pd.Timestamp(C.STRICT_OOS_START)].sort_values()
+    C.assert_strict_oos_dates(dates, what=f"{symbol} OOS 交易日历")
+    dates.name = 'trading_date'
+    return dates
+
+
+def load_holdout_trading_dates(symbol: str) -> pd.DatetimeIndex:
+    """Read only the calendar column from a locked shard for feature alignment.
+
+    This intentionally exposes no prices, volume, or returns. The returned dates
+    are restricted to strict OOS and must not be used to evaluate strategy results.
+    """
+    directory = C.HOLDOUT_DIR
+    p = find_shard(directory, symbol)
+    if p is None:
+        raise FileNotFoundError(f"找不到 {symbol} 的锁定分片: {directory}")
+    C.assert_holdout_only(p)
+
+    if p.suffix == PARQUET_EXT:
+        df = pd.read_parquet(p, columns=['trading_date'])
+    else:
+        df = pd.read_pickle(p)[['trading_date']]
+
+    dates = pd.DatetimeIndex(pd.to_datetime(df['trading_date']).dt.normalize().unique())
+    dates = dates[dates >= pd.Timestamp(C.STRICT_OOS_START)]
+    dates = dates.sort_values()
+    C.assert_strict_oos_dates(dates, what=f"{symbol} 锁定交易日历")
+    dates.name = 'trading_date'
+    return dates

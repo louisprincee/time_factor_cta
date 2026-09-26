@@ -41,3 +41,56 @@ def test_carry_is_positive_under_backwardation():
     assert c.iloc[-1] > 0
     g = slow.roll_gap(*diff)['A']
     assert (g != 0).sum() == 3
+
+
+def test_cross_sectional_momentum_ranks_only_current_year_universe():
+    idx = pd.bdate_range('2020-01-01', periods=6)
+    factor = pd.DataFrame({
+        'A': [1, 2, 3, 4, 5, 6],
+        'B': [2, 3, 4, 5, 6, 7],
+        'C': [3, 4, 5, 6, 7, 8],
+        'D': [4, 5, 6, 7, 8, 9],
+        'E': [5, 6, 7, 8, 9, 10],
+        'OUT': [100, 100, 100, 100, 100, 100],
+    }, index=idx)
+    ranked = slow.cross_sectional_rank(
+        factor, {2020: ['A', 'B', 'C', 'D', 'E']})
+    assert ranked.loc[idx[-1], 'A'] == pytest.approx(-0.4)
+    assert ranked.loc[idx[-1], 'E'] == pytest.approx(0.4)
+    assert ranked['OUT'].isna().all()
+    assert ranked.notna().sum(axis=1).eq(5).all()
+
+
+def test_cross_sectional_momentum_uses_only_trailing_returns():
+    idx = _idx(80)
+    close = pd.DataFrame({s: np.linspace(100, 120 + i, len(idx))
+                          for i, s in enumerate('ABCDE')}, index=idx)
+    closew = close.copy()
+    factors = slow.cross_sectional_momentum(
+        close, closew, {2016: list('ABCDE')}, windows=(20,), vol_window=10)
+    assert set(factors) == {'cs_mom_20', 'cs_mom_ra_20'}
+    assert factors['cs_mom_20'].iloc[-1].notna().sum() == 5
+    assert factors['cs_mom_ra_20'].iloc[-1].notna().sum() == 5
+
+
+def test_rolling_skewness_does_not_use_future_returns():
+    idx = _idx(80)
+    close = pd.DataFrame({'A': np.exp(np.linspace(0, 0.2, len(idx)))}, index=idx)
+    closew = close.copy()
+    skew = slow.rolling_return_skewness(close, closew, window=20, min_periods=15)
+    changed = close.copy()
+    changed.iloc[-1, 0] *= 1.5
+    skew_changed = slow.rolling_return_skewness(
+        changed, changed, window=20, min_periods=15)
+    pd.testing.assert_series_equal(skew['A'].iloc[:-1], skew_changed['A'].iloc[:-1])
+
+
+def test_low_volatility_is_ranked_only_inside_each_year_pool():
+    idx = _idx(80)
+    phase = np.sin(np.arange(len(idx)))
+    close = pd.DataFrame({s: np.exp(np.cumsum(0.001 * (i + 1) * phase))
+                          for i, s in enumerate('ABCDE')}, index=idx)
+    low_vol = slow.cross_sectional_low_volatility(
+        close, close, {2016: list('ABCDE')}, window=20)
+    assert low_vol['A'].iloc[-1] > low_vol['E'].iloc[-1]
+    assert low_vol.iloc[-1].notna().sum() == 5
