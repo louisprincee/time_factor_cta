@@ -8,7 +8,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .. import config as C
+from ... import config as C
+from ...factors.library import exante_z
 
 
 def _pair(factor: pd.Series, fwd: pd.Series) -> pd.DataFrame:
@@ -45,17 +46,6 @@ def summarize_ics(ics: list[float]) -> dict:
         if sd > 0:
             out['t_cross'] = float(out['ic'] / (sd / np.sqrt(arr.size)))
     return out
-
-
-def exante_z(factor: pd.DataFrame,
-              window: int | None = None,
-              min_periods: int | None = None) -> pd.DataFrame:
-    """用截至当日的滚动均值、标准差标准化。只用过去，不含未来。"""
-    window = C.IC_Z_WINDOW if window is None else int(window)
-    min_periods = C.IC_Z_MIN if min_periods is None else int(min_periods)
-    mu = factor.rolling(window, min_periods=min_periods).mean()
-    sd = factor.rolling(window, min_periods=min_periods).std()
-    return ((factor - mu) / sd.where(sd > 0)).clip(-3, 3)
 
 
 def exante_scaled_return(fwd: pd.DataFrame,
@@ -254,7 +244,9 @@ def factor_ic_table(factor: pd.DataFrame,
     # 平均。折只有 6 个、每折 12 期，逐折 t 的自由度低得可怜；拼成一条长序列既提高
     # 自由度，也让 Newey-West 的滞后项真正吃到跨折的自相关。折与折在时间上不重叠，
     # 直接 concat 不会有重复索引。
-    pooled = (pd.concat(series).sort_index() if series else pd.Series(dtype='float64'))
+    nonempty_series = [item for item in series if not item.empty]
+    pooled = (pd.concat(nonempty_series).sort_index() if nonempty_series
+              else pd.Series(dtype='float64'))
     tail = {'factor': name, 'fold': 'mean_of_folds', 'ic': mean_ic,
             't_cross': np.nan, 'n_symbols': n_sym, 'n_folds': len(good)}
     tail.update(timeseries_t(pooled))
@@ -312,7 +304,8 @@ def cross_sectional_ic_table(factor: pd.DataFrame,
         rows.append(rec)
 
     valid_rows = [row for row in rows if np.isfinite(row['ic'])]
-    pooled = (pd.concat(monthly_series).sort_index() if monthly_series
+    nonempty_series = [item for item in monthly_series if not item.empty]
+    pooled = (pd.concat(nonempty_series).sort_index() if nonempty_series
               else pd.Series(dtype='float64'))
     tail = {
         'factor': name,
@@ -331,19 +324,7 @@ def cross_sectional_ic_table(factor: pd.DataFrame,
 
 
 PERIODS = 252
-
-
-def annual_turnover(pos: pd.DataFrame, universe: dict, years: list[int]) -> float:
-    """单品种年换手（|Δ仓位| 之和）按当年池内品种取均值，再对年份取均值。"""
-    cur = pos.fillna(0.0)
-    to = (cur - cur.shift(1).fillna(0.0)).abs()
-    per = []
-    for y in years:
-        cols = [s for s in universe.get(int(y), []) if s in to.columns]
-        block = to.loc[to.index.year == int(y), cols]
-        if cols and not block.empty:
-            per.append(float(block.sum().mean()))
-    return float(np.mean(per)) if per else float('nan')
+METRIC_KEYS = ['ann_return', 'ann_vol', 'ret_risk', 'calmar', 'win_rate', 'max_drawdown']
 
 
 def _empty(n: int) -> dict:
@@ -380,15 +361,12 @@ def performance(ret: pd.Series, periods: int = PERIODS) -> dict:
     }
 
 
-def fee_flip_text(ret_risk_by_fee: pd.Series) -> str:
-    """费率从低到高，收益风险比在哪一档由正转非正。"""
-    s = ret_risk_by_fee.dropna().sort_index()
-    if s.empty:
-        return '没有可用的收益风险比'
-    if (s <= 0).all():
-        return '最低一档费率下收益风险比已不为正'
-    fees = list(s.index)
-    for a, b in zip(fees[:-1], fees[1:]):
-        if s.loc[a] > 0 and s.loc[b] <= 0:
-            return f"收益风险比在费率 {a:g} → {b:g} 之间由正转非正"
-    return '各档费率下收益风险比均为正，本网格内未翻转'
+def sharpe_ratio(returns: pd.Series, periods: int = PERIODS) -> float:
+    """日均值 / 日标准差 × sqrt(252)，无风险利率 0。"""
+    values = pd.Series(returns, dtype='float64').dropna()
+    if len(values) < 2:
+        return np.nan
+    vol = float(values.std(ddof=1))
+    if not np.isfinite(vol) or vol <= 0:
+        return np.nan
+    return float(values.mean() / vol * np.sqrt(periods))

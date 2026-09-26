@@ -3,7 +3,8 @@
 重点不是"跑得通"，而是三件容易静默出错的事：
 1. 无夜盘品种的夜盘因子必须是 NaN 而不是 0（上一轮小时频踩过的坑，把 t=3.05 的
    真因子压成了 t=1.1）
-2. DFP 必须已按收盘价归一化，否则跨品种量纲差几个数量级
+2. DFP 必须已按收盘价归一化，否则跨品种量纲差几个数量级；分子分母都用原始价，
+   加法复权价离上市越远偏离越大，做分母会让比例失真
 3. 所有时点类因子必须落在 [0,1]，否则等权合成被长夜盘品种主导
 """
 
@@ -15,7 +16,7 @@ import pytest
 
 from tfcta import config as C
 from tfcta.data import sessions, synth
-from tfcta.factors import factors
+from tfcta.factors import intraday as factors
 
 
 DAYS = pd.bdate_range('2015-01-01', '2015-12-31')
@@ -64,17 +65,33 @@ def test_symbol_daily_factors_covers_all_expected_columns():
     assert out.index.is_monotonic_increasing
 
 
-def test_apply_signs_flips_negative_factors():
-    df = pd.DataFrame({'ts_high': [0.2, 0.8], 'dfp_max': [0.1, -0.1]})
-    out = factors.apply_signs(df)
-    assert C.FACTOR_SIGNS['ts_high'] == -1
-    np.testing.assert_allclose(out['ts_high'], [-0.2, -0.8])
-    np.testing.assert_allclose(out['dfp_max'], [0.1, -0.1])
+def test_dfp_ignores_additive_adjustment_offset():
+    """持续期用 closew，FP 和分母用原始 close：closew 整体平移不能改变 DFP。
+
+    加法复权价与原始价差一个日内恒定、随换月累积的常数（RB、J 甚至为负）。
+    用 closew 做 FP 与分母时，这个常数直接进入比例，远离上市的年份 DFP 系统性失真。
+    """
+    df = _prep(days=DAYS[:40])
+    base = factors.duration_factors(df, LOOKBACK, PCT)
+    shifted = df.copy()
+    shifted['closew'] = shifted['closew'] - 5000.0
+    pd.testing.assert_frame_equal(base, factors.duration_factors(shifted, LOOKBACK, PCT))
+
+    codes, days = factors.day_codes_of(df)
+    price = df['closew'].to_numpy(dtype='float64')
+    thr = factors.rolling_threshold(factors.intraday_abs_diff(price, codes), codes, LOOKBACK, PCT)
+    dur = factors.duration_series(price, codes, thr)
+    expect = factors.dfp_factors(dur, df['close'].to_numpy(dtype='float64'), codes, days)
+    np.testing.assert_allclose(base['dfp_max'].to_numpy(), expect['dfp_max'].to_numpy(),
+                               equal_nan=True)
 
 
-def test_apply_signs_strict_rejects_unknown():
-    with pytest.raises(factors.UnsignedFactor):
-        factors.apply_signs(pd.DataFrame({'made_up_factor': [1.0]}))
+def test_dfp_skips_non_positive_close():
+    dur = np.array([1.0, 50.0, 2.0])
+    price = np.array([100.0, 120.0, 0.0])
+    out = factors.dfp_factors(dur, price, np.zeros(3, int),
+                              pd.DatetimeIndex(['2015-01-01']), top_ns=[1])
+    assert np.isnan(out['dfp_max'].iloc[0])
 
 
 def test_factor_index_is_trading_date_not_wall_clock():

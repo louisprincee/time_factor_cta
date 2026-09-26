@@ -1,8 +1,6 @@
-"""研究评估层。日收益、时序 IC、绩效、等权回测、walk-forward。不读 holdout。"""
-from . import book, costs, execution, jobs, panel, protocol, stats
+"""研究评估层，按功能分三个子包。
 
-returns = panel
-ic = metrics = stats
-backtest = combo = book
-folds = protocol
-paths = runtime = jobs
+analysis   时序 IC、绩效、walk-forward 统计、板块异质性筛选
+backtest   周频调仓与下一开盘成交、扣费等权组合、tick 滑点、自选因子与板块的策略配置
+workflow   各步脚本的上下文与留痕、验证期 / 样本外数据准备、使用台账
+"""

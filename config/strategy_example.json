@@ -1,0 +1,16 @@
+{
+  "factors": {
+    "time_combo": 1,
+    "neg_clv": 1,
+    "neg_ret_day": 1
+  },
+  "pools": ["黑色金属", "农产品"],
+  "merge_pools": true,
+  "symbols": null,
+  "fee_rate": 0.00025,
+  "slippage_ticks": 1.0,
+  "pass_criteria": {
+    "min_net_sharpe": 0.5,
+    "min_net_ann_return": 0.0
+  }
+}

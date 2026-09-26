@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta.factors import duration as D
+from tfcta.factors import intraday as D
 
 
 def brute_duration(values, threshold):

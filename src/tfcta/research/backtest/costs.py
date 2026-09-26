@@ -8,8 +8,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .. import config as C
-from ..data import shard_io
+from ... import config as C
+from ...data import shard_io
 
 
 # 频次下限：占最高频档的比例，以及一个绝对条数下限。二者取大。
@@ -48,30 +48,36 @@ def estimate_tick(close: np.ndarray) -> tuple[float, float]:
     return (float(rep[keep].min()) if keep.any() else mode), mode
 
 
+def tick_rows(symbol: str, close, trading_date) -> list[dict]:
+    """单品种逐年的 tick / 价位 / 比例成本。调用方负责只传入已经允许读取的分钟数据。"""
+    px = np.asarray(close, dtype='float64')
+    whole, whole_mode = estimate_tick(px)
+    year = pd.DatetimeIndex(trading_date).year.to_numpy()
+    rows = []
+    for y in sorted(set(year.tolist())):
+        sub = px[year == y]
+        med = float(np.nanmedian(sub)) if sub.size else np.nan
+        n_diff = int(np.isfinite(np.diff(sub)).sum() if sub.size > 1 else 0)
+        if n_diff >= TICK_MIN_DIFFS_PER_YEAR:
+            tick, mode, src = (*estimate_tick(sub), 'year')
+        else:
+            tick, mode, src = whole, whole_mode, 'symbol'
+        rows.append({
+            'symbol': symbol, 'year': int(y), 'tick': tick,
+            'tick_mode': mode, 'tick_source': src, 'n_diff': n_diff,
+            'median_close': med,
+            'rate_per_tick': (tick / med
+                              if np.isfinite(tick) and med > 0 else np.nan),
+        })
+    return rows
+
+
 def build_tick_table(symbols: list[str]) -> pd.DataFrame:
     """逐 (品种, 年) 的 tick / 价位 / 比例成本。走 shard_io 因此受样本外守卫保护。"""
     rows = []
     for s in symbols:
         df = shard_io.load_shard(s, columns=['close', 'trading_date'])
-        px = df['close'].to_numpy(dtype='float64')
-        whole, whole_mode = estimate_tick(px)
-        year = pd.DatetimeIndex(df['trading_date']).year.to_numpy()
-        for y in sorted(set(year.tolist())):
-            sel = year == y
-            sub = px[sel]
-            med = float(np.nanmedian(sub)) if sub.size else np.nan
-            n_diff = int(np.isfinite(np.diff(sub)).sum() if sub.size > 1 else 0)
-            if n_diff >= TICK_MIN_DIFFS_PER_YEAR:
-                tick, mode, src = (*estimate_tick(sub), 'year')
-            else:
-                tick, mode, src = whole, whole_mode, 'symbol'
-            rows.append({
-                'symbol': s, 'year': int(y), 'tick': tick,
-                'tick_mode': mode, 'tick_source': src, 'n_diff': n_diff,
-                'median_close': med,
-                'rate_per_tick': (tick / med
-                                  if np.isfinite(tick) and med > 0 else np.nan),
-            })
+        rows.extend(tick_rows(s, df['close'], df['trading_date']))
     out = pd.DataFrame(rows)
     if not out.empty:
         C.assert_no_holdout_dates(
@@ -148,3 +154,18 @@ def cost_summary(table: pd.DataFrame, n_ticks: float) -> pd.DataFrame:
         'bp_per_turnover': g['rate_per_tick'].mean() * float(n_ticks) * 1e4,
     })
     return out.sort_values('bp_per_turnover', ascending=False)
+
+
+def research_slippage(symbols: list[str],
+                      index: pd.Index,
+                      n_ticks: float,
+                      rebuild: bool = False) -> tuple[pd.DataFrame | None, str]:
+    """研究期滑点宽表 + 一行说明。``n_ticks == 0`` 时不建 tick 表，只扣手续费。"""
+    if float(n_ticks) == 0.0:
+        return None, '滑点 0 个 tick（对照档，仅供比较，不得用于选参或结论）'
+    tab = load_tick_table(symbols, rebuild=rebuild)
+    wide = slippage_wide(tab, index, list(symbols), n_ticks)
+    bp = cost_summary(tab[tab['symbol'].isin(symbols)], n_ticks)['bp_per_turnover']
+    note = (f"滑点 {float(n_ticks):g} 个 tick，按换手计费；"
+            f"品种间 {bp.min():.1f}~{bp.max():.1f}bp，中位 {bp.median():.1f}bp")
+    return wide, note

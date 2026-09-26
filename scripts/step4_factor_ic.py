@@ -1,9 +1,10 @@
-"""第 4 步：单因子时序 IC、符号闸门、逻辑组合的周频回测。只读 2016–2021。
+"""第 4 步：单因子时序 IC、符号闸门、逻辑组合、稳定性与板块异质性。只读 2016–2021。
 
-三部分：
+四部分：
 1. 有先验的时间戳/持续期因子逐折 IC，做符号闸门（显著反向则返回 1）；
-2. 全部因子（量价、慢信号、反转代理、无方向指标）的事前 IC 汇总；
-3. 按经济逻辑分组的等权组合，周频调仓、扣费回测。
+2. 全部因子（量价、慢信号、反转代理、无方向指标、外部数据）的事前 IC 汇总；
+3. 按经济逻辑分组的等权组合，周频调仓、扣费回测；
+4. 年度 IC 稳定性筛选，以及通过筛选的因子在五大板块、单品种上的异质性。
 
 方向一律取事前先验，不按 IC 定；不在这里选参。
 """
@@ -16,8 +17,12 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from tfcta import config as C                                            # noqa: E402
-from tfcta.research import book, execution, jobs, panel, protocol, signals, stats  # noqa: E402
+from tfcta import config as C                               # noqa: E402
+from tfcta.data import bars as B                            # noqa: E402
+from tfcta.factors import library                           # noqa: E402
+from tfcta.research.analysis import screen, stats           # noqa: E402
+from tfcta.research.backtest import costs, engine           # noqa: E402
+from tfcta.research.workflow import context                 # noqa: E402
 
 LOGIC = {
     '时间戳': ['ts_high', 'ts_low'],
@@ -45,21 +50,22 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--symbols', nargs='*', default=None)
     ap.add_argument('--no-combos', action='store_true', help='跳过第 3 部分的组合回测')
+    ap.add_argument('--no-heterogeneity', action='store_true',
+                    help='跳过第 4 部分的稳定性与板块异质性')
     args = ap.parse_args()
 
-    reason = jobs.not_ready_reason()
+    reason = context.not_ready_reason()
     if reason:
         print(reason)
         return 2
-    universe, symbols, day_ret = jobs.load_context(args.symbols)
+    universe, symbols, day_ret = context.load_context(args.symbols)
     if not symbols or day_ret.empty:
         print("品种池与分片没有交集，或日收益为空。")
         return 2
-    C.assert_no_holdout_dates(day_ret.index, what='日收益')
-    years = [f['test_year'] for f in protocol.walk_forward_folds()]
-    fwd = panel.forward_return(day_ret)
+    years = [f['test_year'] for f in engine.walk_forward_folds()]
+    fwd = B.forward_return(day_ret)
     try:
-        sig = signals.load(symbols)
+        sig = library.load(symbols)
     except (FileNotFoundError, KeyError) as e:
         print(f"读不到因子缓存：{str(e).splitlines()[0]}\n请先运行 step3_build_factors.py。")
         return 2
@@ -71,8 +77,7 @@ def main() -> int:
     # 1. 符号闸门
     gate_tabs = []
     for name in C.PRIOR_FACTORS:
-        raw = sig.signed[name] * C.FACTOR_SIGNS[name]          # 还原成原始方向再验符号
-        gate_tabs.append(stats.factor_ic_table(raw, fwd, universe, name, years))
+        gate_tabs.append(stats.factor_ic_table(sig.raw(name), fwd, universe, name, years))
     gate_all = pd.concat(gate_tabs, ignore_index=True)
     fmt = {'display.width': 220, 'display.max_rows': 400, 'display.max_columns': 30,
            'display.float_format': lambda v: f'{v:+.4f}'}
@@ -100,21 +105,21 @@ def main() -> int:
     # 3. 逻辑组合
     combo_tab = pd.DataFrame()
     if not args.no_combos:
-        slip, note = jobs.load_slippage(symbols, day_ret.index, C.SLIPPAGE_TICKS)
-        signed_z = {n: signals.trail_z(sig.signed[n]) for vs in LOGIC.values() for n in vs}
+        slip, note = costs.research_slippage(symbols, day_ret.index, C.SLIPPAGE_TICKS)
+        signed_z = {n: library.trail_z(sig.signed[n]) for vs in LOGIC.values() for n in vs}
 
         def pack(label: str, names: list[str]) -> dict:
-            wide = book.average_signals([signed_z[n] for n in names])
+            wide = library.average_signals([signed_z[n] for n in names])
             tab = stats.factor_ic_table(wide, fwd, universe, label, years)
             row = tab[tab['fold'] == 'mean_of_folds'].iloc[0]
-            pos = panel.execute_position(execution.weekly(wide.clip(-1, 1)))
-            port = book.run_book(pos, day_ret, universe, C.FEE_BASE, slippage=slip)
-            perf = stats.performance(protocol.stitch_test_years(port, years))
+            pos = engine.execute_position(engine.weekly(wide.clip(-1, 1)))
+            port = engine.run_book(pos, day_ret, universe, C.FEE_BASE, slippage=slip)
+            perf = stats.performance(engine.stitch_test_years(port, years))
             return {'combo': label, 'members': ','.join(names), 'n': len(names),
                     'ic_ts': row['ic_ts'], 't': row['t'],
                     'ann_return': perf['ann_return'], 'ann_vol': perf['ann_vol'],
                     'ret_risk': perf['ret_risk'], 'max_drawdown': perf['max_drawdown'],
-                    'turnover': stats.annual_turnover(pos, universe, years)}
+                    'turnover': engine.annual_turnover(pos, universe, years)}
 
         ts, dur = LOGIC['时间戳'], LOGIC['持续期']
         pv_all = [n for g in PV_LOGICS for n in LOGIC[g]]
@@ -143,13 +148,17 @@ def main() -> int:
                              'turnover', 't']].to_string(index=False))
 
     C.ensure_dirs()
-    run = jobs.run_dir('step4')
+    run = context.run_dir('step4')
     outputs = [(gate_all, 'ic_by_fold.csv'), (all_tab, 'factor_ic_all.csv')]
     if not combo_tab.empty:
         outputs.append((combo_tab, 'logic_combo_ic.csv'))
     for tab, fname in outputs:
         tab.to_csv(run / fname, index=False, encoding='utf-8-sig')
         tab.to_csv(C.RESEARCH_OUT_DIR / fname, index=False, encoding='utf-8-sig')
+
+    # 4. 稳定性与异质性
+    if not args.no_heterogeneity:
+        screen.write_heterogeneity(sig, fwd, universe, symbols, years, run)
     print(f"\n留痕 {run}")
 
     gate = gate_all[gate_all['fold'] == 'mean_of_folds']

@@ -21,8 +21,8 @@ import pytest
 
 from tfcta import config as C
 from tfcta.data import shard_io, synth
-from tfcta.factors import duration as D
-from tfcta.factors import factor_cache as FC
+from tfcta.factors import intraday as D
+from tfcta.factors import cache as FC
 
 
 def _diff_and_codes(n_days=40, bars=30, seed=5):
@@ -119,7 +119,7 @@ def test_duration_factors_differ_across_combos():
 def test_injected_thresholds_match_recomputed():
     """build_symbol 走的是注入阈值的快路径，结果必须与 duration_factors 自算一致。"""
     from tfcta.data import sessions
-    from tfcta.factors.factors import duration_factors
+    from tfcta.factors.intraday import duration_factors
     root, df, combos = _tiny_cache()
     _build(root, combos)
     n, m = combos[0]

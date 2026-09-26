@@ -1,4 +1,15 @@
-"""第 3 步：先抽查持续期，通过后再计算并落盘日频因子。
+"""第 3 步：构造全部因子。
+
+1. 持续期抽查，不过就停；
+2. 时间戳、持续期因子按品种落盘（分钟级，最慢）；
+3. 外部数据因子按时间分区落盘（研究期、2022 验证期；样本外须 --oos-end 且该日已过）；
+4. 装配全部日频因子，写因子目录 factor_catalog.csv，第 5-7 步按目录选因子。
+
+以后新因子都在这一步构造，不要再另开构造脚本：
+    分钟级因子写进 factors/intraday.py（落盘在 factors/cache.py），
+    外部数据因子写进 factors/external.py，
+    日频量价/慢信号写进 factors/daily.py 并在 factors/library.py::assemble 登记。
+    三处都会自动进入因子目录。
 """
 from __future__ import annotations
 
@@ -16,8 +27,11 @@ from tfcta import config as C            # noqa: E402
 from tfcta.data import sessions           # noqa: E402
 from tfcta.data import shard_io           # noqa: E402
 from tfcta.data import universe as U      # noqa: E402
-from tfcta.factors import duration as D   # noqa: E402
-from tfcta.factors import factor_cache as FC  # noqa: E402
+from tfcta.factors import cache as FC     # noqa: E402
+from tfcta.factors import external as EXT  # noqa: E402
+from tfcta.factors import intraday as D   # noqa: E402
+from tfcta.factors import library         # noqa: E402
+from tfcta.research.backtest import engine, strategy  # noqa: E402
 
 MIN_NON_NULL = 0.90
 SKEW_MIN = 3.0
@@ -117,18 +131,139 @@ def pick_symbols(explicit: list[str] | None) -> tuple[list[str], str]:
     return have, '全部研究期分片（未找到品种池，退回全量）'
 
 
+def build_external(partitions: list[str], symbols: list[str] | None,
+                   oos_end) -> int:
+    print("\n" + "-" * 92)
+    print(f"外部因子  分区 {partitions}"
+          f"{f'  样本外截止 {oos_end}' if oos_end else ''}")
+    print("-" * 92)
+    failed = False
+    for partition in partitions:
+        try:
+            results = EXT.build_partition(
+                partition, symbols, end=oos_end if partition == 'holdout_locked' else None)
+        except Exception as exc:
+            print(f"{partition} 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        written = sum(item.get('rows', 0) > 0 for item in results.values())
+        print(f"{partition}: {written}/{len(results)} 个品种已写入")
+    print(f"外部因子目录: {EXT.EXTERNAL_FACTOR_ROOT}")
+    return 1 if failed else 0
+
+
+def build_catalog(symbols: list[str], run: Path) -> pd.DataFrame:
+    """研究期全部因子的来源、方向和池内覆盖率。只读研究期。"""
+    sig = library.load(symbols)
+    universe = U.load_universe()
+    index = sig.bars['close'].index
+    study = (index >= pd.Timestamp(C.STUDY_START)) & (index <= pd.Timestamp(C.RESEARCH_END))
+    columns = sig.bars['close'].columns
+    mask = engine.universe_mask(index, columns, universe).to_numpy() & study[:, None]
+    covered = int(mask.sum())
+    rows = []
+    for name in [*sig.signed, *sig.unsigned]:
+        wide = sig.signed.get(name, sig.unsigned.get(name))
+        wide = wide.reindex(index=index, columns=columns)
+        present = int((wide.notna().to_numpy() & mask).sum())
+        valid = wide.dropna(how='all').index
+        if name in C.FACTOR_SIGNS:
+            source = '分钟缓存'
+        elif name in library.EXTERNAL_FAMILIES:
+            source = '外部数据'
+        else:
+            source = '日频装配'
+        prior = library.SIGNED_PRIORS.get(name) if name in sig.signed else None
+        rows.append({
+            'factor': name,
+            'family': sig.family[name],
+            'source': source,
+            'directed': name in sig.signed,
+            'prior_sign': prior,
+            'spec': name if prior is not None else f'{name}:+1 或 {name}:-1',
+            'in_pool_coverage': present / covered if covered else np.nan,
+            'n_symbols': int(wide.notna().any().sum()),
+            'first': valid.min().date().isoformat() if len(valid) else None,
+        })
+    table = pd.DataFrame(rows)
+    C.ensure_dirs()
+    table.to_csv(strategy.factor_catalog_path(), index=False, encoding='utf-8-sig')
+    table.to_csv(run / 'factor_catalog.csv', index=False, encoding='utf-8-sig')
+    return table
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--symbols', nargs='*', default=None)
     ap.add_argument('--combos', nargs='*', default=None,
                     help='形如 N250_M55；省略则只算周频书用的那一组')
     ap.add_argument('--overwrite', action='store_true')
+    ap.add_argument('--no-timestamp', action='store_true',
+                    help='不重算时间戳族（只改了持续期族公式时配合 --overwrite 用）')
     ap.add_argument('--health-combo', default=None,
                     help='用哪个组合做因子健康度验收，默认取中间那组')
+    ap.add_argument('--external-partitions', nargs='*', choices=EXT.PARTITIONS,
+                    default=['research', 'validation_2022'],
+                    help='外部因子分区；holdout_locked 需要同时给 --oos-end')
+    ap.add_argument('--oos-end', default=None,
+                    help='样本外外部因子的截止日期，必须已经过去')
+    ap.add_argument('--no-external', action='store_true', help='跳过外部因子')
+    ap.add_argument('--no-catalog', action='store_true', help='跳过因子目录')
+    ap.add_argument('--skip-minute', action='store_true',
+                    help='跳过持续期抽查和分钟级因子，只重建外部因子和因子目录')
     args = ap.parse_args()
+
+    oos_end = None
+    if 'holdout_locked' in args.external_partitions and not args.no_external:
+        if not args.oos_end:
+            print('构造 holdout_locked 外部因子必须给出 --oos-end。')
+            return 2
+        oos_end = C.to_date(args.oos_end)
+        try:
+            C.assert_test_window_closed(oos_end)
+        except C.HoldoutViolation as exc:
+            print(exc)
+            return 1
+
+    C.ensure_dirs()
+    run = C.RUNS_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_step3"
+    run.mkdir(parents=True, exist_ok=True)
+
+    minute_code = 0
+    if not args.skip_minute:
+        minute_code, stop = build_minute_factors(args, run)
+        if stop:
+            return minute_code
+
+    external_code = 0
+    if not args.no_external:
+        symbols = [s.upper() for s in args.symbols] if args.symbols else None
+        external_code = build_external(args.external_partitions, symbols, oos_end)
+
+    if not args.no_catalog:
+        syms, _ = pick_symbols(args.symbols)
+        print("\n" + "-" * 92)
+        print(f"因子目录（研究期，{len(syms)} 个品种）")
+        print("-" * 92)
+        catalog = build_catalog(syms, run)
+        with pd.option_context('display.width', 200, 'display.max_rows', 200,
+                               'display.float_format', lambda v: f'{v:.3f}'):
+            print(catalog[['factor', 'family', 'source', 'prior_sign',
+                           'in_pool_coverage', 'n_symbols', 'first']].to_string(index=False))
+        print(f"目录: {strategy.factor_catalog_path()}")
+
+    print(f"\n留痕 {run}")
+    if minute_code or external_code:
+        return 1
+    print("第 3 步完成，可以进入第 4 步。")
+    return 0
+
+
+def build_minute_factors(args, run: Path) -> tuple[int, bool]:
+    """返回 (退出码, 是否停止后续)。抽查不过或前置缺失时停止；健康度不过则继续但最终返回 1。"""
     probe_code = run_duration_probe()
     if probe_code != 0:
-        return probe_code
+        return probe_code, True
 
     all_combos = FC.combo_grid()
     if args.combos:
@@ -138,14 +273,14 @@ def main() -> int:
         if unknown:
             print(f"未知组合 {sorted(unknown)}；可用: "
                   f"{[FC.combo_name(*c) for c in all_combos]}")
-            return 2
+            return 2, True
     else:
         combos = all_combos
 
     syms, how = pick_symbols(args.symbols)
     if not syms:
         print(f"没有可用分片，请先运行 step1_shard_minutes.py\n路径: {C.RESEARCH_DIR}")
-        return 2
+        return 2, True
 
     print("=" * 92)
     print(f"日频因子缓存  {len(syms)} 个品种 × {len(combos)} 个参数组合"
@@ -159,7 +294,8 @@ def main() -> int:
     infos = []
     for i, s in enumerate(syms, 1):
         t1 = time.time()
-        info = FC.build_symbol(s, combos, overwrite=args.overwrite)
+        info = FC.build_symbol(s, combos, overwrite=args.overwrite,
+                               timestamp=not args.no_timestamp)
         infos.append(info)
         tag = ('跳过（已存在）' if info['skipped']
                else f"{info['combos_written']} 组"
@@ -173,7 +309,7 @@ def main() -> int:
         match = [c for c in combos if FC.combo_name(*c) == args.health_combo]
         if not match:
             print(f"--health-combo {args.health_combo} 不在本次组合内")
-            return 2
+            return 2, True
         health_combo = match[0]
 
     print("\n" + "-" * 92)
@@ -183,7 +319,7 @@ def main() -> int:
     panel = FC.load_panel(*health_combo, symbols=syms)
     if panel.empty:
         print("面板为空，无法验收")
-        return 1
+        return 1, True
     health = FC.panel_health(panel)
     table = FC.check_acceptance(health, MIN_NON_NULL)
 
@@ -193,8 +329,6 @@ def main() -> int:
                      'min', 'p50', 'max', 'passed', 'reason']])
 
     # ---------------- 留痕 ----------------
-    run = C.RUNS_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_step3"
-    run.mkdir(parents=True, exist_ok=True)
     table.to_csv(run / 'factor_health.csv', encoding='utf-8-sig')
     pd.DataFrame(infos).to_csv(run / 'build_log.csv', index=False, encoding='utf-8-sig')
     FC.write_manifest(run / 'manifest.json', {
@@ -218,15 +352,14 @@ def main() -> int:
     })
 
     failed = table.index[~table['passed']].tolist()
-    print(f"\n留痕 {run}")
     print(f"因子 {panel.shape[1]} 个，日频观测 {panel.shape[0]:,} 行")
     if failed:
         print(f"验收不通过的因子 {len(failed)} 个:")
         for f in failed:
             print(f"    {f:<18} {table.loc[f, 'reason']}")
-        return 1
-    print(f"全部 {len(table)} 个因子通过验收，可以进入第 4 步。")
-    return 0
+        return 1, False
+    print(f"分钟级因子 {len(table)} 项全部通过验收。")
+    return 0, False
 
 
 if __name__ == '__main__':

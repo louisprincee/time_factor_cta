@@ -78,6 +78,17 @@ def list_shards(directory: Path) -> list[str]:
     return sorted(names)
 
 
+def read_frame(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
+    """按扩展名读一个分片或因子文件。不做样本外检查，调用方先验路径。"""
+    path = Path(path)
+    if path.suffix == PARQUET_EXT:
+        return pd.read_parquet(path, columns=columns)
+    df = pd.read_pickle(path)
+    if columns:
+        df = df[[c for c in columns if c in df.columns]]
+    return df
+
+
 def load_shard(symbol: str,
                directory: Path | None = None,
                columns: list[str] | None = None,
@@ -98,13 +109,7 @@ def load_shard(symbol: str,
         raise FileNotFoundError(f"找不到 {symbol} 的分片: {directory}")
     C.assert_research_only(p)
 
-    if p.suffix == PARQUET_EXT:
-        df = pd.read_parquet(p, columns=columns)
-    else:
-        df = pd.read_pickle(p)
-        if columns:
-            df = df[[c for c in columns if c in df.columns]]
-
+    df = read_frame(p, columns)
     if 'trading_date' in df.columns:
         df['trading_date'] = pd.to_datetime(df['trading_date'])
         if verify_dates:
@@ -122,13 +127,7 @@ def load_validation_shard(symbol: str,
         raise FileNotFoundError(f"找不到 {symbol} 的 2022 验证分片: {directory}")
     C.assert_validation_only(p)
 
-    if p.suffix == PARQUET_EXT:
-        df = pd.read_parquet(p, columns=columns)
-    else:
-        df = pd.read_pickle(p)
-        if columns:
-            df = df[[c for c in columns if c in df.columns]]
-
+    df = read_frame(p, columns)
     if 'trading_date' not in df.columns:
         raise KeyError(f"{symbol} 的验证分片缺少 trading_date")
     df['trading_date'] = pd.to_datetime(df['trading_date'])
@@ -137,30 +136,9 @@ def load_validation_shard(symbol: str,
 
 
 def load_holdout_trading_dates(symbol: str) -> pd.DatetimeIndex:
-    """Expose only strict-OOS trading dates for segregated feature alignment."""
-    directory = C.HOLDOUT_DIR
-    p = find_shard(directory, symbol)
-    if p is None:
-        raise FileNotFoundError(f"找不到 {symbol} 的锁定分片: {directory}")
-    C.assert_holdout_only(p)
+    """只读锁定分片的日历列，供外部因子对齐。
 
-    if p.suffix == PARQUET_EXT:
-        df = pd.read_parquet(p, columns=['trading_date'])
-    else:
-        df = pd.read_pickle(p)[['trading_date']]
-
-    dates = pd.DatetimeIndex(pd.to_datetime(df['trading_date']).dt.normalize().unique())
-    dates = dates[dates >= pd.Timestamp(C.STRICT_OOS_START)].sort_values()
-    C.assert_strict_oos_dates(dates, what=f"{symbol} OOS 交易日历")
-    dates.name = 'trading_date'
-    return dates
-
-
-def load_holdout_trading_dates(symbol: str) -> pd.DatetimeIndex:
-    """Read only the calendar column from a locked shard for feature alignment.
-
-    This intentionally exposes no prices, volume, or returns. The returned dates
-    are restricted to strict OOS and must not be used to evaluate strategy results.
+    不暴露价格、成交量或收益。返回的日期限于严格样本外，不得用来评估策略。
     """
     directory = C.HOLDOUT_DIR
     p = find_shard(directory, symbol)
@@ -168,14 +146,39 @@ def load_holdout_trading_dates(symbol: str) -> pd.DatetimeIndex:
         raise FileNotFoundError(f"找不到 {symbol} 的锁定分片: {directory}")
     C.assert_holdout_only(p)
 
-    if p.suffix == PARQUET_EXT:
-        df = pd.read_parquet(p, columns=['trading_date'])
-    else:
-        df = pd.read_pickle(p)[['trading_date']]
-
+    df = read_frame(p, ['trading_date'])
     dates = pd.DatetimeIndex(pd.to_datetime(df['trading_date']).dt.normalize().unique())
-    dates = dates[dates >= pd.Timestamp(C.STRICT_OOS_START)]
-    dates = dates.sort_values()
+    dates = dates[dates >= pd.Timestamp(C.STRICT_OOS_START)].sort_values()
     C.assert_strict_oos_dates(dates, what=f"{symbol} 锁定交易日历")
     dates.name = 'trading_date'
     return dates
+
+
+def load_oos_shard(symbol: str,
+                   end,
+                   columns: list[str] | None = None,
+                   today=None) -> pd.DataFrame:
+    """读取已经结束的严格样本外窗口。窗口未结束时不打开文件。"""
+    end_day = C.to_date(end)
+    if end_day < C.STRICT_OOS_START:
+        raise C.HoldoutViolation(
+            f"样本外窗口必须从 {C.STRICT_OOS_START} 起，收到的截止日期是 {end_day}"
+        )
+    C.assert_test_window_closed(end_day, today=today)
+
+    directory = C.HOLDOUT_DIR
+    p = find_shard(directory, symbol)
+    if p is None:
+        raise FileNotFoundError(f"找不到 {symbol} 的样本外分片: {directory}")
+    C.assert_holdout_only(p)
+    df = read_frame(p, columns)
+    if 'trading_date' not in df.columns:
+        raise KeyError(f"{symbol} 的样本外分片缺少 trading_date")
+    df['trading_date'] = pd.to_datetime(df['trading_date'])
+    start = pd.Timestamp(C.STRICT_OOS_START)
+    stop = pd.Timestamp(end_day)
+    df = df[(df['trading_date'] >= start) & (df['trading_date'] <= stop)]
+    C.assert_strict_oos_dates(df['trading_date'], what=f"{symbol} 样本外分片")
+    if len(df) and pd.Timestamp(df['trading_date'].max()) > stop:
+        raise C.HoldoutViolation(f"{symbol} 样本外分片超出截止日期 {end_day}")
+    return df.sort_index(kind='mergesort')

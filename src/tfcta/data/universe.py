@@ -119,9 +119,17 @@ def collect_stats(symbols: list[str] | None = None,
                   f"{d.index.min().date()}..{d.index.max().date()}", flush=True)
         del df
 
+    stats = stats_from_daily(daily_by_symbol)
+    if len(stats):
+        C.assert_no_holdout_dates(
+            pd.to_datetime(stats['year'].astype(str) + '-01-01'), what='品种池统计')
+    return stats
+
+
+def stats_from_daily(daily_by_symbol: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """{品种: 日度统计} → 长表 ``(symbol, year, ...)``，完整度分母是全部品种的交易日并集。"""
     if not daily_by_symbol:
         return pd.DataFrame(columns=['symbol', 'year'] + YEAR_STAT_COLS)
-
     cal = market_calendar(daily_by_symbol)
     frames = []
     for sym, d in daily_by_symbol.items():
@@ -129,9 +137,6 @@ def collect_stats(symbols: list[str] | None = None,
         y.insert(0, 'symbol', sym)
         frames.append(y)
     stats = pd.concat(frames, ignore_index=True).sort_values(['symbol', 'year'])
-
-    C.assert_no_holdout_dates(
-        pd.to_datetime(stats['year'].astype(str) + '-01-01'), what='品种池统计')
     return stats.reset_index(drop=True)
 
 
@@ -251,3 +256,47 @@ def load_universe(path=None) -> dict[int, list[str]]:
     p = path or (C.UNIVERSE_DIR / 'universe_by_year.json')
     raw = json.loads(open(p, encoding='utf-8').read())
     return {int(k): list(v) for k, v in raw.items()}
+
+
+# --------------------------------------------------------------------------
+# 2022 验证与样本外：同一口径，第 y 年只用第 y-1 年
+# --------------------------------------------------------------------------
+def validation_universe() -> tuple[list[str], pd.DataFrame]:
+    """2022 的池子，用第 2 步落盘的研究期逐年统计（即 2021 年）判定。"""
+    path = C.UNIVERSE_DIR / 'yearly_stats.csv'
+    if not path.exists():
+        raise FileNotFoundError(f"找不到 {path}，请先运行 step2_universe.py")
+    stats = pd.read_csv(path)
+    C.assert_no_holdout_dates(
+        pd.to_datetime(stats['year'].astype(str) + '-01-01'), what='2022 品种池统计')
+    detail = screen_year(stats, C.VALIDATION_YEAR)
+    return sorted(detail.index[detail['passed']]), detail
+
+
+def oos_years(end) -> list[int]:
+    return list(range(C.STRICT_OOS_START.year, C.to_date(end).year + 1))
+
+
+def oos_universe(symbols: list[str], end) -> tuple[dict[int, list[str]], pd.DataFrame]:
+    """样本外各年的池子。只读 2022 验证分片和截至 ``end`` 的样本外分片。"""
+    end = C.to_date(end)
+    C.assert_test_window_closed(end)
+    daily = {}
+    for sym in symbols:
+        parts = []
+        if shard_io.find_shard(C.VALIDATION_DIR, sym) is not None:
+            parts.append(shard_io.load_validation_shard(sym, columns=STAT_COLUMNS))
+        if shard_io.find_shard(C.HOLDOUT_DIR, sym) is not None:
+            parts.append(shard_io.load_oos_shard(sym, end=end, columns=STAT_COLUMNS))
+        if parts:
+            daily[sym] = daily_stats(pd.concat(parts).sort_index(kind='mergesort'))
+    stats = stats_from_daily(daily)
+    if stats.empty:
+        return {}, pd.DataFrame()
+    universe, details = {}, []
+    for year in oos_years(end):
+        d = screen_year(stats, year)
+        universe[year] = sorted(d.index[d['passed']]) if len(d) else []
+        if len(d):
+            details.append(d.reset_index().rename(columns={'index': 'symbol'}).assign(year=year))
+    return universe, (pd.concat(details, ignore_index=True) if details else pd.DataFrame())

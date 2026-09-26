@@ -41,7 +41,7 @@ FACTOR_DAILY_DIR = DATA_ROOT / "factor_daily"
 UNIVERSE_DIR = DATA_ROOT / "universe"
 RUNS_DIR = Path(_os.environ.get("TFCTA_RUNS_ROOT", PROJECT_ROOT / "runs"))
 CONFIG_DIR = Path(_os.environ.get("TFCTA_CONFIG_DIR", PROJECT_ROOT / "config"))
-# 第 5-11 步的研究产物（IC、参数扫描、选参、组合、费率）。
+# 第 3-5 步的研究产物（因子目录、IC、异质性、回测、tick 表）。
 # runs/ 是每次运行的留痕快照；这里是下游步骤接着读的最新一份。
 RESEARCH_OUT_DIR = DATA_ROOT / "research"
 
@@ -50,7 +50,9 @@ RESEARCH_OUT_DIR = DATA_ROOT / "research"
 # --------------------------------------------------------------------------
 HOLDOUT_START = _dt.date(2022, 1, 1)      # 研究期硬边界：>= 此日期禁止接触
 VALIDATION_END = _dt.date(2022, 12, 31)
+VALIDATION_YEAR = HOLDOUT_START.year
 STRICT_OOS_START = _dt.date(2023, 1, 1)
+DEFAULT_OOS_END = _dt.date(2025, 12, 31)
 RESEARCH_END = _dt.date(2021, 12, 31)
 
 WARMUP_START = _dt.date(2014, 7, 1)       # 阈值+信号双层滚动预热（约 360 个交易日）
@@ -109,8 +111,8 @@ NIGHT_BARS_0100 = 285          # 21:00-01:00 约 240 分钟
 # --------------------------------------------------------------------------
 # 因子计算实际需要的字段（设计文档第 3.1 节）。丢掉 dominant_id 这个 object 列是省内存的关键。
 FACTOR_FIELDS = [
-    'closew',          # 价格持续期 / FP / DFP
-    'close',           # 归一化分母（框架惯例：信号用复权价，量纲用原始价）
+    'closew',          # 价格持续期（加法复权，价差不受换月跳变影响）
+    'close',           # FP 与 DFP 分母（比例量一律用原始价）
     'highw', 'loww',   # 日内极值时间戳
     'volume',          # 成交量持续期 / 量峰时间戳
     'total_turnover',  # 成交额峰值时间戳 + 流动性筛选
@@ -158,7 +160,7 @@ IC_REFERENCE_LOOKBACK = 250
 IC_REFERENCE_PCT = 55.0
 IC_MIN_OBS = 60
 
-# IC 显著性的**时序**口径（research/stats.py::ic_period_series / timeseries_t）。
+# IC 显著性的**时序**口径（research/analysis/stats.py::ic_period_series / timeseries_t）。
 # 一期（默认一个自然月）先在品种内求 mean(事前 z × 事前波动标准化收益)、再在期内对
 # 品种取平均，得到一条 IC 时间序列，t 值是这条序列均值的 Newey-West t。
 # 不在期内算相关：持续性因子的期内去均值有 Stambaugh 型负偏差。分母来自时间上的变异，商品之间
@@ -260,6 +262,25 @@ def assert_strict_oos_dates(index_or_series, what: str = "data") -> None:
         raise HoldoutViolation(
             f"{what} 必须只含 {STRICT_OOS_START} 及以后的日期，"
             f"实际最早为 {ts.min().date()}"
+        )
+
+
+def to_date(value) -> _dt.date:
+    """字符串、datetime、date、Timestamp 统一成 date。"""
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    return _dt.date.fromisoformat(str(value)[:10])
+
+
+def assert_test_window_closed(end, today=None) -> None:
+    """测试期的最后一天必须已经过去。否则拒绝执行，调用方不得继续读数。"""
+    today = _dt.date.today() if today is None else to_date(today)
+    end = to_date(end)
+    if today <= end:
+        raise HoldoutViolation(
+            f"测试期尚未结束（截止 {end}，今天 {today}），拒绝执行。"
         )
 
 

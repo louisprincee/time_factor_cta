@@ -1,4 +1,4 @@
-"""第 5-11 步的口径测试。
+"""研究层与回测引擎的口径测试。
 
 锁住的是几件静默就会算错的事：收益公式、信号不含当日、仓位晚一天成交、
 手续费与滑点按换手扣除、IC 一折必须切时间、显著性用时序而非横截面 t、
@@ -13,7 +13,10 @@ import pytest
 
 from tfcta import config as C
 from tfcta.data import synth
-from tfcta.research import combo, costs, folds, ic, metrics, returns
+from tfcta.data import bars as returns
+from tfcta.factors import library
+from tfcta.research.analysis import stats as ic
+from tfcta.research.backtest import costs, engine
 
 
 def test_day_return_matches_framework_formula():
@@ -49,11 +52,11 @@ def test_load_day_returns_refuses_holdout():
 def test_position_earns_next_day_not_same_day():
     idx = pd.bdate_range('2016-01-04', periods=4)
     sig = pd.DataFrame({'RB': [1.0, 0.0, 0.0, 0.0]}, index=idx)
-    pos = returns.execute_position(sig)
+    pos = engine.execute_position(sig)
     assert np.isnan(pos['RB'].iloc[0])
     assert pos['RB'].iloc[1] == 1.0
     day_ret = pd.DataFrame({'RB': [0.05, -0.01, 0.02, 0.03]}, index=idx)
-    net = combo.symbol_net(pos, day_ret, fee=0.0)
+    net = engine.symbol_net(pos, day_ret, fee=0.0)
     # 第一天还没持仓；第二天赚的是 -0.01，不是第一天的 0.05
     assert net['RB'].iloc[0] == 0.0
     assert net['RB'].iloc[1] == pytest.approx(-0.01)
@@ -64,7 +67,7 @@ def test_fee_is_one_way_turnover():
     pos = pd.DataFrame({'RB': [0.0, 1.0, 1.0, -1.0]}, index=idx)
     day_ret = pd.DataFrame({'RB': [0.01, 0.01, 0.01, 0.01]}, index=idx)
     fee = 0.001
-    net = combo.symbol_net(pos, day_ret, fee)
+    net = engine.symbol_net(pos, day_ret, fee)
     # 换手 0, 1, 0, 2
     assert net['RB'].iloc[0] == pytest.approx(0.0)
     assert net['RB'].iloc[1] == pytest.approx(0.01 - fee)
@@ -77,7 +80,7 @@ def test_portfolio_ignores_symbols_outside_the_year():
     idx = pd.to_datetime(['2016-01-04', '2017-01-04'])
     net = pd.DataFrame({'RB': [0.02, 0.02], 'CU': [0.10, 0.10]}, index=idx)
     universe = {2016: ['RB'], 2017: ['RB', 'CU']}
-    port = combo.portfolio_return(net, universe)
+    port = engine.portfolio_return(net, universe)
     assert port.iloc[0] == pytest.approx(0.02)
     assert port.iloc[1] == pytest.approx(0.06)
 
@@ -93,7 +96,7 @@ def test_pool_exit_fee_lands_inside_the_pool():
     pos = pd.DataFrame({'RB': [1.0] * 4, 'CU': [1.0] * 4}, index=idx)
     universe = {2016: ['RB', 'CU'], 2017: ['CU']}    # RB 在 2016 年末退池
     fee = 0.001
-    port = combo.run_book(pos, day_ret, universe, fee)
+    port = engine.run_book(pos, day_ret, universe, fee)
     # 12-29 两个品种各建仓一次；12-30 是 RB 最后一个在池日，只有 RB 付平仓费
     assert port.iloc[0] == pytest.approx(-fee)
     assert port.iloc[1] == pytest.approx(-fee / 2)
@@ -106,7 +109,7 @@ def test_mid_series_nan_gap_is_not_charged_twice():
     day_ret = pd.DataFrame({'RB': [0.0] * 4}, index=idx)
     pos = pd.DataFrame({'RB': [1.0, np.nan, np.nan, 1.0]}, index=idx)
     fee = 0.001
-    port = combo.run_book(pos, day_ret, {2016: ['RB'], 2017: ['RB']}, fee)
+    port = engine.run_book(pos, day_ret, {2016: ['RB'], 2017: ['RB']}, fee)
     assert port.iloc[0] == pytest.approx(-fee)     # 建仓
     assert port.iloc[1] == pytest.approx(-fee)     # 平掉，只收一次
     assert port.iloc[2] == pytest.approx(0.0)
@@ -116,7 +119,7 @@ def test_mid_series_nan_gap_is_not_charged_twice():
 def test_metrics_hand_values():
     # 两天 +10%、-5%：净值 1.1 * 0.95 = 1.045
     r = pd.Series([0.10, -0.05])
-    m = metrics.performance(r, periods=252)
+    m = ic.performance(r, periods=252)
     nav = 1.045
     ann = nav ** (252 / 2) - 1
     vol = float(r.std(ddof=1) * np.sqrt(252))
@@ -130,7 +133,7 @@ def test_metrics_hand_values():
 
 
 def test_walk_forward_folds():
-    rows = folds.walk_forward_folds()
+    rows = engine.walk_forward_folds()
     assert [r['test_year'] for r in rows] == [2016, 2017, 2018, 2019, 2020, 2021]
     assert rows[0]['train_start'] == 2013 and rows[0]['train_end'] == 2015
     assert rows[0]['sparse_night'] and rows[1]['sparse_night']
@@ -249,14 +252,14 @@ def test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor():
     旧口径在月内算 Spearman，对日间高度持续的因子，月内去均值带来 Stambaugh 型
     负偏差：这个样本上会给出 ic_ts≈-0.20、t≈-49，量价因子的"显著反转"就是这么来的。
     """
-    from tfcta.factors import tech
+    from tfcta.factors import daily
     rng = np.random.default_rng(0)
     idx = pd.bdate_range('2014-01-01', periods=1500)
     syms = [f'S{i}' for i in range(40)]
     px = pd.DataFrame(np.exp(np.cumsum(rng.normal(0, 0.015, (len(idx), 40)), axis=0)),
                       index=idx, columns=syms)
     fwd = returns.forward_return(px.pct_change())
-    factor = tech.rsi(px)
+    factor = daily.rsi(px)
     ser = ic.ic_period_series(factor, fwd, syms)
     res = ic.timeseries_t(ser)
     assert abs(res['ic_ts']) < 0.02
@@ -358,14 +361,14 @@ def test_slippage_is_charged_on_the_same_turnover_as_the_fee():
     day_ret = pd.DataFrame({'RB': [0.0] * 4}, index=idx)
     slip = pd.DataFrame({'RB': [0.002] * 4}, index=idx)
     fee = 0.001
-    net = combo.symbol_net(pos, day_ret, fee, slippage=slip)
+    net = engine.symbol_net(pos, day_ret, fee, slippage=slip)
     # 换手 0, 1, 0, 2；每单位换手扣 fee + slip
     assert net['RB'].iloc[0] == pytest.approx(0.0)
     assert net['RB'].iloc[1] == pytest.approx(-(fee + 0.002))
     assert net['RB'].iloc[2] == pytest.approx(0.0)
     assert net['RB'].iloc[3] == pytest.approx(-2 * (fee + 0.002))
     # 给标量就退化成"把费率调大"，这也是为什么标量版本没有研究价值
-    flat = combo.symbol_net(pos, day_ret, fee, slippage=0.002)
+    flat = engine.symbol_net(pos, day_ret, fee, slippage=0.002)
     pd.testing.assert_frame_equal(net, flat)
 
 
@@ -379,7 +382,7 @@ def test_missing_slippage_rate_cannot_poison_a_zero_turnover_day():
     pos = pd.DataFrame({'RB': [1.0, 1.0, 1.0]}, index=idx)
     day_ret = pd.DataFrame({'RB': [0.01, 0.02, 0.03]}, index=idx)
     slip = pd.DataFrame({'RB': [np.nan] * 3}, index=idx)
-    net = combo.symbol_net(pos, day_ret, fee=0.001, slippage=slip)
+    net = engine.symbol_net(pos, day_ret, fee=0.001, slippage=slip)
     # 第一天建仓（换手 1）费率缺失，只有这一天该是 NaN；后两天无换手，收益必须完好
     assert np.isnan(net['RB'].iloc[0])
     assert net['RB'].iloc[1] == pytest.approx(0.02)
@@ -389,6 +392,31 @@ def test_missing_slippage_rate_cannot_poison_a_zero_turnover_day():
 def test_combo_skips_nan_instead_of_filling_zero():
     a = pd.DataFrame({'JD': [1.0, -1.0]})
     b = pd.DataFrame({'JD': [np.nan, np.nan]})
-    out = combo.average_signals([a, b])
+    out = library.average_signals([a, b])
     assert out['JD'].iloc[0] == pytest.approx(1.0)
     assert out['JD'].iloc[1] == pytest.approx(-1.0)
+
+
+def test_reported_turnover_matches_charged_turnover_including_pool_entry_and_exit():
+    """报告的年换手必须与扣费的成交量一致：进池建仓、退池平仓都要计入，池外仓位不计。"""
+    idx = pd.to_datetime(['2016-12-29', '2016-12-30', '2017-01-03', '2017-01-04'])
+    pos = pd.DataFrame({'RB': [1.0] * 4, 'CU': [1.0, 1.0, -1.0, -1.0]}, index=idx)
+    universe = {2016: ['RB'], 2017: ['CU']}
+    # 2016：RB 建仓 1 + 退池平仓 1 = 2；2017：CU 进池从 0 建到 -1 = 1
+    assert engine.annual_turnover(pos, universe, [2016]) == pytest.approx(2.0)
+    assert engine.annual_turnover(pos, universe, [2017]) == pytest.approx(1.0)
+    assert engine.annual_turnover(pos, universe, [2016, 2017]) == pytest.approx(1.5)
+
+    day_ret = pd.DataFrame(0.0, index=idx, columns=pos.columns)
+    fee = 0.001
+    port = engine.run_book(pos, day_ret, universe, fee)
+    by_year = port.groupby(port.index.year).sum()
+    assert by_year[2016] == pytest.approx(-2 * fee)
+    assert by_year[2017] == pytest.approx(-1 * fee)
+
+
+def test_performance_and_sharpe_tolerate_tiny_samples():
+    for r in (pd.Series(dtype='float64'), pd.Series([0.01])):
+        m = ic.performance(r)
+        assert set(ic.METRIC_KEYS) <= set(m)
+        assert np.isnan(ic.sharpe_ratio(r))
