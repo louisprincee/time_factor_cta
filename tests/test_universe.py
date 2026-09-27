@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -25,10 +26,17 @@ def _minute_df(days, bars_per_day=10, night_bars=0, turnover=1.0,
     for k, d in enumerate(pd.DatetimeIndex(days)):
         stamps = []
         if night_bars:
-            prev = pd.DatetimeIndex(days)[k - 1] if k else d - pd.Timedelta(days=1)
-            stamps += [prev + pd.Timedelta(hours=21, minutes=m + 1)
+            if k:
+                prev = pd.DatetimeIndex(days)[k - 1]
+            else:
+                prev_d = d.date() - timedelta(days=1)
+                prev = pd.Timestamp(year=prev_d.year, month=prev_d.month, day=prev_d.day)
+            stamps += [pd.Timestamp(year=prev.year, month=prev.month, day=prev.day,
+                                    hour=21, minute=m + 1)
                        for m in range(night_bars)]
-        stamps += [d + pd.Timedelta(hours=9, minutes=m + 1) for m in range(bars_per_day)]
+        stamps += [pd.Timestamp(year=d.year, month=d.month, day=d.day,
+                                hour=9, minute=m + 1)
+                   for m in range(bars_per_day)]
         is_nan = d.normalize() in {pd.Timestamp(x).normalize() for x in nan_days}
         for ts in stamps:
             rows.append({'ts': ts, 'trading_date': d.normalize(),

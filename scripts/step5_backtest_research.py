@@ -26,11 +26,6 @@ from tfcta.research.backtest import strategy  # noqa: E402
 from tfcta.research.workflow import context  # noqa: E402
 
 OVERALL = f"{C.WF_TEST_YEARS_LIST[0]}-{C.WF_TEST_YEARS_LIST[-1]}"
-SUMMARY_COLUMNS = ["universe", "n_symbols", "gross_ann_return", "gross_sharpe",
-                   "net_ann_return", "net_sharpe", "net_max_drawdown", "turnover",
-                   "ic_ts", "ic_t"]
-YEAR_COLUMNS = ["universe", "period", "n_symbols", "net_ann_return", "net_sharpe",
-                "net_max_drawdown"]
 
 
 def main() -> int:
@@ -84,19 +79,15 @@ def main() -> int:
         "sharpe": "日均值 / 日标准差 × sqrt(252)，无风险利率 0",
     })
 
-    print(f"因子: {strategy.factor_label(cfg.factors)}（符号乘在原始值上）")
-    print(f"成本: 手续费 {cfg.fee_rate:.5f}；{cost_note}")
-    overall = table[table["period"] == OVERALL]
-    print(f"\n== 研究期 {OVERALL}（拼接测试年）")
-    strategy.print_table(overall, SUMMARY_COLUMNS)
-    yearly = table[table["period"] != OVERALL]
-    if not yearly.empty:
-        print("\n== 逐年")
-        strategy.print_table(yearly, YEAR_COLUMNS)
     empty = [case for case, members in cases.items() if not members]
+    note = f"因子 {strategy.factor_label(cfg.factors)}；{cost_note}"
     if empty:
-        print(f"\n这些池子在研究期品种池里没有品种: {empty}")
-    print(f"\n结果: {out}\n留痕: {run}")
+        note += f" 这些池子在研究期没有品种: {empty}"
+    C.report_step(5, passed=True, next_step=6, paths=[
+        (out, '研究期回测：整段与逐年的毛/净年化、Sharpe、回撤、换手、时序 IC'),
+        (run / 'params.json', '本次因子、板块、费率与滑点说明'),
+        (run, '上述结果的本次快照'),
+    ], note=note)
     return 0
 
 

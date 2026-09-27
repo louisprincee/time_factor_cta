@@ -303,3 +303,22 @@ def ensure_dirs() -> None:
               FACTOR_DAILY_DIR, UNIVERSE_DIR, RUNS_DIR, CONFIG_DIR,
               RESEARCH_OUT_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+def report_step(step: int, *, passed: bool, paths, next_step: int | None = None,
+                note: str = "") -> None:
+    """终端只报结论：是否通过、每个结果文件是什么、能不能进下一步。
+
+    ``paths`` 是 ``(路径, 说明)`` 列表。
+    """
+    print(f"第 {step} 步{'通过' if passed else '未通过'}。")
+    if note:
+        print(note)
+    print("结果：")
+    for path, desc in paths:
+        print(f"  {desc}")
+        print(f"    {path}")
+    if passed and next_step is not None:
+        print(f"可以进入第 {next_step} 步。")
+    elif not passed:
+        print("不要进入下一步。")

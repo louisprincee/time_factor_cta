@@ -62,7 +62,10 @@ def test_night_belongs_to_next_trading_date(sym):
     wall = ts.normalize()
     td = night['trading_date']
     assert (wall <= td).all()
-    assert (ts < td + pd.Timedelta(hours=C.AM_START.hour, minutes=C.AM_START.minute)).all()
+    open_clock = pd.to_datetime(td).map(
+        lambda x: pd.Timestamp(year=x.year, month=x.month, day=x.day,
+                               hour=C.AM_START.hour, minute=C.AM_START.minute))
+    assert (ts < open_clock).all()
     # 21:00 之后的段一定跨日
     late = ts.hour >= C.NIGHT_START_HOUR
     assert late.any()

@@ -16,8 +16,9 @@ from tfcta.data import shard_io
 
 def _frame(start: str = '2021-11-01', days: int = 5) -> pd.DataFrame:
     td = pd.bdate_range(start, periods=days)
-    idx = pd.DatetimeIndex([d + pd.Timedelta(hours=9, minutes=m + 1)
-                            for d in td for m in range(3)])
+    idx = pd.DatetimeIndex([
+        pd.Timestamp(year=d.year, month=d.month, day=d.day, hour=9, minute=m + 1)
+        for d in td for m in range(3)])
     return pd.DataFrame({
         'closew': range(len(idx)),
         'close': range(len(idx)),

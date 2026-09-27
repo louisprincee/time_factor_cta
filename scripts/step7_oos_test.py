@@ -28,9 +28,6 @@ from tfcta.research.backtest import costs, strategy  # noqa: E402
 from tfcta.research.workflow import context, history, ledger  # noqa: E402
 
 PARTITIONS = ["research", "validation_2022", "holdout_locked"]
-SUMMARY = ["universe", "n_symbols", "gross_ann_return", "gross_sharpe", "net_ann_return",
-           "net_sharpe", "net_max_drawdown", "turnover", "ic_ts", "ic_t"]
-YEARLY = ["universe", "period", "n_symbols", "net_ann_return", "net_sharpe", "net_max_drawdown"]
 
 
 def gate(cfg: strategy.BookConfig, end) -> tuple[list[str], list[str]]:
@@ -99,12 +96,7 @@ def main() -> int:
         return 2
     pool_2022, _ = U.validation_universe()
 
-    print(f"样本外 {C.STRICT_OOS_START} .. {end}，放行 {allowed}")
-    for year, symbols in oos_universe.items():
-        print(f"  {year} 年品种池 {len(symbols)} 个: {' '.join(symbols)}")
     hist = history.load_history(members, include_validation=True, oos_end=end)
-    for symbol, why in hist.skipped:
-        print(f"  跳过 {symbol}: {why}")
     loaded = sorted(hist.bars)
     universe = {**U.load_universe(),
                 C.VALIDATION_YEAR: [s for s in pool_2022 if s in loaded],
@@ -156,14 +148,16 @@ def main() -> int:
         "loaded": loaded, "skipped": hist.skipped, "external_partitions": PARTITIONS,
     })
 
-    print(f"\n因子: {strategy.factor_label(cfg.factors)}")
-    print(f"== 样本外 {label}")
-    strategy.print_table(overall, SUMMARY)
-    yearly = table[table["period"] != label]
-    if not yearly.empty:
-        print("\n== 逐年")
-        strategy.print_table(yearly, YEARLY)
-    print(f"\n已登记样本外台账: {ledger.oos_path()}\n留痕: {run}")
+    skipped = [f"{s}: {why}" for s, why in hist.skipped]
+    note = f"因子 {strategy.factor_label(cfg.factors)}；窗口 {label}；放行 {allowed}"
+    if skipped:
+        note += f"；跳过 {skipped}"
+    C.report_step(7, passed=True, paths=[
+        (ledger.oos_path(), '样本外台账（同一本书同一窗口只记一次）'),
+        (ledger.OOS_ROOT / "latest_performance.csv", '本次样本外整段与逐年绩效'),
+        (run / "params.json", '本次配置、放行/拒绝的池子、各年品种池'),
+        (run, '上述文件所在的本次留痕目录'),
+    ], note=note)
     return 0
 
 

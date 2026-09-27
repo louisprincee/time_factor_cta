@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -75,18 +74,16 @@ def probe(values, day_codes, keep, lookback: int, pct: float) -> dict:
     }
 
 
-def run_duration_probe() -> int:
+def run_duration_probe(run: Path) -> int:
     """抽查少数品种与年份。右偏不足或整段缺失时返回 1，拦住后面的因子计算。"""
     lookback = C.IC_REFERENCE_LOOKBACK
     pct = C.IC_REFERENCE_PCT
-    print(f"持续期抽查  品种 {PROBE_SYMBOLS}  年份 {PROBE_YEARS}"
-          f"  N={lookback}  M={pct}")
-    failed = False
+    rows, failed = [], False
     for sym in PROBE_SYMBOLS:
         try:
             df = shard_io.load_shard(sym, columns=['trading_date', *PROBE_COLS])
         except FileNotFoundError:
-            print(f"  {sym} 没有分片，请先运行 step1_shard_minutes.py")
+            print(f"{sym} 没有分片，请先运行 step1_shard_minutes.py")
             return 2
         df = sessions.add_intraday_coords(df)
         years = df['trading_date'].dt.year
@@ -94,24 +91,22 @@ def run_duration_probe() -> int:
         for year in PROBE_YEARS:
             keep = (years == year).to_numpy()
             if not keep.any():
-                print(f"  {sym} {year} 无数据，跳过")
+                rows.append({'symbol': sym, 'year': year, 'col': None,
+                             'passed': None, 'note': '无数据'})
                 continue
             for col in PROBE_COLS:
                 r = probe(df[col].to_numpy(dtype='float64'), codes, keep,
                           lookback, pct)
-                flag = ''
-                if r['all_nan'] or (np.isfinite(r['skew_ratio']) and r['skew_ratio'] < SKEW_MIN):
-                    flag = '  未通过'
-                    failed = True
-                skew = r['skew_ratio']
-                skew_s = f'{skew:.2f}' if np.isfinite(skew) else 'nan'
-                print(f"  {sym} {year} {col:<8} n={r['n']:<6} "
-                      f"nan={r['nan_ratio']:.2%} zero={r['zero_ratio']:.2%} "
-                      f"p95/p50={skew_s}{flag}")
+                ok = not (r['all_nan'] or (np.isfinite(r['skew_ratio'])
+                                           and r['skew_ratio'] < SKEW_MIN))
+                failed = failed or not ok
+                rows.append({'symbol': sym, 'year': year, 'col': col,
+                             'passed': ok, **r})
+    pd.DataFrame(rows).to_csv(run / 'duration_probe.csv', index=False,
+                              encoding='utf-8-sig')
     if failed:
-        print("持续期抽查未通过，因子计算已停止。")
+        print(f"持续期抽查未通过，明细: {run / 'duration_probe.csv'}")
         return 1
-    print("持续期抽查通过。")
     return 0
 
 
@@ -133,22 +128,14 @@ def pick_symbols(explicit: list[str] | None) -> tuple[list[str], str]:
 
 def build_external(partitions: list[str], symbols: list[str] | None,
                    oos_end) -> int:
-    print("\n" + "-" * 92)
-    print(f"外部因子  分区 {partitions}"
-          f"{f'  样本外截止 {oos_end}' if oos_end else ''}")
-    print("-" * 92)
     failed = False
     for partition in partitions:
         try:
-            results = EXT.build_partition(
+            EXT.build_partition(
                 partition, symbols, end=oos_end if partition == 'holdout_locked' else None)
         except Exception as exc:
             print(f"{partition} 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
             failed = True
-            continue
-        written = sum(item.get('rows', 0) > 0 for item in results.values())
-        print(f"{partition}: {written}/{len(results)} 个品种已写入")
-    print(f"外部因子目录: {EXT.EXTERNAL_FACTOR_ROOT}")
     return 1 if failed else 0
 
 
@@ -242,26 +229,29 @@ def main() -> int:
 
     if not args.no_catalog:
         syms, _ = pick_symbols(args.symbols)
-        print("\n" + "-" * 92)
-        print(f"因子目录（研究期，{len(syms)} 个品种）")
-        print("-" * 92)
-        catalog = build_catalog(syms, run)
-        with pd.option_context('display.width', 200, 'display.max_rows', 200,
-                               'display.float_format', lambda v: f'{v:.3f}'):
-            print(catalog[['factor', 'family', 'source', 'prior_sign',
-                           'in_pool_coverage', 'n_symbols', 'first']].to_string(index=False))
-        print(f"目录: {strategy.factor_catalog_path()}")
+        build_catalog(syms, run)
 
-    print(f"\n留痕 {run}")
+    paths = [
+        (C.FACTOR_DAILY_DIR, '日频因子缓存：时间戳族 + 持续期族（按品种）'),
+        (EXT.EXTERNAL_FACTOR_ROOT, '外部数据因子（按时间分区、按品种）'),
+        (run / 'duration_probe.csv', '持续期抽查（RB/CU/M 的偏度与缺失）'),
+        (run / 'factor_health.csv', '分钟级因子健康度验收'),
+        (run / 'build_log.csv', '各品种是否新算或跳过'),
+        (run, '本次其余留痕（manifest.json 等）'),
+    ]
+    if not args.no_catalog:
+        paths.insert(2, (strategy.factor_catalog_path(),
+                         '全部可选因子目录：来源、先验方向、池内覆盖率'))
     if minute_code or external_code:
+        C.report_step(3, passed=False, paths=paths)
         return 1
-    print("第 3 步完成，可以进入第 4 步。")
+    C.report_step(3, passed=True, next_step=4, paths=paths)
     return 0
 
 
 def build_minute_factors(args, run: Path) -> tuple[int, bool]:
     """返回 (退出码, 是否停止后续)。抽查不过或前置缺失时停止；健康度不过则继续但最终返回 1。"""
-    probe_code = run_duration_probe()
+    probe_code = run_duration_probe(run)
     if probe_code != 0:
         return probe_code, True
 
@@ -282,26 +272,11 @@ def build_minute_factors(args, run: Path) -> tuple[int, bool]:
         print(f"没有可用分片，请先运行 step1_shard_minutes.py\n路径: {C.RESEARCH_DIR}")
         return 2, True
 
-    print("=" * 92)
-    print(f"日频因子缓存  {len(syms)} 个品种 × {len(combos)} 个参数组合"
-          f"（{'覆盖重算' if args.overwrite else '断点续跑'}）")
-    print(f"品种来源: {how}")
-    print(f"落盘: {C.FACTOR_DAILY_DIR}  格式: {shard_io.resolve_format('auto')}")
-    print("=" * 92)
-
     C.ensure_dirs()
-    t0 = time.time()
     infos = []
-    for i, s in enumerate(syms, 1):
-        t1 = time.time()
-        info = FC.build_symbol(s, combos, overwrite=args.overwrite,
-                               timestamp=not args.no_timestamp)
-        infos.append(info)
-        tag = ('跳过（已存在）' if info['skipped']
-               else f"{info['combos_written']} 组"
-                    f"{' + 时间戳' if info.get('timestamp_written') else ''}")
-        print(f"[{i}/{len(syms)}] {s:<5} {tag:<22} {time.time() - t1:6.1f}s", flush=True)
-    print(f"\n计算完成，总耗时 {time.time() - t0:.0f}s")
+    for s in syms:
+        infos.append(FC.build_symbol(s, combos, overwrite=args.overwrite,
+                                     timestamp=not args.no_timestamp))
 
     # ---------------- 验收 ----------------
     health_combo = combos[len(combos) // 2]
@@ -312,21 +287,12 @@ def build_minute_factors(args, run: Path) -> tuple[int, bool]:
             return 2, True
         health_combo = match[0]
 
-    print("\n" + "-" * 92)
-    print(f"因子健康度与验收（组合 {FC.combo_name(*health_combo)}，"
-          f"非空门槛 {MIN_NON_NULL:.0%}）")
-    print("-" * 92)
     panel = FC.load_panel(*health_combo, symbols=syms)
     if panel.empty:
         print("面板为空，无法验收")
         return 1, True
     health = FC.panel_health(panel)
     table = FC.check_acceptance(health, MIN_NON_NULL)
-
-    with pd.option_context('display.width', 220, 'display.max_columns', 30,
-                           'display.max_rows', 80):
-        print(table[['scope', 'n', 'non_null_ratio', 'nunique',
-                     'min', 'p50', 'max', 'passed', 'reason']])
 
     # ---------------- 留痕 ----------------
     table.to_csv(run / 'factor_health.csv', encoding='utf-8-sig')
@@ -352,13 +318,11 @@ def build_minute_factors(args, run: Path) -> tuple[int, bool]:
     })
 
     failed = table.index[~table['passed']].tolist()
-    print(f"因子 {panel.shape[1]} 个，日频观测 {panel.shape[0]:,} 行")
     if failed:
-        print(f"验收不通过的因子 {len(failed)} 个:")
-        for f in failed:
-            print(f"    {f:<18} {table.loc[f, 'reason']}")
+        print(f"分钟级因子验收未通过 {len(failed)} 个: "
+              + ", ".join(f"{f}({table.loc[f, 'reason']})" for f in failed))
+        print(f"明细: {run / 'factor_health.csv'}")
         return 1, False
-    print(f"分钟级因子 {len(table)} 项全部通过验收。")
     return 0, False
 
 

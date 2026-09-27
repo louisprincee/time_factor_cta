@@ -29,8 +29,6 @@ from tfcta.research.workflow import context, history, ledger  # noqa: E402
 
 YEAR = C.VALIDATION_YEAR
 PARTITIONS = ["research", "validation_2022"]
-COLUMNS = ["universe", "n_symbols", "gross_ann_return", "gross_sharpe", "net_ann_return",
-           "net_sharpe", "net_max_drawdown", "turnover", "ic_ts", "ic_t", "passed"]
 
 
 def split_consumed(cfg: strategy.BookConfig) -> tuple[list[str], list[tuple[str, dict]]]:
@@ -82,10 +80,7 @@ def main() -> int:
         print("2022 时点品种池与所选板块、验证分片没有交集。")
         return 2
 
-    print(f"2022 品种池 {len(pool_2022)} 个，本次加载 {len(candidates)} 个：{' '.join(candidates)}")
     hist = history.load_history(candidates, include_validation=True)
-    for symbol, why in hist.skipped:
-        print(f"  跳过 {symbol}: {why}")
     loaded = sorted(hist.bars)
     universe = {**U.load_universe(), YEAR: [s for s in pool_2022 if s in loaded]}
     try:
@@ -138,17 +133,24 @@ def main() -> int:
         "slippage": "按加载的分钟数据逐年估 tick，含 2022",
     })
 
-    print(f"\n因子: {strategy.factor_label(cfg.factors)}")
-    print(f"通过条件: 扣费后 Sharpe >= {cfg.min_net_sharpe:g} 且扣费后年化 > "
-          f"{cfg.min_net_ann_return:g}")
-    strategy.print_table(table, COLUMNS)
     passed = table.loc[table["passed"], "universe"].tolist()
-    print(f"\n已登记验证台账: {ledger.validation_path()}")
-    print(f"留痕: {run}")
+    skipped = [f"{s}: {why}" for s, why in hist.skipped]
+    note = f"因子 {strategy.factor_label(cfg.factors)}。"
+    if skipped:
+        note += f" 跳过 {skipped}。"
+    paths = [
+        (ledger.validation_path(), '2022 验证台账（指纹、是否通过；每本书只记一次）'),
+        (run / "performance.csv", '本次验证的毛/净绩效与是否通过'),
+        (run / "universe_2022_screen.csv", '2022 时点品种池筛选明细'),
+        (run / "params.json", '本次配置、加载品种与跳过原因'),
+        (run, '上述文件所在的本次留痕目录'),
+    ]
     if passed:
-        print(f"通过 2022 验证、可以进入第 7 步样本外的池子: {passed}")
+        C.report_step(6, passed=True, next_step=7, paths=paths,
+                      note=note + f" 通过的池子: {passed}")
         return 0
-    print("没有池子通过 2022 验证，第 7 步不会放行这些书。")
+    C.report_step(6, passed=False, paths=paths,
+                  note=note + "没有池子通过 2022 验证，第 7 步不会放行这些书。")
     return 1
 
 

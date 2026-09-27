@@ -70,21 +70,11 @@ def main() -> int:
         print(f"读不到因子缓存：{str(e).splitlines()[0]}\n请先运行 step3_build_factors.py。")
         return 2
 
-    print(f"时序 IC  N={C.IC_REFERENCE_LOOKBACK} M={C.IC_REFERENCE_PCT:g}  "
-          f"品种 {len(symbols)}  测试年 {years}")
-    print("方向看 ic，显著性看时序 t（事前 IC，Newey-West）。t_cross 只供排序。\n")
-
     # 1. 符号闸门
     gate_tabs = []
     for name in C.PRIOR_FACTORS:
         gate_tabs.append(stats.factor_ic_table(sig.raw(name), fwd, universe, name, years))
     gate_all = pd.concat(gate_tabs, ignore_index=True)
-    fmt = {'display.width': 220, 'display.max_rows': 400, 'display.max_columns': 30,
-           'display.float_format': lambda v: f'{v:+.4f}'}
-    opts = [x for kv in fmt.items() for x in kv]
-    with pd.option_context(*opts):
-        print("== 1. 有先验因子的逐折 IC")
-        print(gate_all.to_string(index=False))
 
     # 2. 全部因子
     rows = []
@@ -98,14 +88,11 @@ def main() -> int:
         rows.append({'factor': name, 'family': sig.family[name], 'direction': direction,
                      **summary_row(tab)})
     all_tab = pd.DataFrame(rows)
-    with pd.option_context(*opts):
-        print("\n== 2. 全部因子的事前 IC（已定向的正值 = 与先验一致）")
-        print(all_tab.to_string(index=False))
 
     # 3. 逻辑组合
     combo_tab = pd.DataFrame()
     if not args.no_combos:
-        slip, note = costs.research_slippage(symbols, day_ret.index, C.SLIPPAGE_TICKS)
+        slip, _ = costs.research_slippage(symbols, day_ret.index, C.SLIPPAGE_TICKS)
         signed_z = {n: library.trail_z(sig.signed[n]) for vs in LOGIC.values() for n in vs}
 
         def pack(label: str, names: list[str]) -> dict:
@@ -142,10 +129,6 @@ def main() -> int:
         plan += [(n, [n]) for n in sorted(singles)]
         combo_tab = pd.DataFrame([pack(lab, names) for lab, names in plan]).sort_values(
             'ann_return', ascending=False)
-        with pd.option_context(*opts):
-            print(f"\n== 3. 逻辑组合，周频调仓（{note}）")
-            print(combo_tab[['combo', 'ann_return', 'ann_vol', 'ret_risk', 'max_drawdown',
-                             'turnover', 't']].to_string(index=False))
 
     C.ensure_dirs()
     run = context.run_dir('step4')
@@ -159,24 +142,39 @@ def main() -> int:
     # 4. 稳定性与异质性
     if not args.no_heterogeneity:
         screen.write_heterogeneity(sig, fwd, universe, symbols, years, run)
-    print(f"\n留痕 {run}")
+
+    labels = {
+        'ic_by_fold.csv': '有先验因子的逐折时序 IC 与符号闸门',
+        'factor_ic_all.csv': '全部因子的事前 IC 汇总',
+        'logic_combo_ic.csv': '逻辑组合周频扣费回测',
+        'factor_stability.csv': '年度 IC 同号与时序 t 的稳定性筛选',
+        'sector_factor_ic.csv': '五大板块上的因子 IC 与是否通过',
+        'symbol_factor_ic.csv': '单品种因子 IC（多重比较，只作候选）',
+    }
+    paths = [(C.RESEARCH_OUT_DIR / name, labels[name]) for _, name in outputs]
+    if not args.no_heterogeneity:
+        paths += [(C.RESEARCH_OUT_DIR / n, labels[n]) for n in
+                  ('factor_stability.csv', 'sector_factor_ic.csv', 'symbol_factor_ic.csv')]
+    paths.append((run, '以上表格的本次快照'))
 
     gate = gate_all[gate_all['fold'] == 'mean_of_folds']
     flipped = gate.loc[gate['sign'] == 'flip', 'factor'].tolist()
     weak = gate.loc[gate['sign'] == 'flip_weak', 'factor'].tolist()
     pending = gate.loc[gate['sign'] == 'inconclusive', 'factor'].tolist()
     if flipped:
-        print(f"符号与先验**显著**相反的因子（|t| >= {C.SIGN_T_MIN:g}）: {flipped}")
-        print("方向不允许按这个结果翻转。先核对实现，再决定是否进入第 5 步。")
+        print(f"符号与先验显著相反（|t| >= {C.SIGN_T_MIN:g}）: {flipped}。"
+              "方向不允许按这个结果翻转。")
+        C.report_step(4, passed=False, paths=paths)
         return 1
     if len(pending) == len(gate) and len(gate):
         print("有先验的因子都没有足够样本算出 IC，验收还做不了。")
         return 2
+    notes = []
     if pending:
-        print(f"样本不足、暂不判定的因子: {pending}")
+        notes.append(f"样本不足、暂不判定: {pending}")
     if weak:
-        print(f"方向相反但测不出显著性的因子（|t| < {C.SIGN_T_MIN:g}）: {weak}")
-    print("有先验因子的折间平均 IC 没有出现显著反向，可以进入第 5 步。")
+        notes.append(f"方向相反但测不出显著性（|t| < {C.SIGN_T_MIN:g}）: {weak}")
+    C.report_step(4, passed=True, next_step=5, paths=paths, note=" ".join(notes))
     return 0
 
 

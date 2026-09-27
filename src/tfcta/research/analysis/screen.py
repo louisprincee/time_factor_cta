@@ -144,14 +144,3 @@ def write_heterogeneity(factor_set, forward: pd.DataFrame,
         table.to_csv(C.RESEARCH_OUT_DIR / filename, index=False, encoding="utf-8-sig")
         if run is not None:
             table.to_csv(Path(run) / filename, index=False, encoding="utf-8-sig")
-
-    columns = ["factor", "avg_ic", "ic_ts", "t", "n_periods"]
-    print("\n== 4. 研究期稳定性：年度 IC 同号，|年均 IC| > "
-          f"{MIN_ABS_AVG_IC:g}，月度时序 |t| > {MIN_ABS_T:g}")
-    chosen = overall.loc[overall["selected"], columns]
-    print(chosen.to_string(index=False) if not chosen.empty else "（没有因子同时通过）")
-    print("\n通过同一门槛的板块：")
-    sector_cols = ["factor", "group", "avg_ic", "ic_ts", "t", "n_periods", "mean_symbols"]
-    picked = sector_table.loc[sector_table["selected"], sector_cols] if not sector_table.empty else sector_table
-    print(picked.to_string(index=False) if not picked.empty else "（没有板块组合通过）")
-    print(f"\n异质性结果: {C.RESEARCH_OUT_DIR}")

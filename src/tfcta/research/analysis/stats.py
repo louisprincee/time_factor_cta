@@ -16,6 +16,22 @@ def _pair(factor: pd.Series, fwd: pd.Series) -> pd.DataFrame:
     return pd.concat([factor.rename('f'), fwd.rename('r')], axis=1).dropna()
 
 
+def _by_period(series: pd.Series, period: str | None = None):
+    """按自然月（或 ``period``）分组。不用 ``Grouper``/``resample``，避免 pandas
+    在切月末边界时触发 numpy generic timedelta 警告。"""
+    period = C.IC_PERIOD if period is None else str(period)
+    freq = {'ME': 'M', 'MS': 'M'}.get(period, period)
+    return series.groupby(pd.DatetimeIndex(series.index).to_period(freq))
+
+
+def _period_mean(series: pd.Series, min_obs: int, period: str | None = None) -> pd.Series:
+    g = _by_period(series, period)
+    out = g.mean().where(g.count() >= min_obs)
+    if isinstance(out.index, pd.PeriodIndex):
+        out.index = out.index.to_timestamp(how='end').normalize()
+    return out
+
+
 def _corr(df: pd.DataFrame, min_obs: int) -> float:
     if len(df) < int(min_obs):
         return np.nan
@@ -97,9 +113,7 @@ def ic_period_series(factor: pd.DataFrame,
         if df.empty:
             continue
         prod = df['f'] * df['r']
-        g = prod.groupby(pd.Grouper(freq=period))
-        m = g.mean().where(g.count() >= min_obs)
-        cols[s] = m
+        cols[s] = _period_mean(prod, min_obs, period)
     if not cols:
         return pd.Series(dtype='float64')
     out = pd.DataFrame(cols).mean(axis=1, skipna=True).dropna()
@@ -288,8 +302,7 @@ def cross_sectional_ic_table(factor: pd.DataFrame,
                 daily_ic.append(float(pair.iloc[:, 0].corr(
                     pair.iloc[:, 1], method='spearman')))
         daily = pd.Series(daily_ic, index=dates, dtype='float64')
-        grouped = daily.groupby(pd.Grouper(freq=C.IC_PERIOD))
-        monthly = grouped.mean().where(grouped.count() >= min_days).dropna()
+        monthly = _period_mean(daily, min_days).dropna()
         monthly_series.append(monthly)
         finite_daily = daily.dropna()
         rec = {

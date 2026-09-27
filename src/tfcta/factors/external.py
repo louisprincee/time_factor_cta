@@ -116,13 +116,17 @@ def _load_one(dataset: str, key: str, partition: str, root: Path | None):
     return pd.read_pickle(path) if path.exists() else None
 
 
-def _load_source(dataset: str, key: str, partition: str, root: Path | None = None):
-    """``partition`` 及之前各分区的同一份原始数据，按时间接起来。"""
-    parts = [x for x in (_load_one(dataset, key, p, root)
-                         for p in partitions_through(partition)) if x is not None]
+def _concat(parts):
+    """拼接非空表。空表先丢掉，否则 pandas 会在推断 dtype 时发出 FutureWarning。"""
+    parts = [p for p in parts if p is not None and len(p)]
     if not parts:
         return None
     return parts[0] if len(parts) == 1 else pd.concat(parts)
+
+
+def _load_source(dataset: str, key: str, partition: str, root: Path | None = None):
+    """``partition`` 及之前各分区的同一份原始数据，按时间接起来。"""
+    return _concat(_load_one(dataset, key, p, root) for p in partitions_through(partition))
 
 
 def _date_index(index: pd.Index) -> pd.DatetimeIndex:
@@ -288,8 +292,6 @@ def build_partition(partition: str, symbols: list[str] | None = None,
             "first": factors.index.min().date().isoformat(),
             "last": factors.index.max().date().isoformat(),
         }
-        print(f"{partition} {symbol}: {len(factors)} 日, {len(factors.columns)} 因子")
-
     _write_manifest(output_root, partition, summary)
     return summary
 
@@ -322,7 +324,11 @@ def load_wide(symbols: list[str], partitions, index: pd.Index) -> dict[str, pd.D
             pieces.setdefault(name, []).append(frame)
     out = {}
     for name, frames in pieces.items():
-        wide = pd.concat(frames).sort_index()
+        wide = _concat(frames)
+        if wide is None:
+            out[name] = pd.DataFrame(index=index, columns=symbols)
+            continue
+        wide = wide.sort_index()
         wide = wide[~wide.index.duplicated(keep='last')]
         out[name] = wide.reindex(index=index, columns=symbols)
     return out
