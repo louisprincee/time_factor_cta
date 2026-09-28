@@ -193,8 +193,17 @@ def candidate_symbols(cfg: BookConfig) -> list[str]:
 
 
 def equal_weight_signal(signal_set: library.SignalSet, factors: dict[str, float]) -> pd.DataFrame:
-    """每个因子乘上符号后做事前 z 分数，再等权，截到 [-1, 1]。"""
-    frames = [library.trail_z(signal_set.raw(name) * sign) for name, sign in factors.items()]
+    """每个因子乘上符号后做事前 z 分数，再等权，截到 [-1, 1]。
+
+    ``time_combo`` 在装配时已经是四个时间因子各自 z 分数的等权平均，这里只乘符号，
+    不再标准化一次。再做一次会把组合重新拉成单位方差，仓位比「四个因子各 z 一次再平均」更激进。
+    """
+    frames = []
+    for name, sign in factors.items():
+        signed = signal_set.raw(name) * sign
+        if name not in library.STANDARDIZED_FACTORS:
+            signed = library.trail_z(signed)
+        frames.append(signed)
     return library.average_signals(frames).clip(-1, 1)
 
 
@@ -304,11 +313,38 @@ def evaluate_cases(signal: pd.DataFrame,
 
 
 def passes(row: dict | pd.Series, cfg: BookConfig) -> bool:
+    """扣费后算术 Sharpe 与扣费后年化。Sharpe 是日均收益 / 日波动 × sqrt(252)，不是几何年化 / 波动。"""
     sharpe = row.get("net_sharpe", np.nan)
     ann = row.get("net_ann_return", np.nan)
     if not (np.isfinite(sharpe) and np.isfinite(ann)):
         return False
     return bool(sharpe >= cfg.min_net_sharpe and ann > cfg.min_net_ann_return)
+
+
+def research_period_label() -> str:
+    years = [fold["test_year"] for fold in engine.walk_forward_folds()]
+    return f"{years[0]}-{years[-1]}"
+
+
+def screen_research(cfg: BookConfig,
+                    labels: list[str]) -> tuple[pd.DataFrame, str, dict[str, list[str]]]:
+    """研究期整段与逐年绩效。只读 2016–2021。"""
+    from ..workflow import context
+    from . import costs
+
+    reason = context.not_ready_reason()
+    if reason:
+        raise FileNotFoundError(reason)
+    universe, symbols, day_ret = context.load_context(None)
+    if not symbols or day_ret.empty:
+        raise FileNotFoundError("研究期品种池或收益为空。")
+    years = [fold["test_year"] for fold in engine.walk_forward_folds()]
+    signal = equal_weight_signal(library.load(symbols), cfg.factors)
+    slippage, note = costs.research_slippage(symbols, day_ret.index, cfg.slippage_ticks)
+    cases = resolve_cases(cfg, symbols, labels=labels)
+    table = evaluate_cases(signal, day_ret, universe, cases, years,
+                           cfg.fee_rate, slippage, research_period_label())
+    return table, note, cases
 
 
 def print_table(table: pd.DataFrame, columns: list[str]) -> None:

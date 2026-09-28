@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import tfcta.factors.external as external
 from tfcta.factors.external import align_asof, build_symbol_factors
 
 
@@ -60,7 +61,7 @@ def test_build_symbol_factors_aligns_roll_and_warehouse(tmp_path):
     assert factors.index.name == "trading_date"
     assert factors["carry_main_sub_annualized_trading"].notna().all()
     assert factors["warehouse_on_warrant"].iloc[0] == 105.0
-    assert np.isfinite(factors["warehouse_drawdown_20d"].iloc[-1])
+    assert np.isfinite(factors["warehouse_peak_drawdown_20d"].iloc[-1])
 
 
 def test_non_research_partition_reads_its_own_subdirectory_once(tmp_path):
@@ -76,7 +77,7 @@ def test_non_research_partition_reads_its_own_subdirectory_once(tmp_path):
     assert factors["warehouse_on_warrant"].iloc[0] == 10.0
 
 
-def test_build_symbol_factors_constructs_oi_and_spot_basis(tmp_path):
+def test_build_symbol_factors_uses_main_contract_oi_and_skips_unsynchronized_basis(tmp_path):
     dates = pd.bdate_range("2020-01-01", periods=25)
     calendar = dates[2:]
     dominant = pd.Series("AU2001", index=dates, name="order_book_id")
@@ -97,9 +98,58 @@ def test_build_symbol_factors_constructs_oi_and_spot_basis(tmp_path):
     factors = build_symbol_factors("AU", calendar, "research", tmp_path)
 
     assert factors["main_open_interest"].iloc[0] == 1002.0
-    assert factors["spot_basis_noon"].iloc[0] == 7.0
-    assert factors["spot_basis_noon_pct"].iloc[0] == 7.0 / 395.0
     assert np.isfinite(factors["main_oi_change_20d"].iloc[-1])
+    assert not any(name.startswith("spot_basis_") for name in factors.columns)
+
+
+def test_warehouse_drawdown_uses_rolling_peak_not_negative_return(tmp_path):
+    dates = pd.bdate_range("2020-01-01", periods=25)
+    inventory = [100.0] * 20 + [200.0, 190.0, 180.0, 170.0, 160.0]
+    warehouse = pd.DataFrame({"on_warrant": inventory},
+                             index=pd.MultiIndex.from_arrays(
+                                 [dates, ["CU"] * len(dates)],
+                                 names=["date", "underlying_symbol"]))
+    _save_source(tmp_path, "warehouse", "CU", warehouse)
+
+    factors = build_symbol_factors("CU", dates, "research", tmp_path)
+
+    assert factors["warehouse_peak_drawdown_20d"].iloc[-1] == pytest.approx(-0.15)
+    assert factors["warehouse_change_20d"].iloc[-1] == pytest.approx(0.7)
+
+
+def test_load_wide_ignores_unregistered_legacy_columns(tmp_path, monkeypatch):
+    dates = pd.date_range("2020-01-01", periods=2)
+    directory = tmp_path / "research"
+    directory.mkdir()
+    pd.DataFrame({
+        "spot_basis_noon": [1.0, 2.0],
+        "main_open_interest": [100.0, 110.0],
+    }, index=dates).to_pickle(directory / "AU.pkl")
+    monkeypatch.setattr(external, "EXTERNAL_FACTOR_ROOT", tmp_path)
+
+    panel = external.load_wide(["AU"], "research", dates)
+
+    assert "main_open_interest" in panel
+    assert "spot_basis_noon" not in panel
+
+
+def test_require_partitions_rejects_stale_factor_schema(tmp_path, monkeypatch):
+    for partition in ("research", "validation_2022"):
+        directory = tmp_path / partition
+        directory.mkdir()
+        pd.DataFrame({"warehouse_drawdown_20d": [0.0]}).to_pickle(directory / "CU.pkl")
+    manifest = {
+        "partitions": {
+            "research": {"CU": {"columns": ["warehouse_peak_drawdown_20d"]}},
+            "validation_2022": {"CU": {"columns": ["warehouse_drawdown_20d"]}},
+        }
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(external, "EXTERNAL_FACTOR_ROOT", tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="warehouse_peak_drawdown_20d"):
+        external.require_partitions(
+            {"warehouse_peak_drawdown_20d": 1.0}, ("research", "validation_2022"))
 
 def test_validation_partition_windows_continue_from_research(tmp_path):
     """2022 的滚动窗口必须接上研究期的原始数据，不能在分区边界上重新预热。

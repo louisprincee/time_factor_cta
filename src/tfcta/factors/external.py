@@ -29,7 +29,6 @@ from ..data import shard_io
 PARTITIONS = ("research", "validation_2022", "holdout_locked")
 EXTERNAL_DATA_ROOT = C.DATA_ROOT / "external_rqdata"
 EXTERNAL_FACTOR_ROOT = C.FACTOR_DAILY_DIR / "external"
-SPOT_CODES = {"AU": "AU9999.SGEX", "AG": "AG9999.SGEX"}
 
 FAMILIES = {
     'carry_main_sub_yield': '外部期限结构(候选)',
@@ -39,14 +38,10 @@ FAMILIES = {
     'warehouse_log_level': '外部库存(候选)',
     'warehouse_low': '外部库存(候选)',
     'warehouse_change_20d': '外部库存(候选)',
-    'warehouse_drawdown_20d': '外部库存(候选)',
+    'warehouse_peak_drawdown_20d': '外部库存(候选)',
     'main_open_interest': '外部持仓(候选)',
     'main_oi_change_20d': '外部持仓(候选)',
     'main_oi_change_60d': '外部持仓(候选)',
-    'spot_basis_morning': '外部基差(候选)',
-    'spot_basis_morning_pct': '外部基差(候选)',
-    'spot_basis_noon': '外部基差(候选)',
-    'spot_basis_noon_pct': '外部基差(候选)',
 }
 
 
@@ -210,7 +205,8 @@ def build_symbol_factors(symbol: str, calendar: pd.DatetimeIndex,
         prior = aligned.shift(20)
         change = aligned.div(prior.where(prior != 0)).sub(1)
         factors["warehouse_change_20d"] = change
-        factors["warehouse_drawdown_20d"] = -change
+        peak = aligned.rolling(20, min_periods=20).max()
+        factors["warehouse_peak_drawdown_20d"] = aligned.div(peak.where(peak > 0)).sub(1)
 
     dominant_raw = _series(_load_source("dominant", f"{symbol}_rank1", partition, source_root),
                            numeric=False)
@@ -224,22 +220,6 @@ def build_symbol_factors(symbol: str, calendar: pd.DatetimeIndex,
             same_contract = dominant.eq(dominant.shift(window))
             change = oi.div(prior_oi.where(prior_oi != 0)).sub(1)
             factors[f"main_oi_change_{window}d"] = change.where(same_contract)
-
-    spot_code = SPOT_CODES.get(symbol)
-    if spot_code:
-        spot = _load_source("spot", f"benchmark_{spot_code}", partition, source_root)
-        settlement = (_main_contract_series("settlement", partition, dominant_raw, source_root)
-                      if not dominant_raw.empty else pd.Series(dtype="float64"))
-        for time_name in ("morning", "noon"):
-            spot_price = _series(spot, time_name)
-            common = settlement.index.intersection(spot_price.index)
-            if common.empty:
-                continue
-            px = spot_price.reindex(common)
-            basis = settlement.reindex(common).sub(px)
-            factors[f"spot_basis_{time_name}"] = align_asof(basis, calendar)
-            factors[f"spot_basis_{time_name}_pct"] = align_asof(basis.div(px.where(px > 0)),
-                                                                calendar)
 
     factors = factors.dropna(how="all")
     factors.index.name = "trading_date"
@@ -321,6 +301,8 @@ def load_wide(symbols: list[str], partitions, index: pd.Index) -> dict[str, pd.D
     pieces: dict[str, list[pd.DataFrame]] = {}
     for partition in partitions:
         for name, frame in load_panel(symbols, partition=partition).items():
+            if name not in FAMILIES:
+                continue
             pieces.setdefault(name, []).append(frame)
     out = {}
     for name, frames in pieces.items():
@@ -345,3 +327,17 @@ def require_partitions(factors, partitions) -> None:
         raise FileNotFoundError(
             f"所选外部因子 {used} 缺少分区 {missing}，"
             f"请先运行 step3_build_factors.py --external-partitions {' '.join(missing)}{hint}")
+    manifest_path = EXTERNAL_FACTOR_ROOT / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    by_partition = manifest.get("partitions", {})
+    missing_factors = {}
+    for partition in partitions:
+        entries = by_partition.get(partition, {})
+        available = {name for row in entries.values() for name in row.get("columns", [])}
+        absent = sorted(set(used) - available)
+        if absent:
+            missing_factors[partition] = absent
+    if missing_factors:
+        raise FileNotFoundError(
+            f"外部因子在所选分区缺少已构造列: {missing_factors}。"
+            "请先为这些分区运行 step3_build_factors.py；不能用旧缓存或全 NaN 信号替代。")

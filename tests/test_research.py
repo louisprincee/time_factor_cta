@@ -16,7 +16,7 @@ from tfcta.data import synth
 from tfcta.data import bars as returns
 from tfcta.factors import library
 from tfcta.research.analysis import stats as ic
-from tfcta.research.backtest import costs, engine
+from tfcta.research.backtest import costs, engine, strategy
 
 
 def test_day_return_matches_framework_formula():
@@ -413,6 +413,62 @@ def test_reported_turnover_matches_charged_turnover_including_pool_entry_and_exi
     by_year = port.groupby(port.index.year).sum()
     assert by_year[2016] == pytest.approx(-2 * fee)
     assert by_year[2017] == pytest.approx(-1 * fee)
+
+
+def test_weekly_missing_rebalance_does_not_carry_the_previous_week():
+    """调仓日缺信号时这一周必须空仓，不能把上一周的仓位填过来。
+
+    有限的周仍只在该周最后一个交易日取值，并向前持有到下一次调仓，不把周五的值填回周一。
+    """
+    idx = pd.bdate_range('2021-01-04', '2021-01-22')
+    sig = pd.DataFrame({'A': 1.0}, index=idx)
+    sig.loc['2021-01-06', 'A'] = 9.0
+    sig.loc['2021-01-08', 'A'] = 0.2
+    sig.loc['2021-01-15', 'A'] = np.nan
+    sig.loc['2021-01-22', 'A'] = -0.4
+    out = engine.weekly(sig)
+    assert out.loc['2021-01-04':'2021-01-07', 'A'].isna().all()
+    assert np.allclose(out.loc['2021-01-08':'2021-01-14', 'A'], 0.2)
+    assert out.loc['2021-01-15':'2021-01-21', 'A'].isna().all()
+    assert out.loc['2021-01-22', 'A'] == pytest.approx(-0.4)
+
+
+def test_thin_year_tick_does_not_use_later_years():
+    """早年差分太少时，只能用截至该年的价格估 tick，不能把后来的价位网格填进早年。"""
+    early = 100.0 + np.cumsum(np.tile([1.0, -1.0], 30))
+    late = 1000.0 + np.cumsum(np.tile([10.0, -10.0], 2000))
+    close = np.concatenate([early, late])
+    dates = np.concatenate([
+        np.repeat(np.datetime64('2016-06-01'), len(early)),
+        np.repeat(np.datetime64('2017-06-01'), len(late)),
+    ])
+    by_year = {row['year']: row for row in costs.tick_rows('X', close, dates)}
+    assert by_year[2016]['n_diff'] < costs.TICK_MIN_DIFFS_PER_YEAR
+    assert by_year[2016]['tick_source'] == 'through_year'
+    assert by_year[2016]['tick'] == pytest.approx(1.0)
+    assert by_year[2017]['tick'] == pytest.approx(10.0)
+
+
+def test_time_combo_is_not_standardized_a_second_time():
+    """time_combo 已是 z 分数平均，入书只乘符号；再做一次 z 会把仓位重新拉成单位方差。"""
+    idx = pd.bdate_range('2016-01-04', periods=400)
+    rng = np.random.default_rng(1)
+    combo = pd.DataFrame(rng.normal(0, 0.25, (len(idx), 1)), index=idx, columns=['A'])
+    signals = library.SignalSet(bars={'close': combo})
+    signals.signed['time_combo'] = combo
+    out = strategy.equal_weight_signal(signals, {'time_combo': 1.0})
+    pd.testing.assert_frame_equal(out, combo.clip(-1, 1))
+    again = library.trail_z(combo).clip(-1, 1)
+    assert not np.allclose(out.iloc[200:].to_numpy(), again.iloc[200:].to_numpy(), equal_nan=True)
+
+
+def test_unsigned_factor_is_still_trail_z_scored():
+    idx = pd.bdate_range('2016-01-04', periods=400)
+    raw = pd.DataFrame({'A': np.linspace(-5, 5, len(idx))}, index=idx)
+    signals = library.SignalSet(bars={'close': raw})
+    signals.unsigned['x'] = raw
+    out = strategy.equal_weight_signal(signals, {'x': -1.0})
+    pd.testing.assert_frame_equal(out, library.trail_z(raw * -1.0).clip(-1, 1))
 
 
 def test_performance_and_sharpe_tolerate_tiny_samples():

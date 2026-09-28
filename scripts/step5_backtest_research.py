@@ -1,8 +1,9 @@
 """第 5 步：研究期回测。自选因子、自选板块，等权周频，只读 2016–2021。
 
 默认是四个时间因子的周频书：ts_high×-1、ts_low、dfp_max、dfp_top3 等权，不分板块。
-252 日事前 z 分数等权后截到 [-1, 1]，每周最后一个交易日更新，次日开盘成交，
-手续费加 tick 滑点。拼接 walk-forward 的六个测试年。
+各因子做一次 252 日事前 z 分数后等权，截到 [-1, 1]。time_combo 已经是这四者的 z 分数平均，
+入书时不再标准化第二次。每周最后一个交易日更新，次日开盘成交，手续费加 tick 滑点。
+研究期扣费后 Sharpe 与年化没过门槛的池子，不能进第 6 步。
 
     python scripts/step5_backtest_research.py --list-pools
     python scripts/step5_backtest_research.py --list-factors
@@ -20,17 +21,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tfcta import config as C  # noqa: E402
-from tfcta.factors import library  # noqa: E402
-from tfcta.research.backtest import costs, engine  # noqa: E402
 from tfcta.research.backtest import strategy  # noqa: E402
 from tfcta.research.workflow import context  # noqa: E402
-
-OVERALL = f"{C.WF_TEST_YEARS_LIST[0]}-{C.WF_TEST_YEARS_LIST[-1]}"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    strategy.add_book_args(parser)
+    strategy.add_book_args(parser, with_criteria=True)
     args = parser.parse_args()
     listed = strategy.handle_listing(args)
     if listed is not None:
@@ -41,28 +38,22 @@ def main() -> int:
         print(exc)
         return 2
 
-    reason = context.not_ready_reason()
-    if reason:
-        print(reason)
-        return 2
-    universe, symbols, day_ret = context.load_context(None)
-    if not symbols or day_ret.empty:
-        print("研究期品种池或收益为空。")
-        return 2
-    years = [fold["test_year"] for fold in engine.walk_forward_folds()]
-
     try:
-        signal_set = library.load(symbols)
-        signal = strategy.equal_weight_signal(signal_set, cfg.factors)
-    except (FileNotFoundError, KeyError) as exc:
+        table, cost_note, cases = strategy.screen_research(cfg, strategy.case_labels(cfg))
+    except FileNotFoundError as exc:
+        print(str(exc).splitlines()[0])
+        return 2
+    except KeyError as exc:
         print(f"{str(exc).splitlines()[0]}\n请先运行 step3_build_factors.py，或用 --list-factors 查看可选因子。")
         return 2
-    slippage, cost_note = costs.research_slippage(symbols, day_ret.index, cfg.slippage_ticks)
-    cases = strategy.resolve_cases(cfg, symbols)
-    table = strategy.evaluate_cases(signal, day_ret, universe, cases, years,
-                                 cfg.fee_rate, slippage, OVERALL)
+    overall = strategy.research_period_label()
     table.insert(0, "fingerprint", table["universe"].map(
         lambda case: strategy.fingerprint(cfg, case)))
+    summary = table[table["period"] == overall]
+    passed_cases = [row.universe for row in summary.itertuples()
+                    if strategy.passes(row._asdict(), cfg)]
+    failed_cases = [row.universe for row in summary.itertuples()
+                    if row.universe not in passed_cases]
 
     C.ensure_dirs()
     run = context.run_dir("step5_backtest")
@@ -72,7 +63,7 @@ def main() -> int:
     context.dump_json(run / "params.json", {
         "config": cfg.to_dict(),
         "cases": cases,
-        "years": years,
+        "years": sorted(int(p) for p in table["period"].unique() if str(p).isdigit()),
         "rebalance": strategy.REBALANCE,
         "execution": strategy.EXECUTION,
         "slippage_note": cost_note,
@@ -83,12 +74,17 @@ def main() -> int:
     note = f"因子 {strategy.factor_label(cfg.factors)}；{cost_note}"
     if empty:
         note += f" 这些池子在研究期没有品种: {empty}"
-    C.report_step(5, passed=True, next_step=6, paths=[
+    if passed_cases:
+        note += f" 研究期通过、可以进入第 6 步的池子: {passed_cases}。"
+    if failed_cases:
+        note += (f" 未过研究期门槛（扣费后 Sharpe ≥ {cfg.min_net_sharpe:g} 且年化 > "
+                 f"{cfg.min_net_ann_return:g}）的池子: {failed_cases}。")
+    C.report_step(5, passed=bool(passed_cases), next_step=6 if passed_cases else None, paths=[
         (out, '研究期回测：整段与逐年的毛/净年化、Sharpe、回撤、换手、时序 IC'),
         (run / 'params.json', '本次因子、板块、费率与滑点说明'),
         (run, '上述结果的本次快照'),
     ], note=note)
-    return 0
+    return 0 if passed_cases else 1
 
 
 if __name__ == "__main__":

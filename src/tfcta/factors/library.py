@@ -22,6 +22,8 @@ Z_WINDOW = 252
 Z_MIN = 120
 
 # 已定向因子相对原始值的符号：signed = raw × prior。反转代理、time_combo 本身就是定向后的量。
+# time_combo 在装配时已经是各成员 trail_z 的等权平均，入书时不再做第二次 z 分数。
+STANDARDIZED_FACTORS = frozenset({'time_combo'})
 SIGNED_PRIORS = {
     **C.FACTOR_SIGNS,
     'time_combo': +1,
@@ -120,7 +122,8 @@ def assemble(bars: dict[str, pd.DataFrame],
             raise KeyError(f"缺少时间因子 {n}，请先在第 3 步构造")
         out.signed[n] = time_raw[n] * s
         out.family[n] = '时间戳' if n in C.TIMESTAMP_FACTORS else '持续期'
-    out.signed['time_combo'] = average_signals([trail_z(out.signed[n]) for n in C.FACTOR_SIGNS])
+    out.signed['time_combo'] = average_signals(
+        [trail_z(out.signed[n]) for n in C.FACTOR_SIGNS])
     out.family['time_combo'] = '时间戳+持续期'
 
     mp = B.multiplicative_prices(bars)

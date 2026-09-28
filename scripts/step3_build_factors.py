@@ -233,12 +233,16 @@ def main() -> int:
 
     paths = [
         (C.FACTOR_DAILY_DIR, '日频因子缓存：时间戳族 + 持续期族（按品种）'),
-        (EXT.EXTERNAL_FACTOR_ROOT, '外部数据因子（按时间分区、按品种）'),
-        (run / 'duration_probe.csv', '持续期抽查（RB/CU/M 的偏度与缺失）'),
-        (run / 'factor_health.csv', '分钟级因子健康度验收'),
-        (run / 'build_log.csv', '各品种是否新算或跳过'),
-        (run, '本次其余留痕（manifest.json 等）'),
     ]
+    if not args.no_external:
+        paths.append((EXT.EXTERNAL_FACTOR_ROOT, '外部数据因子（按时间分区、按品种）'))
+    if not args.skip_minute:
+        paths.extend([
+            (run / 'duration_probe.csv', '持续期抽查（RB/CU/M 的偏度与缺失）'),
+            (run / 'factor_health.csv', '分钟级因子健康度验收'),
+            (run / 'build_log.csv', '各品种是否新算或跳过'),
+        ])
+    paths.append((run, '本次其余留痕（manifest.json 等）'))
     if not args.no_catalog:
         paths.insert(2, (strategy.factor_catalog_path(),
                          '全部可选因子目录：来源、先验方向、池内覆盖率'))

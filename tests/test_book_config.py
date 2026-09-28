@@ -92,6 +92,27 @@ def test_legacy_frozen_plan_counts_as_consumed_validation(tmp_path, monkeypatch)
     assert len(hits) == 1 and hits[0]["passed"] is False
 
 
+def test_validation_log_lists_factors_costs_and_deduplicates_fingerprints(tmp_path, monkeypatch):
+    monkeypatch.setattr(ledger, "validation_entries", lambda: [
+        {"fingerprint": "book-a", "case": "农产品", "factors": "ts_high:-1,ts_low:+1",
+         "config": {"fee_rate": 0.00025, "slippage_ticks": 1.0}, "n_symbols": 14,
+         "net_ann_return": -0.04, "net_sharpe": -0.5, "net_max_drawdown": -0.08,
+         "passed": False, "run_at": "2026-09-27T12:00:00"},
+        {"fingerprint": "book-a", "case": "农产品", "factors": "ts_high:-1,ts_low:+1",
+         "config": {"fee_rate": 0.00025, "slippage_ticks": 1.0}, "n_symbols": 14,
+         "net_ann_return": -0.04, "net_sharpe": -0.5, "net_max_drawdown": -0.08,
+         "passed": False, "run_at": "2026-09-27T12:00:00"},
+    ])
+
+    path = ledger.write_validation_log(tmp_path / "Validation2022Log.md")
+    content = path.read_text(encoding="utf-8")
+
+    assert content.count("`book-a`") == 1
+    assert "`ts_high:-1,ts_low:+1`" in content
+    assert "0.00025" in content and "1.0" in content
+    assert "-4.00%" in content and "-0.500" in content and "-8.00%" in content
+
+
 def test_oos_gate_refuses_books_without_passing_validation(tmp_path, monkeypatch):
     import importlib.util
     from pathlib import Path

@@ -18,14 +18,23 @@ from ... import config as C
 # 信号 → 仓位
 # --------------------------------------------------------------------------
 def weekly(sig: pd.DataFrame) -> pd.DataFrame:
-    """每周最后一个交易日取值，其余日沿用。输出仍是"收盘时的目标"，不做成交滞后。"""
-    s = pd.Series(sig.index, index=sig.index)
-    iso = s.dt.isocalendar()
-    key = iso.year.astype(str) + '-' + iso.week.astype(str)
-    reb = pd.DatetimeIndex(s.groupby(key).tail(1).values)
-    out = sig.copy()
-    out.loc[~out.index.isin(reb)] = np.nan
-    return out.ffill()
+    """每周最后一个交易日取值，其后交易日沿用，直到下一次调仓。
+
+    输出仍是收盘时的目标，不做成交滞后。调仓日信号为 NaN 时，这一周起目标就是空仓，
+    不把更早的仓位填过来：数据缺口不能伪装成仍持有上一周的观点。
+    """
+    index = pd.DatetimeIndex(sig.index)
+    iso = index.isocalendar()
+    key = pd.Series((iso.year.astype(str) + '-' + iso.week.astype(str)).to_numpy(),
+                    index=index)
+    is_reb = key.ne(key.shift(-1)).fillna(True)
+    regime = is_reb.cumsum()
+    reb_value = sig.where(is_reb, axis=0)
+
+    def _week_value(block: pd.Series) -> pd.Series:
+        return pd.Series(block.iloc[0], index=block.index)
+
+    return reb_value.groupby(regime).transform(_week_value)
 
 
 def execute_position(signal: pd.DataFrame) -> pd.DataFrame:

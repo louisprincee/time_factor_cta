@@ -1,6 +1,7 @@
 """第 6 步：2022 验证期测试。自选因子、自选板块，与第 5 步同一套回测口径。
 
-只读研究期分片和 2022 验证分片，2023 年及以后不在输入路径上。
+研究期整段扣费后没过 Sharpe 与年化门槛的池子直接拒绝，不读 2022、不记账。
+通过的池子才读研究期分片和 2022 验证分片，2023 年及以后不在输入路径上。
 每本书（因子+符号、板块、品种过滤、费率、滑点共同决定的指纹）在 2022 上只测一次，
 结果与是否通过一起写进 data/validation_2022/ledger.jsonl。第 7 步只放行这里通过的书。
 
@@ -60,12 +61,31 @@ def main() -> int:
         return 2
 
     todo, consumed = split_consumed(cfg)
+    ledger.write_validation_log()
     for label, entry in consumed:
         verdict = "通过" if entry.get("passed") else "未通过"
         source = entry.get("note") or entry.get("run_at")
         print(f"[{label}] 这本书已经在 2022 上测过（{source}，{verdict}），不再重测。")
+    if todo:
+        try:
+            research, _, _ = strategy.screen_research(cfg, todo)
+        except (FileNotFoundError, KeyError) as exc:
+            print(str(exc).splitlines()[0])
+            return 2
+        period = strategy.research_period_label()
+        blocked = []
+        for case in todo:
+            rows = research[(research["universe"] == case) & (research["period"] == period)]
+            row = rows.iloc[0] if len(rows) else {}
+            if strategy.passes(row, cfg):
+                continue
+            sharpe = float(row.get("net_sharpe", float("nan"))) if len(rows) else float("nan")
+            ann = float(row.get("net_ann_return", float("nan"))) if len(rows) else float("nan")
+            print(f"[{case}] 研究期未过门槛（扣费后 Sharpe {sharpe:.3f}，年化 {ann:.2%}），不进入 2022。")
+            blocked.append(case)
+        todo = [case for case in todo if case not in blocked]
     if not todo:
-        print("没有尚未验证的书。")
+        print("没有尚未验证、且研究期已通过的书。")
         return 1
 
     try:
@@ -126,6 +146,7 @@ def main() -> int:
     table.to_csv(run / "performance.csv", index=False, encoding="utf-8-sig")
     screen.to_csv(run / "universe_2022_screen.csv", encoding="utf-8-sig")
     hist.ticks.to_csv(run / "tick_table.csv", index=False, encoding="utf-8-sig")
+    validation_log = ledger.write_validation_log()
     context.dump_json(run / "params.json", {
         "config": cfg.to_dict(), "cases": cases, "loaded": loaded,
         "skipped": hist.skipped, "external_partitions": PARTITIONS,
@@ -140,6 +161,7 @@ def main() -> int:
         note += f" 跳过 {skipped}。"
     paths = [
         (ledger.validation_path(), '2022 验证台账（指纹、是否通过；每本书只记一次）'),
+        (validation_log, '2022 验证结果登记簿（因子、池、成本与绩效；自动同步）'),
         (run / "performance.csv", '本次验证的毛/净绩效与是否通过'),
         (run / "universe_2022_screen.csv", '2022 时点品种池筛选明细'),
         (run / "params.json", '本次配置、加载品种与跳过原因'),

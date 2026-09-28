@@ -101,11 +101,13 @@ def main() -> int:
             row = tab[tab['fold'] == 'mean_of_folds'].iloc[0]
             pos = engine.execute_position(engine.weekly(wide.clip(-1, 1)))
             port = engine.run_book(pos, day_ret, universe, C.FEE_BASE, slippage=slip)
-            perf = stats.performance(engine.stitch_test_years(port, years))
+            net = engine.stitch_test_years(port, years)
+            perf = stats.performance(net)
             return {'combo': label, 'members': ','.join(names), 'n': len(names),
                     'ic_ts': row['ic_ts'], 't': row['t'],
                     'ann_return': perf['ann_return'], 'ann_vol': perf['ann_vol'],
-                    'ret_risk': perf['ret_risk'], 'max_drawdown': perf['max_drawdown'],
+                    'sharpe': stats.sharpe_ratio(net), 'ret_risk': perf['ret_risk'],
+                    'max_drawdown': perf['max_drawdown'],
                     'turnover': engine.annual_turnover(pos, universe, years)}
 
         ts, dur = LOGIC['时间戳'], LOGIC['持续期']

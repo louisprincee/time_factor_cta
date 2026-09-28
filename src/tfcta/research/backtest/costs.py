@@ -18,7 +18,7 @@ TICK_FREQ_MIN = 50
 # float32 归并容差（相对）。同一个 tick 的浮点噪声远小于这个数，
 # 相邻两档（1 个 tick 与 2 个 tick）远大于它，所以 1e-3 两边都够宽。
 TICK_MERGE_TOL = 1e-3
-# 年内非零差分少于这个数就不逐年估，退回全样本估计
+# 年内非零差分少于这个数就不单独估这一年，只用截至该年的价格，不用以后年份
 TICK_MIN_DIFFS_PER_YEAR = 2000
 
 
@@ -49,19 +49,28 @@ def estimate_tick(close: np.ndarray) -> tuple[float, float]:
 
 
 def tick_rows(symbol: str, close, trading_date) -> list[dict]:
-    """单品种逐年的 tick / 价位 / 比例成本。调用方负责只传入已经允许读取的分钟数据。"""
+    """单品种逐年的 tick / 价位 / 比例成本。调用方负责只传入已经允许读取的分钟数据。
+
+    某年差分太少时，只用截至该年的价格来估，不用以后年份。全样本估计会把后来的
+    最小变动价位填进早年的成本。
+    """
     px = np.asarray(close, dtype='float64')
-    whole, whole_mode = estimate_tick(px)
     year = pd.DatetimeIndex(trading_date).year.to_numpy()
     rows = []
-    for y in sorted(set(year.tolist())):
+    prior_tick, prior_mode = np.nan, np.nan
+    for y in sorted(set(int(v) for v in year.tolist())):
         sub = px[year == y]
         med = float(np.nanmedian(sub)) if sub.size else np.nan
         n_diff = int(np.isfinite(np.diff(sub)).sum() if sub.size > 1 else 0)
         if n_diff >= TICK_MIN_DIFFS_PER_YEAR:
             tick, mode, src = (*estimate_tick(sub), 'year')
         else:
-            tick, mode, src = whole, whole_mode, 'symbol'
+            tick, mode = estimate_tick(px[year <= y])
+            if not np.isfinite(tick):
+                tick, mode = prior_tick, prior_mode
+            src = 'through_year'
+        if np.isfinite(tick):
+            prior_tick, prior_mode = tick, mode
         rows.append({
             'symbol': symbol, 'year': int(y), 'tick': tick,
             'tick_mode': mode, 'tick_source': src, 'n_diff': n_diff,
@@ -113,8 +122,8 @@ def slippage_wide(table: pd.DataFrame,
 
     整个品种都不在表里就直接报错——静默返回 NaN 会让那个品种的净值全变成 NaN，
     在等权组合里表现为"这个品种被跳过了"，成本反而变成 0，方向恰好是**低估**。
-    品种在表里但缺某几年（上市晚、退池早）则按该品种最近的有效年份补齐：那些年份
-    本来就没有仓位，补齐只是为了避免 ``NaN × 0 = NaN`` 把无换手的格子污染掉。
+    品种在表里但缺某几年：该年之后的缺口只用上一年的费率向前填；第一条记录之前的
+    日期才用最早一年回填。那些日期本来没有仓位，补齐是为了避免 ``NaN × 0 = NaN``。
     """
     cols = list(columns)
     if table.empty or float(n_ticks) == 0.0:
