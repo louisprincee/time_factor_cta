@@ -1,7 +1,9 @@
 """验证期与样本外的使用台账。一本书（按配置指纹）在 2022 上只测一次，在同一个样本外窗口上也只测一次。
 
-旧版 step6 的冻结方案和 step10 的回溯诊断在改版前已经看过 2022，这里按同样的指纹
-把它们登记为已消耗，不能用新脚本再测一遍。
+旧版 step6 的冻结方案和 step10 的回溯诊断在改版前已经看过 2022，这里把它们登记为已消耗。
+除了精确指纹，每条记录还带 ``book_key``（等效因子权重 + 池 + 品种，不含成本与执行口径）；
+step6 按 ``book_key`` 拦截，换调仓节奏、波动率目标或成本再测同一组因子也不放行。
+冻结方案只要 ``config/validation_2022_plan.json`` 在就登记，不依赖旧绩效表是否还在。
 """
 from __future__ import annotations
 
@@ -50,32 +52,39 @@ def legacy_validation_entries() -> list[dict]:
     entries = []
     plan_path = C.CONFIG_DIR / "validation_2022_plan.json"
     perf_path = VALIDATION_ROOT / "performance.csv"
-    if plan_path.exists() and perf_path.exists():
+    if plan_path.exists():
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
-        perf = pd.read_csv(perf_path).set_index("strategy")
+        perf = (pd.read_csv(perf_path).set_index("strategy") if perf_path.exists()
+                else pd.DataFrame())
         for name, members in plan.get("strategies", {}).items():
-            if name not in perf.index:
-                continue
+            # 旧版口径：周五单批、不做波动率缩放。
             cfg = strategy.BookConfig(
                 factors=strategy.parse_factor_specs(members),
                 fee_rate=float(plan["fee_rate"]),
-                slippage_ticks=float(plan["slippage_ticks"]))
-            row = perf.loc[name]
-            # 旧表没有算术 Sharpe，只有几何年化除以波动。这四本两个口径都是负的，
-            # 门槛结果相同。新书的 net_sharpe 是日均收益 / 日波动 × sqrt(252)。
-            net = {"net_ann_return": row.get("net_ann_return"),
-                     "net_sharpe": row.get("net_ret_risk"),
-                     "net_max_drawdown": row.get("net_max_drawdown"),
-                     "n_symbols": row.get("symbols"),
-                     "turnover": row.get("turnover")}
-            entries.append(_legacy(cfg, sectors.ALL_POOL, f"旧 step6 冻结方案 {name}", net))
+                slippage_ticks=float(plan["slippage_ticks"]),
+                tranches=0, vol_target=0.0)
+            note = f"旧 step6 冻结方案 {name}"
+            if name in perf.index:
+                row = perf.loc[name]
+                # 旧表没有算术 Sharpe，只有几何年化除以波动。这四本两个口径都是负的，
+                # 门槛结果相同。新书的 net_sharpe 是日均收益 / 日波动 × sqrt(252)。
+                net = {"net_ann_return": row.get("net_ann_return"),
+                       "net_sharpe": row.get("net_ret_risk"),
+                       "net_max_drawdown": row.get("net_max_drawdown"),
+                       "n_symbols": row.get("symbols"),
+                       "turnover": row.get("turnover")}
+            else:
+                net = {}
+                note += "（旧绩效表已不在，按已看过 2022、未通过登记）"
+            entries.append(_legacy(cfg, sectors.ALL_POOL, note, net))
 
     for params_path in sorted(C.RUNS_DIR.glob("*_retro_2022_sector_combo/params.json")):
         perf_path = params_path.with_name("performance.csv")
         if not perf_path.exists():
             continue
         params = json.loads(params_path.read_text(encoding="utf-8"))
-        cfg = strategy.BookConfig(factors=strategy.parse_factor_specs(params["factors"]))
+        cfg = strategy.BookConfig(factors=strategy.parse_factor_specs(params["factors"]),
+                                  tranches=0, vol_target=0.0)
         perf = pd.read_csv(perf_path)
         full = perf[perf["universe"] == "冻结2022全品种池"]
         if full.empty:
@@ -96,12 +105,13 @@ def _legacy(cfg: strategy.BookConfig, case: str, note: str, net: dict) -> dict:
            for k in ("net_ann_return", "net_sharpe")}
     entry = {
         "fingerprint": strategy.fingerprint(cfg, case),
+        "book_key": strategy.book_key(cfg, case),
         "case": case,
         "factors": strategy.factor_label(cfg.factors),
         "config": cfg.to_dict(),
         "legacy": True,
         "note": note,
-        "passed": strategy.passes(row, cfg),
+        "passed": bool(net) and strategy.passes(row, cfg),
         "criteria": {"min_net_sharpe": cfg.min_net_sharpe,
                      "min_net_ann_return": cfg.min_net_ann_return},
         **row,
@@ -140,8 +150,10 @@ def write_validation_log(path: Path | None = None) -> Path:
         "",
         "本表由 `scripts/step6_validate_2022.py` 自动重建，包含旧冻结方案与当前验证台账。",
         "运行 step6 时会先同步已有记录；新结果写入 JSONL 台账后会再次同步本表。",
-        "防重复以 `data/validation_2022/ledger.jsonl` 中的配置 fingerprint 为准，本表是便于检索的可读索引。",
-        "同一 fingerprint 表示相同因子与方向、池、费率、滑点及执行配置；已登记的书不能再次验证。",
+        "防重复以 `data/validation_2022/ledger.jsonl` 与旧冻结方案为准，本表是便于检索的可读索引。",
+        "Fingerprint 表示相同因子与方向、池、费率、滑点及执行配置（调仓批数、波动率目标）。",
+        "step6 另按 book_key（等效因子权重 + 池 + 品种）拦截：同一组因子在同一池子上看过 2022 后，",
+        "换成本或执行口径也不能再验证。`time_combo:+1` 与四个时间因子等权是同一个 book_key。",
         "",
         "通过标准：净算术 Sharpe >= 0.5 且净年化收益 > 0%。Sharpe = 日均收益 / 日波动 × sqrt(252)。净绩效已扣手续费和滑点。",
         "旧冻结方案的四行没有算术 Sharpe，这一列填的是几何年化 / 波动；那四本两个口径都是负的，通过与否不变。",

@@ -1,10 +1,14 @@
-"""回测引擎：调仓节奏、成交滞后、按换手扣费、当年池内等权、walk-forward 测试年拼接。
+"""回测引擎：调仓节奏、波动率目标、成交滞后、按换手扣费、当年池内等权、测试年拼接。
 
 时间口径（与 ``data.bars`` 一致）：t 日收盘的信号 → ``execute_position`` 之后 t+1 开盘持有 →
 赚 ``day_ret[t+1]``，换手在 t+1 开盘成交并在同一天扣费。
 
 成本口径：单品种先按换手扣手续费与滑点，再在当年品种池里等权；退池那天补一笔平仓。
 报告的年换手与扣费用的是同一份成交量（:func:`trades`）。
+
+调仓节奏默认用 :func:`staggered`：五批各持有五个交易日、错开一天调仓，目标仓位取五批平均。
+只在周五调仓的单批书对相位极敏感（同一组因子换成周一调仓，Sharpe 能从 +1.1 掉到 -0.5），
+错开分批等于把五个相位一起持有，结果不再取决于哪天调仓。
 """
 from __future__ import annotations
 
@@ -35,6 +39,55 @@ def weekly(sig: pd.DataFrame) -> pd.DataFrame:
         return pd.Series(block.iloc[0], index=block.index)
 
     return reb_value.groupby(regime).transform(_week_value)
+
+
+def staggered(sig: pd.DataFrame, n: int = 5) -> pd.DataFrame:
+    """n 批错开调仓：第 k 批在交易日序号 ≡ k (mod n) 的收盘取值，持有 n 个交易日。
+
+    输出是 n 批目标的平均，仍是收盘时的目标，不做成交滞后。某批调仓日信号为 NaN 时
+    这一批在它的持有期内空仓（按 0 计入平均），与 :func:`weekly` 的缺口口径一致；
+    n 批全空时输出 NaN。相位按交易日序号而不是星期几划分，节假日不会让某一批多持几天。
+    """
+    n = int(n)
+    if n <= 1:
+        return sig.copy()
+    order = np.arange(len(sig)) % n
+    total = np.zeros(sig.shape, dtype='float64')
+    live = np.zeros(sig.shape, dtype=bool)
+    for k in range(n):
+        is_reb = pd.Series(order == k, index=sig.index)
+        value = sig.where(is_reb, axis=0).ffill()
+        # 调仓日有值记 1、缺值记 0，其余日沿用最近一次调仓日的标记
+        valid = sig.notna().astype('float64').where(is_reb, axis=0).ffill().eq(1.0)
+        held = value.where(valid).to_numpy(dtype='float64')
+        ok = np.isfinite(held)
+        total += np.where(ok, held, 0.0)
+        live |= ok
+    out = np.where(live, total / n, np.nan)
+    return pd.DataFrame(out, index=sig.index, columns=sig.columns)
+
+
+def rebalance(sig: pd.DataFrame, tranches: int) -> pd.DataFrame:
+    """``tranches=0`` 表示旧的周五单批（:func:`weekly`），否则 :func:`staggered`。"""
+    return weekly(sig) if int(tranches) == 0 else staggered(sig, int(tranches))
+
+
+def vol_target(signal: pd.DataFrame,
+               vol: pd.DataFrame | None,
+               target: float | None,
+               cap: float = C.VOL_TARGET_CAP) -> pd.DataFrame:
+    """仓位 = 信号 × 目标年化波动 / 事前年化波动，杠杆截到 ``cap``。
+
+    ``vol`` 是截至 t 日收盘的日收益波动（``library.SignalSet.vol``），与 t 日信号同时可知。
+    波动为 0 或缺失（停板、刚上市）时仓位为 NaN，不猜杠杆。``target`` 为 None 或 0 时原样返回。
+    """
+    if not target:
+        return signal
+    if vol is None:
+        raise ValueError('波动率目标需要事前波动 vol')
+    ann = vol.reindex(index=signal.index, columns=signal.columns) * np.sqrt(252.0)
+    scale = (float(target) / ann.where(ann > 0)).clip(upper=float(cap))
+    return signal * scale
 
 
 def execute_position(signal: pd.DataFrame) -> pd.DataFrame:
@@ -93,7 +146,10 @@ def symbol_net(position: pd.DataFrame,
     elif slippage is not None:
         rate = float(fee) + float(slippage)
     cost = (rate * size).where(size > 0, 0.0)
-    return cur * day_ret - cost
+    pnl = cur * day_ret
+    # 当天收益缺失（该品种当天没有开盘价）但确有成交时，成本照扣，不随收益一起变成 NaN
+    pnl = pnl.where(day_ret.notna() | ~(size > 0), 0.0)
+    return pnl - cost
 
 
 def _nanmean_rows(block: np.ndarray) -> np.ndarray:
@@ -151,11 +207,11 @@ def annual_turnover(position: pd.DataFrame, universe: dict, years: list[int]) ->
 # walk-forward
 # --------------------------------------------------------------------------
 def walk_forward_folds(test_years: list[int] | None = None) -> list[dict]:
+    """研究期逐年折。所有参数都是事前固定的，没有在训练窗口上拟合的东西，
+    所以这里只给测试年；逐年结果只是把 2016–2021 切成六段看稳定性，不是样本外。"""
     years = C.WF_TEST_YEARS_LIST if test_years is None else list(test_years)
     return [{
         'test_year': int(y),
-        'train_start': int(y) - C.WF_TRAIN_YEARS,
-        'train_end': int(y) - 1,
         'sparse_night': int(y) in C.WF_FOLDS_WITH_SPARSE_NIGHT,
     } for y in years]
 

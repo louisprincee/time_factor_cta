@@ -62,6 +62,20 @@ def forward_return(day_ret: pd.DataFrame) -> pd.DataFrame:
     return day_ret.shift(-1)
 
 
+def holding_forward_return(day_ret: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    """t 日信号在持仓期内的累计收益 ``day_ret[t+1] + … + day_ret[t+H]``。
+
+    ``horizon=1`` 就是 :func:`forward_return`。H 天里有一天缺失即为 NaN，不补 0。
+    结果的 ``attrs['horizon']`` 记下 H，事前波动标准化据此错开窗口。
+    """
+    h = int(horizon)
+    fwd = forward_return(day_ret)
+    out = fwd if h == 1 else fwd.rolling(h, min_periods=h).sum().shift(-(h - 1))
+    out = out.copy()
+    out.attrs['horizon'] = h
+    return out
+
+
 def wide_by_field(bars_by_symbol: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     """{品种: 日线} → {字段: 交易日 × 品种}。"""
     fields = next(iter(bars_by_symbol.values())).columns

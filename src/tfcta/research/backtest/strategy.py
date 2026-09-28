@@ -1,4 +1,8 @@
-"""自选因子、自选板块的等权周频书。研究期回测、2022 验证、样本外测试共用这一层。
+"""自选因子、自选板块的等权书。研究期回测、2022 验证、样本外测试共用这一层。
+
+默认执行口径：五批错开调仓（每批持有五个交易日）、仓位按事前波动缩放到单品种年化
+``C.VOL_TARGET``，t 日收盘信号 t+1 开盘成交。``--tranches 0`` 回到旧的周五单批，
+``--vol-target 0`` 关掉波动率缩放；两者都进指纹。
 
 因子写法与 ``config/validation_2022_plan.json`` 一致：``名字:符号``，符号乘在**原始值**上。
 已定向因子可以只写名字，取 ``library.SIGNED_PRIORS`` 里的先验方向；
@@ -21,7 +25,6 @@ from ...factors import library
 from ..analysis import stats
 from . import engine
 
-REBALANCE = "weekly_last_trading_day"
 EXECUTION = "next_trading_day_open"
 DEFAULT_MIN_SHARPE = 0.5
 DEFAULT_MIN_ANN_RETURN = 0.0
@@ -37,9 +40,16 @@ class BookConfig:
     slippage_ticks: float = C.SLIPPAGE_TICKS
     min_net_sharpe: float = DEFAULT_MIN_SHARPE
     min_net_ann_return: float = DEFAULT_MIN_ANN_RETURN
+    tranches: int = C.REBALANCE_TRANCHES
+    vol_target: float = C.VOL_TARGET
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def rebalance_label(tranches: int) -> str:
+    return ("weekly_last_trading_day" if int(tranches) == 0
+            else f"staggered_{int(tranches)}x{int(tranches)}d")
 
 
 # --------------------------------------------------------------------------
@@ -93,6 +103,10 @@ def add_book_args(parser, *, with_criteria: bool = False) -> None:
                         help="与板块取交集；不传板块时这些品种合成一本")
     parser.add_argument("--fee-rate", type=float, default=None)
     parser.add_argument("--slippage-ticks", type=float, default=None)
+    parser.add_argument("--tranches", type=int, default=None,
+                        help=f"错开调仓的批数，默认 {C.REBALANCE_TRANCHES}；0 = 旧的周五单批")
+    parser.add_argument("--vol-target", type=float, default=None,
+                        help=f"单品种年化波动目标，默认 {C.VOL_TARGET}；0 = 不缩放")
     if with_criteria:
         parser.add_argument("--min-sharpe", type=float, default=None,
                             help=f"验证通过所需的扣费后 Sharpe，默认 {DEFAULT_MIN_SHARPE}")
@@ -124,6 +138,8 @@ def config_from_args(args) -> BookConfig:
         symbols=[s.upper() for s in symbols] if symbols else None,
         fee_rate=float(pick(args.fee_rate, "fee_rate", C.FEE_BASE)),
         slippage_ticks=float(pick(args.slippage_ticks, "slippage_ticks", C.SLIPPAGE_TICKS)),
+        tranches=int(pick(getattr(args, "tranches", None), "tranches", C.REBALANCE_TRANCHES)),
+        vol_target=float(pick(getattr(args, "vol_target", None), "vol_target", C.VOL_TARGET)),
         min_net_sharpe=float(criterion(getattr(args, "min_sharpe", None),
                                        "min_net_sharpe", DEFAULT_MIN_SHARPE)),
         min_net_ann_return=float(criterion(getattr(args, "min_ann_return", None),
@@ -207,11 +223,53 @@ def equal_weight_signal(signal_set: library.SignalSet, factors: dict[str, float]
     return library.average_signals(frames).clip(-1, 1)
 
 
+def effective_weights(factors: dict[str, float]) -> dict[str, float]:
+    """书在各**原始**因子上的等效权重（带符号）。
+
+    ``time_combo`` 展开成四个时间因子：它本身就是四个成员 trail_z 的等权平均，
+    所以 ``{time_combo:+1}`` 与 ``{ts_high:-1, ts_low:+1, dfp_max:+1, dfp_top3:+1}``
+    的等效权重相同，指纹也相同。
+    """
+    k = float(len(factors))
+    members = list(C.FACTOR_SIGNS)
+    out: dict[str, float] = {}
+    for name, sign in factors.items():
+        if name == "time_combo":
+            for m in members:
+                out[m] = out.get(m, 0.0) + sign * C.FACTOR_SIGNS[m] / len(members) / k
+        else:
+            out[name] = out.get(name, 0.0) + sign / k
+    return {n: round(w, 12) for n, w in sorted(out.items()) if abs(w) > 1e-12}
+
+
+def canonical_case(case: str) -> str:
+    """合并池按板块名排序：``黑色+贵金属`` 与 ``贵金属+黑色`` 是同一本书。"""
+    return "+".join(sorted(case.split("+"))) if "+" in case else case
+
+
+def _digest(payload: dict) -> str:
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def book_key(cfg: BookConfig, case: str) -> str:
+    """只看因子权重与品种范围、不看成本和执行口径的粗指纹。
+
+    同一组因子、同一个池子在 2022 上看过之后，换个调仓节奏或波动率目标再测，
+    仍然是在同一段数据上挑书。验证台账按这个键拦重复。
+    """
+    return _digest({
+        "weights": effective_weights(cfg.factors),
+        "case": canonical_case(case),
+        "symbols": sorted(cfg.symbols) if cfg.symbols else None,
+    })
+
+
 def fingerprint(cfg: BookConfig, case: str) -> str:
     """同一本书在验证台账和样本外台账里的唯一标识。通过门槛不参与指纹。"""
-    payload = {
-        "factors": {k: cfg.factors[k] for k in sorted(cfg.factors)},
-        "case": case,
+    return _digest({
+        "weights": effective_weights(cfg.factors),
+        "case": canonical_case(case),
         "symbols": sorted(cfg.symbols) if cfg.symbols else None,
         "fee_rate": cfg.fee_rate,
         "slippage_ticks": cfg.slippage_ticks,
@@ -219,11 +277,11 @@ def fingerprint(cfg: BookConfig, case: str) -> str:
         "pct": C.IC_REFERENCE_PCT,
         "z_window": library.Z_WINDOW,
         "z_min": library.Z_MIN,
-        "rebalance": REBALANCE,
+        "rebalance": rebalance_label(cfg.tranches),
+        "vol_target": float(cfg.vol_target or 0.0),
+        "vol_cap": C.VOL_TARGET_CAP if cfg.vol_target else None,
         "execution": EXECUTION,
-    }
-    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    })
 
 
 def factor_label(factors: dict[str, float]) -> str:
@@ -233,17 +291,31 @@ def factor_label(factors: dict[str, float]) -> str:
 # --------------------------------------------------------------------------
 # 回测与汇总
 # --------------------------------------------------------------------------
+def book_position(signal: pd.DataFrame,
+                  vol: pd.DataFrame | None,
+                  tranches: int = C.REBALANCE_TRANCHES,
+                  vol_target: float = C.VOL_TARGET) -> pd.DataFrame:
+    """收盘信号 → 波动率缩放 → 分批调仓 → 次日开盘起持有的仓位。"""
+    if vol_target and vol is None:
+        raise ValueError("开了波动率目标却没传事前波动")
+    target = engine.vol_target(signal, vol, vol_target)
+    return engine.execute_position(engine.rebalance(target, tranches))
+
+
 def portfolio(signal: pd.DataFrame,
               day_ret: pd.DataFrame,
               universe: dict,
               members: list[str],
-              fee: float,
-              slippage: pd.DataFrame | None):
+              cfg: BookConfig,
+              slippage: pd.DataFrame | None,
+              vol: pd.DataFrame | None = None):
     selected = [s for s in members if s in day_ret.columns]
     scoped = {int(y): [s for s in syms if s in selected] for y, syms in universe.items()}
-    position = engine.execute_position(engine.weekly(signal.reindex(columns=selected)))
+    sub_vol = vol.reindex(index=signal.index, columns=selected) if vol is not None else None
+    position = book_position(signal.reindex(columns=selected), sub_vol,
+                             cfg.tranches, cfg.vol_target)
     gross = engine.run_book(position, day_ret, scoped, 0.0)
-    net = engine.run_book(position, day_ret, scoped, fee, slippage=slippage)
+    net = engine.run_book(position, day_ret, scoped, cfg.fee_rate, slippage=slippage)
     return selected, scoped, position, gross, net
 
 
@@ -275,19 +347,25 @@ def evaluate_cases(signal: pd.DataFrame,
                    universe: dict,
                    cases: dict[str, list[str]],
                    years: list[int],
-                   fee: float,
+                   cfg: BookConfig,
                    slippage: pd.DataFrame | None,
                    overall_label: str,
-                   window: tuple[pd.Timestamp, pd.Timestamp] | None = None) -> pd.DataFrame:
-    """每个池子一本书：整段一行 + 逐年一行，整段那一行附上合成信号的时序 IC。"""
-    fwd = B.forward_return(day_ret)
+                   window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+                   vol: pd.DataFrame | None = None) -> pd.DataFrame:
+    """每个池子一本书：整段一行 + 逐年一行，整段那一行附上合成信号的时序 IC。
+
+    ``ic_ts``/``ic_t`` 用持仓期（``C.IC_HORIZON`` 日累计）收益，与书的持有期一致；
+    ``ic_ts_1d``/``ic_t_1d`` 是次日收益 IC，只备查。
+    """
+    fwd = B.holding_forward_return(day_ret, C.IC_HORIZON)
+    fwd1 = B.holding_forward_return(day_ret, 1)
     rows = []
     for case, members in cases.items():
         if not members:
             rows.append({"universe": case, "period": overall_label, "n_symbols": 0})
             continue
         _, scoped, position, gross, net = portfolio(
-            signal, day_ret, universe, members, fee, slippage)
+            signal, day_ret, universe, members, cfg, slippage, vol)
         if window is not None:
             lo, hi = window
             gross = gross.loc[(gross.index >= lo) & (gross.index <= hi)]
@@ -299,7 +377,10 @@ def evaluate_cases(signal: pd.DataFrame,
                          years, len(in_pool))
         ic = stats.factor_ic_table(signal, fwd, scoped, case, years)
         tail = ic[ic["fold"] == "mean_of_folds"].iloc[0]
+        ic1 = stats.factor_ic_table(signal, fwd1, scoped, case, years)
+        tail1 = ic1[ic1["fold"] == "mean_of_folds"].iloc[0]
         row.update({"ic": tail["ic"], "ic_ts": tail["ic_ts"], "ic_t": tail["t"],
+                    "ic_ts_1d": tail1["ic_ts"], "ic_t_1d": tail1["t"],
                     "members": " ".join(in_pool)})
         rows.append(row)
         if len(years) > 1:
@@ -339,11 +420,12 @@ def screen_research(cfg: BookConfig,
     if not symbols or day_ret.empty:
         raise FileNotFoundError("研究期品种池或收益为空。")
     years = [fold["test_year"] for fold in engine.walk_forward_folds()]
-    signal = equal_weight_signal(library.load(symbols), cfg.factors)
+    signal_set = library.load(symbols)
+    signal = equal_weight_signal(signal_set, cfg.factors)
     slippage, note = costs.research_slippage(symbols, day_ret.index, cfg.slippage_ticks)
     cases = resolve_cases(cfg, symbols, labels=labels)
     table = evaluate_cases(signal, day_ret, universe, cases, years,
-                           cfg.fee_rate, slippage, research_period_label())
+                           cfg, slippage, research_period_label(), vol=signal_set.vol)
     return table, note, cases
 
 

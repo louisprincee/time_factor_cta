@@ -87,9 +87,45 @@ def test_legacy_frozen_plan_counts_as_consumed_validation(tmp_path, monkeypatch)
     monkeypatch.setattr(ledger, "VALIDATION_ROOT", data / "validation_2022")
 
     entries = ledger.validation_entries()
-    default = strategy.config_from_args(_args([]))
-    hits = ledger.lookup(entries, strategy.fingerprint(default, "全部"))
+    old = strategy.config_from_args(_args(["--tranches", "0", "--vol-target", "0"]))
+    hits = ledger.lookup(entries, strategy.fingerprint(old, "全部"))
     assert len(hits) == 1 and hits[0]["passed"] is False
+    # 新的执行口径指纹不同，但 book_key 相同：换调仓节奏再测同一组因子也要被拦
+    new = strategy.config_from_args(_args([]))
+    assert strategy.fingerprint(new, "全部") != strategy.fingerprint(old, "全部")
+    assert hits[0]["book_key"] == strategy.book_key(new, "全部")
+    # time_combo 就是四个时间因子等权，同一个 book_key
+    combo = strategy.config_from_args(_args(["--factors", "time_combo"]))
+    assert strategy.book_key(combo, "全部") == hits[0]["book_key"]
+
+
+def test_legacy_plan_is_consumed_even_without_old_performance_table(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "validation_2022_plan.json").write_text(json.dumps({
+        "fee_rate": C.FEE_BASE, "slippage_ticks": C.SLIPPAGE_TICKS,
+        "strategies": {"baseline": dict(C.FACTOR_SIGNS),
+                       "plus_er": {**C.FACTOR_SIGNS, "er_signed": 1}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(C, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(ledger, "VALIDATION_ROOT", tmp_path / "missing")
+
+    entries = ledger.validation_entries()
+    assert len(entries) == 2
+    assert all(e["passed"] is False and e["legacy"] for e in entries)
+    assert all(e["net_sharpe"] != e["net_sharpe"] for e in entries)  # NaN
+
+
+def test_fingerprint_is_invariant_to_merged_case_order_and_tracks_execution():
+    cfg = strategy.config_from_args(_args(["--factors", "tsmom"]))
+    assert strategy.fingerprint(cfg, "黑色金属+贵金属") == strategy.fingerprint(cfg, "贵金属+黑色金属")
+    weekly = strategy.config_from_args(_args(["--factors", "tsmom", "--tranches", "0"]))
+    flat = strategy.config_from_args(_args(["--factors", "tsmom", "--vol-target", "0"]))
+    fps = {strategy.fingerprint(c, "全部") for c in (cfg, weekly, flat)}
+    assert len(fps) == 3
+    assert len({strategy.book_key(c, "全部") for c in (cfg, weekly, flat)}) == 1
+    assert flat.vol_target == 0.0 and weekly.tranches == 0
 
 
 def test_validation_log_lists_factors_costs_and_deduplicates_fingerprints(tmp_path, monkeypatch):
@@ -133,15 +169,40 @@ def test_oos_gate_refuses_books_without_passing_validation(tmp_path, monkeypatch
     assert allowed == [] and len(refused) == 2
 
     ledger.append(ledger.validation_path(), [
-        {"fingerprint": strategy.fingerprint(cfg, "农产品"), "passed": True},
-        {"fingerprint": strategy.fingerprint(cfg, "贵金属"), "passed": False},
+        {"fingerprint": strategy.fingerprint(cfg, "农产品"), "passed": True,
+         "net_sharpe": 0.8, "net_ann_return": 0.05},
+        {"fingerprint": strategy.fingerprint(cfg, "贵金属"), "passed": False,
+         "net_sharpe": 0.1, "net_ann_return": 0.01},
     ])
     allowed, _ = step7.gate(cfg, end)
     assert allowed == ["农产品"]
 
+    # 做过一次样本外之后，换个截止日期也不能再测
     ledger.append(ledger.oos_path(), [
         {"fingerprint": strategy.fingerprint(cfg, "农产品"), "oos_end": end.isoformat()}])
     assert step7.gate(cfg, end)[0] == []
+    assert step7.gate(cfg, dt.date(2025, 12, 31))[0] == []
+
+
+def test_oos_gate_recomputes_pass_with_default_criteria(tmp_path, monkeypatch):
+    """step6 用 --min-sharpe 0 放宽门槛记成 passed=True 的书，step7 仍按默认门槛拒绝。"""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "step7", Path(__file__).resolve().parents[1] / "scripts" / "step7_oos_test.py")
+    step7 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(step7)
+    monkeypatch.setattr(ledger, "VALIDATION_ROOT", tmp_path / "v")
+    monkeypatch.setattr(ledger, "OOS_ROOT", tmp_path / "o")
+    monkeypatch.setattr(C, "CONFIG_DIR", tmp_path / "none")
+    monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
+    cfg = strategy.config_from_args(_args(["--pools", "农产品"]))
+    ledger.append(ledger.validation_path(), [
+        {"fingerprint": strategy.fingerprint(cfg, "农产品"), "passed": True,
+         "net_sharpe": 0.2, "net_ann_return": 0.01,
+         "criteria": {"min_net_sharpe": 0.0, "min_net_ann_return": 0.0}}])
+    assert step7.gate(cfg, dt.date(2024, 12, 31))[0] == []
 
 
 def test_test_window_must_have_ended():

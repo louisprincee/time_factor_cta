@@ -23,7 +23,10 @@ TERM_STRUCTURE_FACTORS = [
 
 def passes_screen(annual_ics: list[float], t_value: float,
                   min_years: int = 6) -> bool:
-    """年度 IC 同号，|平均 IC| 超过门槛，且时序 |t| 超过门槛。"""
+    """逐年 ``ic_ts`` 同号，|平均| 超过门槛，且时序 |t| 超过门槛。
+
+    三条读的是同一个估计量（逐期 mean(z·r̃)），方向、量级、显著性不会互相打架。
+    """
     values = np.asarray(annual_ics, dtype="float64")
     values = values[np.isfinite(values)]
     if values.size < min_years or values.size == 0 or not np.isfinite(t_value):
@@ -46,15 +49,17 @@ def _factor_metrics(factor: pd.DataFrame, forward: pd.DataFrame,
     values = {
         "factor": name,
         "avg_ic": float(annual["ic"].mean()) if annual["ic"].notna().any() else np.nan,
+        "avg_ic_ts": (float(annual["ic_ts"].mean())
+                      if annual["ic_ts"].notna().any() else np.nan),
         "ic_ts": float(overall["ic_ts"]),
         "t": float(overall["t"]),
         "n_periods": int(overall["n_periods"]),
-        "n_years": int(annual["ic"].notna().sum()),
+        "n_years": int(annual["ic_ts"].notna().sum()),
     }
     for _, row in annual.iterrows():
         values[f"ic_{row['fold']}"] = row["ic"]
         values[f"ic_ts_{row['fold']}"] = row["ic_ts"]
-    annual_ics = [values.get(f"ic_{year}", np.nan) for year in years]
+    annual_ics = [values.get(f"ic_ts_{year}", np.nan) for year in years]
     finite = np.asarray(annual_ics, dtype="float64")
     values["same_sign"] = bool(
         len(annual_ics) == len(years)
@@ -81,7 +86,7 @@ def _subgroup_metrics(factor: pd.DataFrame, forward: pd.DataFrame,
     metrics["symbols_by_year"] = ";".join(
         f"{year}:{count}" for year, count in zip(years, annual_counts))
     metrics["mean_symbols"] = float(np.mean(annual_counts))
-    annual_ics = [metrics.get(f"ic_{year}", np.nan) for year in years]
+    annual_ics = [metrics.get(f"ic_ts_{year}", np.nan) for year in years]
     metrics["selected"] = passes_screen(annual_ics, metrics["t"], min_years)
     return metrics
 

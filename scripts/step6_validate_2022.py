@@ -2,7 +2,9 @@
 
 研究期整段扣费后没过 Sharpe 与年化门槛的池子直接拒绝，不读 2022、不记账。
 通过的池子才读研究期分片和 2022 验证分片，2023 年及以后不在输入路径上。
-每本书（因子+符号、板块、品种过滤、费率、滑点共同决定的指纹）在 2022 上只测一次，
+每本书（因子+符号、板块、品种过滤、费率、滑点、执行口径共同决定的指纹）在 2022 上只测一次，
+而且同一组等效因子权重 + 同一个池子（``book_key``）只要在 2022 上看过一次，换了成本或
+执行口径也不再放行。
 结果与是否通过一起写进 data/validation_2022/ledger.jsonl。第 7 步只放行这里通过的书。
 
 通过条件（默认）：2022 扣费后 Sharpe >= 0.5 且扣费后年化 > 0。
@@ -37,6 +39,9 @@ def split_consumed(cfg: strategy.BookConfig) -> tuple[list[str], list[tuple[str,
     todo, consumed = [], []
     for label in strategy.case_labels(cfg):
         hits = ledger.lookup(entries, strategy.fingerprint(cfg, label))
+        if not hits:
+            key = strategy.book_key(cfg, label)
+            hits = [e for e in entries if e.get("book_key") == key]
         if hits:
             consumed.append((label, hits[-1]))
         else:
@@ -117,7 +122,7 @@ def main() -> int:
 
     cases = strategy.resolve_cases(cfg, universe[YEAR], labels=todo)
     table = strategy.evaluate_cases(signal, day_ret, universe, cases, [YEAR],
-                                 cfg.fee_rate, slippage, str(YEAR))
+                                 cfg, slippage, str(YEAR), vol=signal_set.vol)
     table["passed"] = [strategy.passes(row, cfg) for _, row in table.iterrows()]
     table.insert(0, "fingerprint", table["universe"].map(
         lambda case: strategy.fingerprint(cfg, case)))
@@ -128,6 +133,7 @@ def main() -> int:
     for _, row in table.iterrows():
         entries.append({
             "fingerprint": row["fingerprint"],
+            "book_key": strategy.book_key(cfg, row["universe"]),
             "case": row["universe"],
             "factors": strategy.factor_label(cfg.factors),
             "config": cfg.to_dict(),
@@ -150,7 +156,8 @@ def main() -> int:
     context.dump_json(run / "params.json", {
         "config": cfg.to_dict(), "cases": cases, "loaded": loaded,
         "skipped": hist.skipped, "external_partitions": PARTITIONS,
-        "rebalance": strategy.REBALANCE, "execution": strategy.EXECUTION,
+        "rebalance": strategy.rebalance_label(cfg.tranches),
+        "vol_target": cfg.vol_target, "execution": strategy.EXECUTION,
         "slippage": "按加载的分钟数据逐年估 tick，含 2022",
     })
 

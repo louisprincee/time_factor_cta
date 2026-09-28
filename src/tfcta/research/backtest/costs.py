@@ -115,15 +115,18 @@ def slippage_wide(table: pd.DataFrame,
                   index: pd.Index,
                   columns: pd.Index,
                   n_ticks: float) -> pd.DataFrame:
-    """(交易日 × 品种) 的单边比例滑点 = ``n_ticks × tick / 当年价位中位数``。
+    """(交易日 × 品种) 的单边比例滑点 = ``n_ticks × tick / 上一年价位中位数``。
+
+    第 y 年用第 y-1 年的 ``rate_per_tick``：当年价位中位数要到年底才知道，直接用
+    会让成本随当年价格事后调整。品种的第一年没有上一年，只能用当年自己的估计。
 
     与 ``fee`` 同样按换手计费，所以 -1 翻到 +1（换手 2）会被收两份——反手确实是
     两笔成交，各自穿一次价差，这个口径和手续费是一致的。
 
     整个品种都不在表里就直接报错——静默返回 NaN 会让那个品种的净值全变成 NaN，
     在等权组合里表现为"这个品种被跳过了"，成本反而变成 0，方向恰好是**低估**。
-    品种在表里但缺某几年：该年之后的缺口只用上一年的费率向前填；第一条记录之前的
-    日期才用最早一年回填。那些日期本来没有仓位，补齐是为了避免 ``NaN × 0 = NaN``。
+    品种在表里但缺某几年：缺口用此前最近一年的费率向前填；第一条记录之前（以及第一年）
+    的日期才用最早一年回填。那些日期本来没有仓位，补齐是为了避免 ``NaN × 0 = NaN``。
     """
     cols = list(columns)
     if table.empty or float(n_ticks) == 0.0:
@@ -137,7 +140,7 @@ def slippage_wide(table: pd.DataFrame,
     span = sorted(set(year.tolist()) | set(rate.index.get_level_values(1).tolist()))
     data = {}
     for c in cols:
-        per_year = rate.loc[c].reindex(span).ffill().bfill()
+        per_year = rate.loc[c].reindex(span).ffill().shift(1).bfill()
         data[c] = per_year.reindex(year).to_numpy(dtype='float64')
     return pd.DataFrame(data, index=index, columns=cols) * float(n_ticks)
 

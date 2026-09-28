@@ -135,15 +135,15 @@ def test_metrics_hand_values():
 def test_walk_forward_folds():
     rows = engine.walk_forward_folds()
     assert [r['test_year'] for r in rows] == [2016, 2017, 2018, 2019, 2020, 2021]
-    assert rows[0]['train_start'] == 2013 and rows[0]['train_end'] == 2015
     assert rows[0]['sparse_night'] and rows[1]['sparse_night']
     assert not rows[2]['sparse_night']
 
 
 def test_ic_sign_on_perfect_forecast():
-    idx = pd.bdate_range('2016-01-04', periods=80)
+    # 方向验收读 ic_ts，事前 z 与事前波动各要 120 日预热，所以从 2015 年中开始
+    idx = pd.bdate_range('2015-06-01', '2016-12-30')
     rng = np.random.default_rng(0)
-    day_ret = pd.DataFrame(rng.normal(0, 0.01, (80, 3)), index=idx, columns=list('ABC'))
+    day_ret = pd.DataFrame(rng.normal(0, 0.01, (len(idx), 3)), index=idx, columns=list('ABC'))
     fwd = returns.forward_return(day_ret)
     universe = {2016: list('ABC')}
     pos = ic.factor_ic_table(fwd, fwd, universe, 'dfp_max', [2016], min_obs=30)
@@ -343,8 +343,9 @@ def test_slippage_is_tick_relative_so_cheap_symbols_cost_more():
     assert w.loc[idx[0], 'C'] == pytest.approx(2.0 / 1600.0)
     # 6.25bp/tick 对 1.43bp/tick，相差 4.4 倍
     assert w.loc[idx[0], 'C'] > 4 * w.loc[idx[0], 'CU']
-    # 价位逐年变，比例成本跟着变：玉米 2017 年涨到 2800，同一个 tick 便宜了
-    assert w.loc[idx[1], 'C'] == pytest.approx(2.0 / 2800.0)
+    # 价位逐年变，比例成本跟着变，但第 y 年只能用第 y-1 年的价位：2017 年用 2016 年的 1600，
+    # 2017 年的中位数 2800 要到年底才知道
+    assert w.loc[idx[1], 'C'] == pytest.approx(2.0 / 1600.0)
     # CU 缺 2017 年（上市晚/退池早都可能），按最近有效年份补，不留 NaN
     assert w.loc[idx[1], 'CU'] == pytest.approx(2.0 * 10.0 / 70000.0)
     # 0 档直接给 0，不去建 tick 表
@@ -462,6 +463,28 @@ def test_time_combo_is_not_standardized_a_second_time():
     assert not np.allclose(out.iloc[200:].to_numpy(), again.iloc[200:].to_numpy(), equal_nan=True)
 
 
+def test_trend_filter_keeps_only_agreeing_views():
+    idx = pd.bdate_range('2016-01-04', periods=5)
+    combo = pd.DataFrame({'A': [0.5, -0.4, 0.3, np.nan, 0.2]}, index=idx)
+    trend = pd.DataFrame({'A': [1.0, 2.0, -1.0, 1.0, np.nan]}, index=idx)
+    out = library.trend_filtered(combo, trend)
+    np.testing.assert_allclose(out['A'].to_numpy(), [0.5, 0.0, 0.0, np.nan, np.nan])
+
+
+def test_time_combo_trend_is_its_own_book():
+    """趋势过滤后的 time_combo 是另一本书：book_key 与 time_combo 不同，入书不再标准化。"""
+    trend = strategy.BookConfig(factors=strategy.parse_factor_specs(['time_combo_trend']))
+    combo = strategy.BookConfig(factors=strategy.parse_factor_specs(['time_combo']))
+    assert strategy.book_key(trend, '全部') != strategy.book_key(combo, '全部')
+    assert 'time_combo_trend' in library.STANDARDIZED_FACTORS
+    idx = pd.bdate_range('2016-01-04', periods=300)
+    x = pd.DataFrame(np.random.default_rng(3).normal(0, 0.5, (len(idx), 1)), index=idx, columns=['A'])
+    signals = library.SignalSet(bars={'close': x})
+    signals.signed['time_combo_trend'] = x
+    pd.testing.assert_frame_equal(
+        strategy.equal_weight_signal(signals, {'time_combo_trend': 1.0}), x.clip(-1, 1))
+
+
 def test_unsigned_factor_is_still_trail_z_scored():
     idx = pd.bdate_range('2016-01-04', periods=400)
     raw = pd.DataFrame({'A': np.linspace(-5, 5, len(idx))}, index=idx)
@@ -476,3 +499,89 @@ def test_performance_and_sharpe_tolerate_tiny_samples():
         m = ic.performance(r)
         assert set(ic.METRIC_KEYS) <= set(m)
         assert np.isnan(ic.sharpe_ratio(r))
+
+
+# --------------------------------------------------------------------------
+# 分批调仓、波动率目标、持仓期 IC、缓存版本
+# --------------------------------------------------------------------------
+def test_staggered_tranches_each_hold_n_days_and_average():
+    idx = pd.bdate_range('2021-01-04', periods=10)
+    sig = pd.DataFrame({'A': np.arange(10, dtype=float)}, index=idx)
+    out = engine.staggered(sig, n=2)
+    # 第 t 天两批分别是最近一个偶数日与奇数日的值
+    expect = [0 / 2, (0 + 1) / 2] + [((t - 1) + t) / 2 for t in range(2, 10)]
+    assert np.allclose(out['A'].to_numpy(), expect)
+    # 常数信号：分批后仍是常数，第一天只有一批上场（另一批空仓按 0 计）
+    const = engine.staggered(pd.DataFrame({'A': 1.0}, index=idx), n=5)
+    assert np.allclose(const['A'].iloc[:5], [0.2, 0.4, 0.6, 0.8, 1.0])
+    assert np.allclose(const['A'].iloc[5:], 1.0)
+    # rebalance(…, 0) 是旧的周五单批
+    pd.testing.assert_frame_equal(engine.rebalance(sig, 0), engine.weekly(sig))
+
+
+def test_staggered_nan_on_rebalance_day_flattens_only_that_tranche():
+    idx = pd.bdate_range('2021-01-04', periods=6)
+    sig = pd.DataFrame({'A': [1.0, 1.0, np.nan, 1.0, 1.0, 1.0]}, index=idx)
+    out = engine.staggered(sig, n=2)
+    # 第 2 天（偶数批）调仓日缺值：那一批在第 2、3 天空仓，奇数批照常
+    assert out['A'].iloc[2] == pytest.approx(0.5)
+    assert out['A'].iloc[3] == pytest.approx(0.5)
+    assert out['A'].iloc[4] == pytest.approx(1.0)
+    allnan = engine.staggered(pd.DataFrame({'A': np.nan}, index=idx), n=2)
+    assert allnan['A'].isna().all()
+
+
+def test_vol_target_scales_by_exante_vol_with_cap():
+    idx = pd.bdate_range('2021-01-04', periods=3)
+    sig = pd.DataFrame({'LOW': 1.0, 'HIGH': 1.0, 'ZERO': 1.0}, index=idx)
+    daily = 1 / np.sqrt(252)
+    vol = pd.DataFrame({'LOW': 0.01 * daily, 'HIGH': 0.40 * daily, 'ZERO': 0.0}, index=idx)
+    out = engine.vol_target(sig, vol, 0.20, cap=2.5)
+    assert np.allclose(out['HIGH'], 0.5)
+    assert np.allclose(out['LOW'], 2.5)           # 20 倍被截到 2.5
+    assert out['ZERO'].isna().all()               # 零波动不给无穷大仓位
+    pd.testing.assert_frame_equal(engine.vol_target(sig, vol, 0.0), sig)
+
+
+def test_cost_is_charged_even_when_the_day_return_is_missing():
+    idx = pd.bdate_range('2021-01-04', periods=3)
+    pos = pd.DataFrame({'A': [0.0, 1.0, 1.0]}, index=idx)
+    day_ret = pd.DataFrame({'A': [0.0, np.nan, 0.01]}, index=idx)
+    net = engine.symbol_net(pos, day_ret, fee=0.001)
+    assert net['A'].iloc[1] == pytest.approx(-0.001)
+    assert net['A'].iloc[2] == pytest.approx(0.01)
+
+
+def test_holding_forward_return_sums_the_next_h_days_and_vol_uses_only_the_past():
+    idx = pd.bdate_range('2021-01-04', periods=12)
+    day_ret = pd.DataFrame({'A': np.arange(12, dtype=float)}, index=idx)
+    fwd3 = returns.holding_forward_return(day_ret, 3)
+    assert fwd3.attrs['horizon'] == 3
+    # fwd3[t] = day_ret[t+1] + day_ret[t+2] + day_ret[t+3]
+    assert fwd3['A'].iloc[0] == pytest.approx(1 + 2 + 3)
+    assert fwd3['A'].iloc[8] == pytest.approx(9 + 10 + 11)
+    assert fwd3['A'].iloc[9:].isna().all()
+    pd.testing.assert_frame_equal(returns.holding_forward_return(day_ret, 1),
+                                  returns.forward_return(day_ret))
+    # 事前波动只能用到 t-1 为止已实现的收益：改动 t 及以后的收益不影响 t 日的分母
+    bumped = day_ret.copy()
+    bumped.iloc[6:] *= 100.0
+    a = ic.exante_scaled_return(returns.holding_forward_return(day_ret, 3), 3, 3)
+    b = ic.exante_scaled_return(returns.holding_forward_return(bumped, 3), 3, 3)
+    # t=6 的分子变了，分母不变 → 比值正好放大 100 倍
+    assert b['A'].iloc[6] == pytest.approx(100.0 * a['A'].iloc[6])
+
+
+def test_factor_cache_refuses_a_stale_formula_version(tmp_path):
+    from tfcta.factors import cache
+    d = tmp_path / 'N250_M55'
+    cache.check_version(d)                      # 不存在：不检查
+    d.mkdir()
+    (d / 'RB.pkl').write_bytes(b'')
+    with pytest.raises(RuntimeError, match='--overwrite'):
+        cache.check_version(d)                  # 有分片、没有版本文件
+    cache.stamp_version(d)
+    cache.check_version(d)
+    (d / cache.VERSION_FILE).write_text('{"version": 1}', encoding='utf-8')
+    with pytest.raises(RuntimeError):
+        cache.check_version(d)

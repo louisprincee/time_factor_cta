@@ -64,17 +64,26 @@ def summarize_ics(ics: list[float]) -> dict:
     return out
 
 
+def horizon_of(fwd: pd.DataFrame, horizon: int | None = None) -> int:
+    if horizon is not None:
+        return int(horizon)
+    return int(getattr(fwd, 'attrs', {}).get('horizon', 1))
+
+
 def exante_scaled_return(fwd: pd.DataFrame,
                          window: int | None = None,
-                         min_periods: int | None = None) -> pd.DataFrame:
-    """未来收益除以 t 日已知的波动。
+                         min_periods: int | None = None,
+                         horizon: int | None = None) -> pd.DataFrame:
+    """未来收益除以 t 日已知的同期限波动。
 
-    ``fwd[t] = day_ret[t+1]``，``fwd.shift(2)[t] = day_ret[t-1]``，后者在 t 日收盘前
-    已经实现（t 日开盘时就知道了）。用 ``shift(1)`` 会用到 t+1 开盘的价格。
+    ``fwd[t] = day_ret[t+1] + … + day_ret[t+H]``。``fwd.shift(H+1)[t]`` 是
+    ``day_ret[t-H] + … + day_ret[t-1]``，全部在 t 日开盘前实现。H=1 时即 ``shift(2)``；
+    少错一格就会用到 t+1 开盘的价格。H 默认读 ``fwd.attrs['horizon']``。
     """
     window = C.IC_VOL_WINDOW if window is None else int(window)
     min_periods = C.IC_Z_MIN if min_periods is None else int(min_periods)
-    vol = fwd.shift(2).rolling(window, min_periods=min_periods).std()
+    h = horizon_of(fwd, horizon)
+    vol = fwd.shift(h + 1).rolling(window, min_periods=min_periods).std()
     return fwd / vol.where(vol > 0)
 
 
@@ -83,7 +92,8 @@ def ic_period_series(factor: pd.DataFrame,
                      symbols: list[str],
                      min_obs: int | None = None,
                      period: str | None = None,
-                     prepared: bool = False) -> pd.Series:
+                     prepared: bool = False,
+                     horizon: int | None = None) -> pd.Series:
     """逐期（默认逐月）的事前 IC 序列，时序显著性检验的输入。
 
     每期的统计量是 ``mean(z_t · r̃_{t+1})``：``z`` 是事前标准化的因子，``r̃`` 是
@@ -104,7 +114,7 @@ def ic_period_series(factor: pd.DataFrame,
     min_obs = C.IC_PERIOD_MIN_OBS if min_obs is None else int(min_obs)
     if not prepared:
         factor = exante_z(factor)
-        fwd = exante_scaled_return(fwd)
+        fwd = exante_scaled_return(fwd, horizon=horizon)
     cols = {}
     for s in symbols:
         if s not in factor.columns or s not in fwd.columns:
@@ -193,6 +203,7 @@ def sign_status(ic: float, name: str, t: float | None = None) -> str:
     """
     if name not in C.PRIOR_FACTORS:
         return 'no_prior'
+    ic = float(ic) if ic is not None else np.nan
     if not np.isfinite(ic) or ic == 0:
         return 'inconclusive'
     if np.sign(ic) == np.sign(C.FACTOR_SIGNS[name]):
@@ -216,7 +227,8 @@ def factor_ic_table(factor: pd.DataFrame,
                     universe: dict,
                     name: str,
                     years: list[int],
-                    min_obs: int | None = None) -> pd.DataFrame:
+                    min_obs: int | None = None,
+                    horizon: int | None = None) -> pd.DataFrame:
     """逐折一行，最后再加一行 fold=mean_of_folds。
 
     每折**既切品种池也切时间**。切时间这件事一度漏了——只按 `universe[y]` 换品种、
@@ -229,11 +241,14 @@ def factor_ic_table(factor: pd.DataFrame,
     * ``t`` —— 逐期 IC 序列均值的 Newey-West t，**这才是显著性**。
     * ``t_cross`` —— 品种间 IC 的横截面 t，只回答"多少品种同向"，仅供排序。
 
-    ``ic`` 保持"逐品种全折窗口 Spearman 的均值"不变，因为方向验收 ``sign_status``
-    读的是它；``ic_ts`` 是逐期 IC 的均值，两者差得多说明 IC 在折内极不均匀。
+    ``ic`` 是逐品种全折窗口 Spearman 的均值，只作参考；方向验收 ``sign_status`` 读
+    ``ic_ts``，与 ``t`` 同一个估计量，不会出现"方向看 Spearman、显著性看另一个量"
+    两者打架的情况。两者差得多说明 IC 在折内极不均匀。
+
+    ``fwd`` 的期限读 ``fwd.attrs['horizon']``（见 ``bars.holding_forward_return``）。
     """
     min_obs = C.IC_MIN_OBS if min_obs is None else int(min_obs)
-    z_all, r_all = exante_z(factor), exante_scaled_return(fwd)
+    z_all, r_all = exante_z(factor), exante_scaled_return(fwd, horizon=horizon)
     rows, series = [], []
     for y in years:
         y = int(y)
@@ -246,7 +261,7 @@ def factor_ic_table(factor: pd.DataFrame,
         series.append(ser)
         rec.update(timeseries_t(ser))
         rec.update(factor=name, fold=str(y), n_folds=1,
-                   sign=sign_status(rec['ic'], name, rec['t']))
+                   sign=sign_status(rec['ic_ts'], name, rec['t']))
         rows.append(rec)
 
     good = [r for r in rows if np.isfinite(r['ic'])]
@@ -266,7 +281,7 @@ def factor_ic_table(factor: pd.DataFrame,
     tail.update(timeseries_t(pooled))
     # 方向判定读拼起来那条长序列的 t（约 72 期），不是逐折 t。逐折只有 12 期，
     # 用它判方向会因为自由度太低而在 flip / flip_weak 之间反复摇摆。
-    tail['sign'] = sign_status(mean_ic, name, tail['t'])
+    tail['sign'] = sign_status(tail['ic_ts'], name, tail['t'])
     rows.append(tail)
     return pd.DataFrame(rows).reindex(columns=IC_COLUMNS)
 

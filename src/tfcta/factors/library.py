@@ -22,11 +22,13 @@ Z_WINDOW = 252
 Z_MIN = 120
 
 # 已定向因子相对原始值的符号：signed = raw × prior。反转代理、time_combo 本身就是定向后的量。
-# time_combo 在装配时已经是各成员 trail_z 的等权平均，入书时不再做第二次 z 分数。
-STANDARDIZED_FACTORS = frozenset({'time_combo'})
+# time_combo 在装配时已经是各成员 trail_z 的等权平均，入书时不再做第二次 z 分数；
+# time_combo_trend 是它按趋势方向过滤后的版本，同样不再标准化。
+STANDARDIZED_FACTORS = frozenset({'time_combo', 'time_combo_trend'})
 SIGNED_PRIORS = {
     **C.FACTOR_SIGNS,
     'time_combo': +1,
+    'time_combo_trend': +1,
     **C.TECH_PRIOR_SIGNS,
     'tsmom': +1,
     'carry': +1,
@@ -97,6 +99,16 @@ class SignalSet:
         raise KeyError(f"没有因子 {name}。可选: {', '.join(known)}")
 
 
+def trend_filtered(combo: pd.DataFrame, trend: pd.DataFrame) -> pd.DataFrame:
+    """``combo × 1{sign(combo) = sign(trend)}``：只保留与趋势同向的时间因子观点。
+
+    方向相反或任一为 0 时记 0（空仓，是一个观点）；任一缺失时是 NaN（没有观点）。
+    """
+    trend = trend.reindex(index=combo.index, columns=combo.columns)
+    agree = np.sign(combo) == np.sign(trend)
+    return combo.where(agree & (combo != 0), 0.0).where(combo.notna() & trend.notna())
+
+
 def reversal_proxies(bars: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     """CLV：收盘价在当日区间里的位置（-1 最低，+1 最高）；ret_day：当日开到收。"""
     hi, lo = bars['highw'], bars['loww']
@@ -139,6 +151,8 @@ def assemble(bars: dict[str, pd.DataFrame],
     out.signed['tsmom'] = daily.tsmom(close, closew)
     out.signed['carry'] = daily.carry(close, closew)
     out.family['tsmom'] = out.family['carry'] = '慢信号'
+    out.signed['time_combo_trend'] = trend_filtered(out.signed['time_combo'], out.signed['tsmom'])
+    out.family['time_combo_trend'] = '时间戳+持续期×趋势同向'
 
     for n, factor in daily.cross_sectional_momentum(close, closew, universe).items():
         out.unsigned[n] = factor

@@ -24,6 +24,11 @@ from ..data import sessions, shard_io
 from . import intraday
 
 TIMESTAMP_DIR_NAME = 'timestamp'
+# 分钟层公式改动后加一。每个缓存目录落一份 _version.json，读取和续跑时核对；
+# 版本不一致直接报错，不让改公式前的旧缓存混进研究。
+# 2：DFP 的 FP 与分母改用原始 close（此前用加法复权 closew，比例失真）。
+CACHE_VERSION = 2
+VERSION_FILE = '_version.json'
 TIMEPOINT_FACTORS = list(C.TIMESTAMP_FACTORS)
 DURATION_FACTORS = [intraday.dfp_name(n) for n in C.FP_TOP_NS]
 
@@ -49,6 +54,34 @@ def timestamp_dir(root: Path | None = None) -> Path:
 
 
 # --------------------------------------------------------------------------
+# 版本
+# --------------------------------------------------------------------------
+def cache_version(directory: Path) -> int | None:
+    path = Path(directory) / VERSION_FILE
+    if not path.exists():
+        return None
+    return int(json.loads(path.read_text(encoding='utf-8')).get('version', -1))
+
+
+def stamp_version(directory: Path) -> None:
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    (Path(directory) / VERSION_FILE).write_text(
+        json.dumps({'version': CACHE_VERSION}), encoding='utf-8')
+
+
+def check_version(directory: Path) -> None:
+    """目录里已有缓存时版本必须一致。空目录（还没建）不检查。"""
+    directory = Path(directory)
+    if not shard_io.list_shards(directory):
+        return
+    found = cache_version(directory)
+    if found != CACHE_VERSION:
+        raise RuntimeError(
+            f"{directory} 的缓存版本是 {found}，当前公式版本是 {CACHE_VERSION}。"
+            f"请用 step3_build_factors.py --overwrite 重建")
+
+
+# --------------------------------------------------------------------------
 # 计算
 # --------------------------------------------------------------------------
 def build_symbol(symbol: str,
@@ -66,6 +99,12 @@ def build_symbol(symbol: str,
     lookbacks = sorted({n for n, _ in combos})
     pcts = sorted({m for _, m in combos})
 
+    if not overwrite:
+        # 断点续跑只能接在同一版本的缓存后面
+        if timestamp:
+            check_version(timestamp_dir(root))
+        for n, m in combos:
+            check_version(combo_dir(n, m, root))
     need_ts = timestamp and (overwrite or shard_io.find_shard(timestamp_dir(root), symbol) is None)
     todo = [(n, m) for n, m in combos
             if overwrite or shard_io.find_shard(combo_dir(n, m, root), symbol) is None]
@@ -83,6 +122,7 @@ def build_symbol(symbol: str,
     if need_ts:
         ts = intraday.timestamp_factors(df)
         shard_io.save_shard(ts, timestamp_dir(root), symbol, fmt)
+        stamp_version(timestamp_dir(root))
         info['n_timestamp_cols'] = int(ts.shape[1])
     info['timestamp_written'] = bool(need_ts)
 
@@ -93,6 +133,7 @@ def build_symbol(symbol: str,
         for n, m in todo:
             dur = intraday.duration_factors(df, lookback=n, pct=m, thr_p=grid[(n, m)])
             shard_io.save_shard(dur, combo_dir(n, m, root), symbol, fmt)
+            stamp_version(combo_dir(n, m, root))
             info['n_duration_cols'] = int(dur.shape[1])
     info['combos_written'] = len(todo)
     return info
@@ -121,11 +162,13 @@ def load_symbol(symbol: str, lookback: int, pct: float,
     if p is None:
         raise FileNotFoundError(
             f"缺少 {combo_name(lookback, pct)}/{symbol}，请先运行 step3_build_factors.py")
+    check_version(combo_dir(lookback, pct, root))
     out = _read(p, DURATION_FACTORS)
     if with_timestamp:
         q = shard_io.find_shard(timestamp_dir(root), symbol)
         if q is None:
             raise FileNotFoundError(f"缺少 timestamp/{symbol}")
+        check_version(timestamp_dir(root))
         # outer：两族交易日理论上一致，一旦不一致能看见 NaN 而不是被静默截断
         out = out.join(_read(q, TIMEPOINT_FACTORS), how='outer')
     return out.sort_index()

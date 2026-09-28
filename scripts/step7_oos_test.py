@@ -4,7 +4,9 @@
 1. 测试期必须已经结束：--oos-end 必须早于今天；
 2. 这本书（与第 6 步同一个指纹）必须在 2022 验证台账里记为通过。
    没验证过、验证没通过的池子一律拒绝；全部被拒时直接退出。
-同一本书在同一个样本外窗口上只测一次，结果写进 data/oos/ledger.jsonl。
+同一本书只做一次样本外测试（不论截止日期），结果写进 data/oos/ledger.jsonl。
+是否通过 2022 按台账里的净 Sharpe / 年化和**默认**门槛重新判定，不信台账里存的 passed，
+也不接受命令行放宽的门槛。
 
 样本外各年的品种池按第 2 步口径逐年重筛（第 y 年只用第 y-1 年的统计量）。
 选了外部因子时，先用 step3_build_factors.py --external-partitions holdout_locked --oos-end 构造。
@@ -30,6 +32,16 @@ from tfcta.research.workflow import context, history, ledger  # noqa: E402
 PARTITIONS = ["research", "validation_2022", "holdout_locked"]
 
 
+def validated(entry: dict) -> bool:
+    """用台账里的 2022 净绩效和默认门槛重新判定，不信存下来的 passed 与自定义门槛。"""
+    default = strategy.BookConfig(factors={"tsmom": 1.0})
+    def num(key):
+        value = entry.get(key)
+        return float(value) if value is not None else float("nan")
+    return (not entry.get("legacy")) and bool(entry.get("passed")) and strategy.passes(
+        {"net_sharpe": num("net_sharpe"), "net_ann_return": num("net_ann_return")}, default)
+
+
 def gate(cfg: strategy.BookConfig, end) -> tuple[list[str], list[str]]:
     """返回 (放行的池子, 拒绝理由)。只读台账，不碰样本外数据。"""
     validation = ledger.validation_entries()
@@ -40,10 +52,11 @@ def gate(cfg: strategy.BookConfig, end) -> tuple[list[str], list[str]]:
         hits = ledger.lookup(validation, fp)
         if not hits:
             refused.append(f"[{label}] 没有做过 2022 验证，先跑 step6_validate_2022.py")
-        elif not hits[-1].get("passed"):
+        elif not validated(hits[-1]):
             refused.append(f"[{label}] 2022 验证未通过（{hits[-1].get('note') or hits[-1].get('run_at')}）")
-        elif ledger.lookup(done, fp, oos_end=end.isoformat()):
-            refused.append(f"[{label}] 已在截至 {end} 的样本外窗口上测过，不再重测")
+        elif ledger.lookup(done, fp):
+            prior = ledger.lookup(done, fp)[-1].get("oos_end")
+            refused.append(f"[{label}] 已做过样本外测试（截至 {prior}），不再重测")
         else:
             allowed.append(label)
     return allowed, refused
@@ -116,8 +129,8 @@ def main() -> int:
     label = f"{C.STRICT_OOS_START}..{end}"
     cases = strategy.resolve_cases(cfg, loaded, labels=allowed)
     table = strategy.evaluate_cases(
-        signal, day_ret, universe, cases, years, cfg.fee_rate, slippage, label,
-        window=(pd.Timestamp(C.STRICT_OOS_START), pd.Timestamp(end)))
+        signal, day_ret, universe, cases, years, cfg, slippage, label,
+        window=(pd.Timestamp(C.STRICT_OOS_START), pd.Timestamp(end)), vol=signal_set.vol)
     table.insert(0, "fingerprint", table["universe"].map(
         lambda case: strategy.fingerprint(cfg, case)))
 

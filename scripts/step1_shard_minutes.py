@@ -1,4 +1,13 @@
 """第 1 步：分钟单体 pickle 按品种、按 2022-01-01 切成 parquet，落盘后验收。本脚本是唯一允许写 holdout 的地方。
+
+写 ``validation_2022/`` 分片有两种模式，验证分片已存在时都不覆盖：
+
+- ``--validation-from-monolith``：从切研究期用的同一个单体文件里按 ``trading_date`` 取 2022 年。
+  和切 holdout 一样只在本脚本里过滤，2023 年及以后的行不落盘、不参与任何计算。
+  同一份文件保证复权基准与研究期一致。
+- ``--validation-source <文件>``：独立的 2022-only 源文件，出现 2022 年以外的日期就整份拒收，不做过滤。
+
+    python scripts/step1_shard_minutes.py --validation-from-monolith
 """
 from __future__ import annotations
 
@@ -17,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tfcta import config as C        # noqa: E402
 from tfcta.data import sessions
 from tfcta.data import shard_io       # noqa: E402
+from tfcta.data import validation_import as VI   # noqa: E402
 
 
 def _run_dir() -> Path:
@@ -42,13 +52,8 @@ def extract_roll_dates(sub: pd.DataFrame) -> pd.DataFrame | None:
     return out
 
 
-def shard_one(panel: pd.DataFrame, sym: str, write: bool = True,
-              fmt: str = 'auto') -> dict:
-    """切出单品种，按 trading_date 分成研究期与样本外两份。"""
-    if sym not in panel.columns.get_level_values(0):
-        return {'symbol': sym, 'status': 'absent'}
-
-    sub = panel[sym]
+def clean_symbol(sub: pd.DataFrame) -> tuple[pd.DataFrame | None, list[str], list[str]]:
+    """单品种只留分片字段，规整 trading_date，丢掉全空行。返回 (表, 缺的因子字段, 缺的价格字段)。"""
     # 因子字段是计算所必需的；开盘价是收益口径所必需的。后者缺失仍允许分片
     # （因子可以先算），但会在 info 里标明，第 4 步读到时会直接报错而不是用收盘价顶替。
     wanted = list(dict.fromkeys([*C.FACTOR_FIELDS, *C.PRICE_FIELDS]))
@@ -56,9 +61,8 @@ def shard_one(panel: pd.DataFrame, sym: str, write: bool = True,
     missing = [c for c in C.FACTOR_FIELDS if c not in sub.columns]
     missing_price = [c for c in C.PRICE_FIELDS if c not in sub.columns]
     if 'trading_date' not in keep:
-        return {'symbol': sym, 'status': 'no_trading_date', 'missing': missing}
+        return None, missing, missing_price
 
-    rolls = extract_roll_dates(sub)
     df = sub[keep].copy()
     df['trading_date'] = pd.to_datetime(df['trading_date']).dt.normalize()
     df = df[df['trading_date'].notna()].sort_index(kind='mergesort')
@@ -66,6 +70,20 @@ def shard_one(panel: pd.DataFrame, sym: str, write: bool = True,
     # 全字段皆空的行直接丢（未上市期间）
     val_cols = [c for c in keep if c != 'trading_date']
     df = df[df[val_cols].notna().any(axis=1)]
+    return df, missing, missing_price
+
+
+def shard_one(panel: pd.DataFrame, sym: str, write: bool = True,
+              fmt: str = 'auto') -> dict:
+    """切出单品种，按 trading_date 分成研究期与样本外两份。"""
+    if sym not in panel.columns.get_level_values(0):
+        return {'symbol': sym, 'status': 'absent'}
+
+    sub = panel[sym]
+    df, missing, missing_price = clean_symbol(sub)
+    if df is None:
+        return {'symbol': sym, 'status': 'no_trading_date', 'missing': missing}
+    rolls = extract_roll_dates(sub)
 
     cut = pd.Timestamp(C.HOLDOUT_START)
     research = df[df['trading_date'] < cut]
@@ -105,8 +123,19 @@ def main() -> int:
     ap.add_argument('--monolith', default=str(C.MINUTE_MONOLITH))
     ap.add_argument('--format', default='auto', choices=['auto', 'parquet', 'pickle'],
                     help='分片格式；auto 表示有 pyarrow 就用 parquet，否则 pickle')
+    ap.add_argument('--validation-source', default=None,
+                    help='独立的 2022-only 分钟单体 pickle；给了就只写 validation_2022/ 分片')
+    ap.add_argument('--validation-from-monolith', action='store_true',
+                    help='从 --monolith 按 trading_date 取 2022 年，只写 validation_2022/ 分片')
     args = ap.parse_args()
     fmt = shard_io.resolve_format(args.format)
+    if args.validation_source and args.validation_from_monolith:
+        print("--validation-source 与 --validation-from-monolith 只能选一个。")
+        return 2
+    if args.validation_source:
+        return shard_validation(Path(args.validation_source), args, fmt, slice_2022=False)
+    if args.validation_from_monolith:
+        return shard_validation(Path(args.monolith), args, fmt, slice_2022=True)
 
     src = Path(args.monolith)
     if not src.exists():
@@ -298,6 +327,143 @@ def run_verify(symbols=None, check_all: bool = False,
         C.report_step(1, passed=False, paths=paths, note=extra)
         return 1
     C.report_step(1, passed=True, next_step=2, paths=paths, note=extra)
+    return 0
+
+
+def _research_boundary(sym: str) -> pd.DataFrame | None:
+    """研究期分片的末尾几天（只要 close/closew），用来核对复权偏移的衔接。"""
+    if shard_io.find_shard(C.RESEARCH_DIR, sym) is None:
+        return None
+    df = shard_io.load_shard(sym, C.RESEARCH_DIR, columns=['close', 'closew', 'trading_date'])
+    since = pd.Timestamp(df['trading_date'].max().date() - timedelta(days=10))
+    return df[df['trading_date'] >= since]
+
+
+def only_2022(df: pd.DataFrame) -> pd.DataFrame:
+    """按 trading_date 只留 2022 年（2021-12-31 夜盘归属 2022-01-04，随之保留）。"""
+    td = df['trading_date']
+    out = df[(td >= pd.Timestamp(C.HOLDOUT_START)) & (td < pd.Timestamp(C.STRICT_OOS_START))]
+    C.assert_validation_2022_dates(out['trading_date'], what="2022 切片")
+    return out
+
+
+def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
+    """写验证分片：检查全部通过才落盘，落盘后按验证 loader 读回验收。
+
+    ``slice_2022`` 为真时源文件是含全样本的单体文件，逐品种按 trading_date 取 2022；
+    否则源文件必须本身只含 2022，整份检查、不做过滤。
+    """
+    if not src.exists():
+        print(f"找不到 2022 源文件: {src}")
+        return 2
+    existing = shard_io.list_shards(C.VALIDATION_DIR)
+    if existing:
+        print(f"{C.VALIDATION_DIR} 已有 {len(existing)} 个分片，不覆盖。"
+              "验证数据只写一次；确需重建请先人工移走原目录并在研究笔记里记录原因。")
+        return 2
+
+    t0 = time.time()
+    with open(src, 'rb') as f:
+        panel = pickle.load(f)
+    problems = [] if slice_2022 else VI.source_window_problems(panel)
+    if problems:
+        print("源文件不是 2022-only，整份拒收（不做过滤）：\n  " + "\n  ".join(problems))
+        return 1
+
+    syms = args.symbols or (C.ALL_SYMBOLS if args.all else C.COMMODITY_SYMBOLS)
+    have = set(panel.columns.get_level_values(0))
+    research_syms = set(shard_io.list_shards(C.RESEARCH_DIR))
+    frames, results, boundary = {}, [], {}
+    for sym in syms:
+        if sym not in have:
+            results.append({'symbol': sym, 'status': 'absent',
+                            'has_research': sym in research_syms})
+            continue
+        df, missing, missing_price = clean_symbol(panel[sym])
+        if df is not None and slice_2022:
+            df = only_2022(df)
+        if df is None or df.empty:
+            results.append({'symbol': sym, 'status': 'empty', 'missing': missing,
+                            'has_research': sym in research_syms})
+            continue
+        status, detail = VI.boundary_check(_research_boundary(sym), df)
+        boundary[sym] = status
+        frames[sym] = df
+        results.append({
+            'symbol': sym, 'status': 'ok', 'missing_fields': missing,
+            'missing_price_fields': missing_price, 'rows': int(len(df)),
+            'days': int(df['trading_date'].nunique()),
+            'start': str(df['trading_date'].min().date()),
+            'end': str(df['trading_date'].max().date()),
+            'boundary': status, 'boundary_detail': detail,
+        })
+    ok_boundary, boundary_note = VI.boundary_verdict(boundary)
+
+    run = _run_dir()
+    (run / 'manifest.json').write_text(json.dumps({
+        'mode': 'validation_2022', 'sliced_from_monolith': slice_2022, 'source': str(src), 'generated': datetime.now().isoformat(),
+        'dry_run': args.dry_run, 'load_seconds': round(time.time() - t0, 1),
+        'panel_shape': list(panel.shape), 'boundary': boundary_note, 'results': results,
+    }, ensure_ascii=False, indent=2), encoding='utf-8')
+    paths = [(run / 'manifest.json', '2022 源文件检查与逐品种统计（含复权衔接）')]
+
+    absent = [r['symbol'] for r in results if r['status'] != 'ok' and r.get('has_research')]
+    no_price = [r['symbol'] for r in results
+                if r['status'] == 'ok' and r['missing_price_fields']]
+    notes = [boundary_note]
+    if absent:
+        notes.append(f"研究期有、2022 源文件里没有的品种（2022 仍在池里的话第 6 步会报错）: {absent}")
+    if no_price:
+        notes.append(f"缺 open/openw，2022 收益算不出来: {no_price}")
+    if not frames or not ok_boundary:
+        C.report_step(1, passed=False, paths=paths, note=' '.join(notes) + " 没有落盘。")
+        return 1
+    if args.dry_run:
+        C.report_step(1, passed=True, paths=paths,
+                      note="dry-run，检查通过但没有落盘。 " + ' '.join(notes))
+        return 0
+
+    for sym, df in frames.items():
+        shard_io.save_shard(df, C.VALIDATION_DIR, sym, fmt=fmt)
+    return verify_validation(list(frames), run, paths, notes)
+
+
+def verify_validation(syms: list[str], run: Path, paths: list, notes: list[str]) -> int:
+    """按 step6 的验证 loader 把分片读回来：日期限于 2022，夜盘归属与 bar 数同研究期口径。"""
+    rows, failures = [], []
+    try:
+        C.assert_validation_only(C.RESEARCH_DIR / 'RB.parquet')
+        rows.append({'scope': '全局', 'check': '验证目录守卫', 'status': FAIL,
+                     'detail': '研究期路径没有被验证 loader 拦截'})
+        failures.append('全局/验证目录守卫')
+    except C.HoldoutViolation:
+        rows.append({'scope': '全局', 'check': '验证目录守卫', 'status': PASS,
+                     'detail': 'assert_validation_only 拦截了 validation_2022/ 以外的路径'})
+    for sym in syms:
+        try:
+            df = shard_io.load_validation_shard(sym)
+        except (C.HoldoutViolation, FileNotFoundError, KeyError) as exc:
+            rows.append({'scope': sym, 'check': '读回', 'status': FAIL, 'detail': str(exc)})
+            failures.append(f"{sym}/读回")
+            continue
+        for name, (s, m) in {
+            '验收2 夜盘归属': check_2_night_ownership(df),
+            '验收3 bar 数': check_3_bar_counts(df),
+            '验收4 NaN 逐年': check_4_nan_by_year(df),
+        }.items():
+            rows.append({'scope': sym, 'check': name, 'status': s, 'detail': m})
+            if s == FAIL:
+                failures.append(f"{sym}/{name}")
+    verify_path = run / 'verify.csv'
+    pd.DataFrame(rows).to_csv(verify_path, index=False, encoding='utf-8-sig')
+    paths = [(C.VALIDATION_DIR, '2022 验证分片（按品种，仅 2022）'),
+             (verify_path, '读回验收逐项结果'), *paths]
+    extra = ' '.join(notes)
+    if failures:
+        print(f"未通过: {failures}")
+        C.report_step(1, passed=False, paths=paths, note=extra)
+        return 1
+    C.report_step(1, passed=True, next_step=6, paths=paths, note=extra)
     return 0
 
 

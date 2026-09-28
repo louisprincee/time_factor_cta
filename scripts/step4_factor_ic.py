@@ -3,8 +3,11 @@
 四部分：
 1. 有先验的时间戳/持续期因子逐折 IC，做符号闸门（显著反向则返回 1）；
 2. 全部因子（量价、慢信号、反转代理、无方向指标、外部数据）的事前 IC 汇总；
-3. 按经济逻辑分组的等权组合，周频调仓、扣费回测；
+3. 按经济逻辑分组的等权组合，按第 5 步同一执行口径（分批调仓 + 波动率目标）扣费回测；
 4. 年度 IC 稳定性筛选，以及通过筛选的因子在五大板块、单品种上的异质性。
+
+IC 一律用持仓期（``C.IC_HORIZON`` 日累计）收益，与书的持有期一致；全因子表另附次日
+IC（``ic_ts_1d``/``t_1d``）备查。
 
 方向一律取事前先验，不按 IC 定；不在这里选参。
 """
@@ -21,7 +24,7 @@ from tfcta import config as C                               # noqa: E402
 from tfcta.data import bars as B                            # noqa: E402
 from tfcta.factors import library                           # noqa: E402
 from tfcta.research.analysis import screen, stats           # noqa: E402
-from tfcta.research.backtest import costs, engine           # noqa: E402
+from tfcta.research.backtest import costs, engine, strategy  # noqa: E402
 from tfcta.research.workflow import context                 # noqa: E402
 
 LOGIC = {
@@ -63,7 +66,8 @@ def main() -> int:
         print("品种池与分片没有交集，或日收益为空。")
         return 2
     years = [f['test_year'] for f in engine.walk_forward_folds()]
-    fwd = B.forward_return(day_ret)
+    fwd = B.holding_forward_return(day_ret, C.IC_HORIZON)
+    fwd1 = B.holding_forward_return(day_ret, 1)
     try:
         sig = library.load(symbols)
     except (FileNotFoundError, KeyError) as e:
@@ -79,27 +83,29 @@ def main() -> int:
     # 2. 全部因子
     rows = []
     for name, wide in {**sig.signed, **sig.unsigned}.items():
-        if sig.family[name].startswith('截面'):
-            tab = stats.cross_sectional_ic_table(
-                wide, fwd, universe, name, years)
-        else:
-            tab = stats.factor_ic_table(wide, fwd, universe, name, years)
+        table = (stats.cross_sectional_ic_table if sig.family[name].startswith('截面')
+                 else stats.factor_ic_table)
+        tab = table(wide, fwd, universe, name, years)
+        one = table(wide, fwd1, universe, name, years)
+        one = one[one['fold'] == 'mean_of_folds'].iloc[0]
         direction = ('先验已定向' if name in sig.signed else '无方向，仅报 IC')
         rows.append({'factor': name, 'family': sig.family[name], 'direction': direction,
-                     **summary_row(tab)})
+                     **summary_row(tab), 'ic_ts_1d': one['ic_ts'], 't_1d': one['t']})
     all_tab = pd.DataFrame(rows)
 
     # 3. 逻辑组合
     combo_tab = pd.DataFrame()
     if not args.no_combos:
         slip, _ = costs.research_slippage(symbols, day_ret.index, C.SLIPPAGE_TICKS)
+        book = strategy.BookConfig(factors={'tsmom': 1.0})
         signed_z = {n: library.trail_z(sig.signed[n]) for vs in LOGIC.values() for n in vs}
 
         def pack(label: str, names: list[str]) -> dict:
             wide = library.average_signals([signed_z[n] for n in names])
             tab = stats.factor_ic_table(wide, fwd, universe, label, years)
             row = tab[tab['fold'] == 'mean_of_folds'].iloc[0]
-            pos = engine.execute_position(engine.weekly(wide.clip(-1, 1)))
+            pos = strategy.book_position(wide.clip(-1, 1), sig.vol, book.tranches,
+                                         book.vol_target)
             port = engine.run_book(pos, day_ret, universe, C.FEE_BASE, slippage=slip)
             net = engine.stitch_test_years(port, years)
             perf = stats.performance(net)
@@ -130,7 +136,7 @@ def main() -> int:
         singles = {n for vs in LOGIC.values() for n in vs if len(vs) > 1}
         plan += [(n, [n]) for n in sorted(singles)]
         combo_tab = pd.DataFrame([pack(lab, names) for lab, names in plan]).sort_values(
-            'ann_return', ascending=False)
+            'sharpe', ascending=False)
 
     C.ensure_dirs()
     run = context.run_dir('step4')
@@ -148,7 +154,7 @@ def main() -> int:
     labels = {
         'ic_by_fold.csv': '有先验因子的逐折时序 IC 与符号闸门',
         'factor_ic_all.csv': '全部因子的事前 IC 汇总',
-        'logic_combo_ic.csv': '逻辑组合周频扣费回测',
+        'logic_combo_ic.csv': '逻辑组合扣费回测（与第 5 步同一执行口径，按 Sharpe 排序）',
         'factor_stability.csv': '年度 IC 同号与时序 t 的稳定性筛选',
         'sector_factor_ic.csv': '五大板块上的因子 IC 与是否通过',
         'symbol_factor_ic.csv': '单品种因子 IC（多重比较，只作候选）',
