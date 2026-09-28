@@ -176,7 +176,11 @@ class CoverageCache:
               require_nonempty: bool = False) -> None:
         entry = self._entry(dataset, key)
         path = self.root / entry["file"]
-        if require_nonempty and entry["coverage"] and path.exists():
+        if not self.dry_run and entry["coverage"] and not path.exists():
+            # 覆盖记录还在、文件却没了（例如只拷了 coverage.json）：按未下载处理
+            entry["coverage"] = []
+            self._manifest_updates += 1
+        if not self.dry_run and require_nonempty and entry["coverage"] and path.exists():
             cached = pd.read_pickle(path)
             if cached is None or cached.empty:
                 entry["coverage"] = []
@@ -244,14 +248,26 @@ def commodity_instruments(rq, symbols: list[str] | None) -> tuple[list[str], pd.
     return selected, instruments
 
 
+def trading_in(instruments: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+    """上市区间与 [start, end] 有交集的合约；缺上市/退市日期的保留。"""
+    def day(column: str, fallback: pd.Timestamp) -> pd.Series:
+        raw = instruments.get(column, pd.Series(index=instruments.index, dtype=str))
+        raw = raw.astype(str).replace("0000-00-00", "")
+        return pd.to_datetime(raw, errors="coerce").fillna(fallback)
+
+    listed = day("listed_date", pd.Timestamp.min)
+    delisted = day("de_listed_date", pd.Timestamp.max)
+    return instruments[(listed <= pd.Timestamp(end)) & (delisted >= pd.Timestamp(start))]
+
+
 def run_download(rq, cache: CoverageCache, start: date, end: date,
                  symbols: list[str] | None, datasets: set[str]) -> None:
     selected, instruments = commodity_instruments(rq, symbols)
     start_s, end_s = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
 
     if "contracts" in datasets:
-        contracts = instruments["order_book_id"].astype(str).tolist()
-        print(f"实际商品合约: {len(contracts)} 个")
+        contracts = trading_in(instruments, start, end)["order_book_id"].astype(str).tolist()
+        print(f"区间内交易的商品合约: {len(contracts)} 个（共 {len(instruments)} 个）")
         for contract in tqdm(contracts, desc="逐合约日行情"):
             cache.fetch("contracts", contract, start, end,
                         lambda left, right, contract=contract: rq.get_price(

@@ -24,6 +24,7 @@ ATR_N = 20
 TSMOM_WINDOWS = (20, 60, 120, 250)
 VOL_WINDOW = 60
 CARRY_WINDOW = 250
+CARRY_ROLL_MAX_AGE = 250
 CS_MIN_SYMBOLS = 5
 
 
@@ -149,6 +150,21 @@ def daily_vol(close: pd.DataFrame, closew: pd.DataFrame,
     return daily_return(close, closew).rolling(window, min_periods=window // 2).std()
 
 
+def tsmom_sign(close: pd.DataFrame, closew: pd.DataFrame,
+               window: int = 20) -> pd.DataFrame:
+    """过去 ``window`` 个交易日收益的符号：涨为 +1，跌为 −1。
+
+    Cho 等对中国商品时序动量的口径是大约一个月的形成期，方向本身就是信号；
+    波动率缩放放到组合的波动率目标上，这里不再除一次波动。只用到 t 日收盘。
+    """
+    w = int(window)
+    base = close.shift(w)
+    r = (closew - closew.shift(w)) / base.where(base > 0)
+    values = np.sign(r.to_numpy(dtype='float64'))
+    values[~np.isfinite(r.to_numpy(dtype='float64'))] = np.nan
+    return pd.DataFrame(values, index=close.index, columns=close.columns)
+
+
 def tsmom(close: pd.DataFrame, closew: pd.DataFrame,
           windows=TSMOM_WINDOWS) -> pd.DataFrame:
     """多窗口时序动量，取值 -1 到 1。
@@ -256,3 +272,41 @@ def carry(close: pd.DataFrame, closew: pd.DataFrame,
     比用远月报价算的即期 carry 滞后，但只用主力连续数据就能得到。
     """
     return -roll_gap(close, closew).rolling(window, min_periods=window).sum()
+
+
+def contract_month_gap(new: str, prev: str) -> float:
+    """两个合约代码之间隔几个月，代码末尾四位是 YYMM（如 ``CU2106`` / ``CU2105`` → 1）。"""
+    try:
+        a, b = str(new)[-4:], str(prev)[-4:]
+        months = (int(a[:2]) * 12 + int(a[2:])) - (int(b[:2]) * 12 + int(b[2:]))
+    except (ValueError, IndexError):
+        return np.nan
+    return float(months) if months > 0 else np.nan
+
+
+def carry_roll(close: pd.DataFrame, closew: pd.DataFrame,
+               rolls: dict[str, pd.DataFrame],
+               max_age: int = CARRY_ROLL_MAX_AGE) -> pd.DataFrame:
+    """最近一次换月的年化展期收益：``-(P_new - P_old) / P_new × 12 / 合约月份间隔``。
+
+    与 ``carry`` 用同一个换月价差，但只看最近一次、并按新旧合约相隔的月数年化，
+    所以不同换月节奏的品种（铜逐月换、豆粕 1-5-9 换）可以放在同一把尺子上比，
+    也比 250 日累加更快反映期限结构的变化。换月日当天收盘后才知道，之后沿用到
+    下一次换月；超过 ``max_age`` 个交易日没有新换月就置空。正值 = 贴水。
+    """
+    out = pd.DataFrame(np.nan, index=close.index, columns=close.columns)
+    gap = roll_gap(close, closew)
+    for s in close.columns:
+        table = rolls.get(s)
+        if table is None or table.empty:
+            continue
+        dates = pd.DatetimeIndex(table['trading_date'])
+        months = np.array([contract_month_gap(n, p) for n, p in
+                           zip(table['new_contract'], table['prev_contract'])])
+        keep = dates.isin(close.index) & np.isfinite(months)
+        if not keep.any():
+            continue
+        when = dates[keep]
+        out.loc[when, s] = -gap.loc[when, s].to_numpy() * 12.0 / months[keep]
+    live = close.notna()
+    return out.ffill(limit=int(max_age)).where(live)

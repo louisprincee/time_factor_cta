@@ -68,7 +68,7 @@ def test_boundary_verdict_tolerates_a_few_rolls_but_not_a_new_base():
 @pytest.fixture
 def step1(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
-        "step1", Path(__file__).resolve().parents[1] / "scripts" / "step1_shard_minutes.py")
+        "step1", Path(__file__).resolve().parents[2] / "scripts" / "step1_shard_minutes.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     root = tmp_path / "shards"

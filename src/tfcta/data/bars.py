@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 import pandas as pd
 
@@ -113,6 +114,24 @@ def load_daily_bars(symbols: list[str], directory=None) -> dict[str, pd.DataFram
     if not per_symbol:
         return {k: pd.DataFrame() for k in DAILY_FIELDS}
     return wide_by_field(per_symbol)
+
+
+def load_roll_calendar(symbols: list[str], end, directory=None) -> dict[str, pd.DataFrame]:
+    """各品种换月日与新旧合约代码，只保留 ``end`` 及以前的行。
+
+    换月表由第 1 步从分钟数据生成，覆盖到分钟数据的最后一天；这里按调用方
+    行情的最后一天截断，研究期因此看不到 2022 年及以后的换月记录。
+    """
+    root = Path(directory) if directory is not None else Path(C.ROLL_DIR)
+    end = pd.Timestamp(end)
+    out = {}
+    for s in symbols:
+        path = root / f"{s}.csv"
+        if not path.exists():
+            continue
+        df = pd.read_csv(path, parse_dates=['trading_date'])
+        out[s] = df[df['trading_date'] <= end].reset_index(drop=True)
+    return out
 
 
 def multiplicative_prices(bars: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:

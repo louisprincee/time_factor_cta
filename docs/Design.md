@@ -386,7 +386,7 @@ VMT_t = argmax_i ( Volume Duration_{t,i} )    → 归一化到 [0,1]
 
 `config.NIGHT_DEPENDENT_FACTORS` 这张表不是文档性质的注释，它有两个硬用途：验收时按「有无夜盘」分组统计缺失率，以及反向检查「无夜盘品种上到底是 NaN 还是 0」。**漏登记一个因子，这两件事在该因子上就都没做**——缺失率会被整池口径误判成不合格（进而把人往 `fillna(0)` 上逼，正是第 5 节第五步说的那个坑），反向检查则连它的名字都不会打印。
 
-第 3 步在含 `JD`（无夜盘）的合成池上跑出来，`ts_high_night` / `ts_low_night` 非空比例 66.6% 被判不合格。原因不是算错，而是这张表当初只收了字面带 `night` 的三个因子（`vr_night`、`night_vol_share`、`night_day_range`），漏了同样走 `if not has_night: continue` 分支的这两个时段因子。现表为五个，并在 `tests/test_factors.py::test_night_dependent_set_is_exhaustive` 里改成**由实际输出反推**：把"无夜盘品种上整列 NaN 且有夜盘品种上有值"的列集合算出来，要求与该表完全相等。以后新增任何夜盘相关因子，忘了登记会直接测试失败，而不是等到验收时才以"数据有问题"的面貌出现。
+第 3 步在含 `JD`（无夜盘）的合成池上跑出来，`ts_high_night` / `ts_low_night` 非空比例 66.6% 被判不合格。原因不是算错，而是这张表当初只收了字面带 `night` 的三个因子（`vr_night`、`night_vol_share`、`night_day_range`），漏了同样走 `if not has_night: continue` 分支的这两个时段因子。现表为五个，并在 `tests/factors/test_factors.py::test_night_dependent_set_is_exhaustive` 里改成**由实际输出反推**：把"无夜盘品种上整列 NaN 且有夜盘品种上有值"的列集合算出来，要求与该表完全相等。以后新增任何夜盘相关因子，忘了登记会直接测试失败，而不是等到验收时才以"数据有问题"的面貌出现。
 
 ---
 
@@ -415,7 +415,7 @@ factor_daily/manifest.json                   自描述：有哪些组合、哪�
 
 按 `(组合, 品种)` 而不是按 `(组合, 因子)` 切文件，是因为**续跑的粒度要和计算的粒度对齐**：单品种全样本的持续期计算是分钟级的，中断重来代价很高，而"某个品种的某个组合算完了"是天然的原子边界。时间戳族单独放在 `timestamp/` 而不是跟着 15 个组合各存一遍，除了省空间，更重要的是不给下游留"它好像也依赖参数"的错觉。
 
-计算侧的共享（`factors/cache.py::build_symbol`）：分钟表只读一次、日内坐标只算一次、阈值网格只算一次。阈值的"按日切分样本 + 拼接滚动窗口"与 `M` 无关，只有最后取分位数那一步与 `M` 有关，所以 `factors/intraday.py::rolling_threshold_grid` 把 15 遍降到 3 遍（每个 `N` 一遍，一次 `np.percentile` 给出 5 个分位数）。这是纯优化，`tests/test_factor_cache.py` 用"与逐个调用 `rolling_threshold` 逐元素相等"钉住——这种优化算错了不会报错，只会让后面所有因子悄悄失真。
+计算侧的共享（`factors/cache.py::build_symbol`）：分钟表只读一次、日内坐标只算一次、阈值网格只算一次。阈值的"按日切分样本 + 拼接滚动窗口"与 `M` 无关，只有最后取分位数那一步与 `M` 有关，所以 `factors/intraday.py::rolling_threshold_grid` 把 15 遍降到 3 遍（每个 `N` 一遍，一次 `np.percentile` 给出 5 个分位数）。这是纯优化，`tests/factors/test_factor_cache.py` 用"与逐个调用 `rolling_threshold` 逐元素相等"钉住——这种优化算错了不会报错，只会让后面所有因子悄悄失真。
 
 ---
 

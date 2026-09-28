@@ -154,7 +154,7 @@ def test_oos_gate_refuses_books_without_passing_validation(tmp_path, monkeypatch
     from pathlib import Path
 
     spec = importlib.util.spec_from_file_location(
-        "step7", Path(__file__).resolve().parents[1] / "scripts" / "step7_oos_test.py")
+        "step7", Path(__file__).resolve().parents[2] / "scripts" / "step7_oos_test.py")
     step7 = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(step7)
 
@@ -190,7 +190,7 @@ def test_oos_gate_recomputes_pass_with_default_criteria(tmp_path, monkeypatch):
     from pathlib import Path
 
     spec = importlib.util.spec_from_file_location(
-        "step7", Path(__file__).resolve().parents[1] / "scripts" / "step7_oos_test.py")
+        "step7", Path(__file__).resolve().parents[2] / "scripts" / "step7_oos_test.py")
     step7 = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(step7)
     monkeypatch.setattr(ledger, "VALIDATION_ROOT", tmp_path / "v")

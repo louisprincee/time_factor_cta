@@ -151,6 +151,17 @@ def test_require_partitions_rejects_stale_factor_schema(tmp_path, monkeypatch):
         external.require_partitions(
             {"warehouse_peak_drawdown_20d": 1.0}, ("research", "validation_2022"))
 
+def test_require_partitions_sees_through_library_aliases(tmp_path, monkeypatch):
+    """``carry_ms`` / ``cs_carry_ms`` 是外部因子的派生版本，缺 2022 分区时同样要拦下。"""
+    (tmp_path / "research").mkdir()
+    pd.DataFrame({"carry_main_sub_annualized": [0.0]}).to_pickle(tmp_path / "research" / "CU.pkl")
+    monkeypatch.setattr(external, "EXTERNAL_FACTOR_ROOT", tmp_path)
+    for name in ("carry_ms", "cs_carry_ms"):
+        with pytest.raises(FileNotFoundError, match="validation_2022"):
+            external.require_partitions({name: 1.0}, ("research", "validation_2022"))
+    external.require_partitions({"carry_roll": 1.0}, ("research", "validation_2022"))
+
+
 def test_validation_partition_windows_continue_from_research(tmp_path):
     """2022 的滚动窗口必须接上研究期的原始数据，不能在分区边界上重新预热。
 

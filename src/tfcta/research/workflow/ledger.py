@@ -66,17 +66,31 @@ def legacy_validation_entries() -> list[dict]:
             note = f"旧 step6 冻结方案 {name}"
             if name in perf.index:
                 row = perf.loc[name]
-                # 旧表没有算术 Sharpe，只有几何年化除以波动。这四本两个口径都是负的，
-                # 门槛结果相同。新书的 net_sharpe 是日均收益 / 日波动 × sqrt(252)。
+                # 最早的表没有算术 Sharpe，只有几何年化 / 波动（列名 net_ret_risk）。
+                # 2026-09-28 补回的表同时有 net_sharpe（日均 / 日波动 × sqrt(252)）。
+                sharpe = row.get("net_sharpe")
+                if sharpe is None or pd.isna(sharpe):
+                    sharpe = row.get("net_ret_risk")
+                n_symbols = row.get("n_symbols")
+                if n_symbols is None or pd.isna(n_symbols):
+                    n_symbols = row.get("symbols")
                 net = {"net_ann_return": row.get("net_ann_return"),
-                       "net_sharpe": row.get("net_ret_risk"),
+                       "net_sharpe": sharpe,
                        "net_max_drawdown": row.get("net_max_drawdown"),
-                       "n_symbols": row.get("symbols"),
+                       "n_symbols": n_symbols,
                        "turnover": row.get("turnover")}
             else:
                 net = {}
                 note += "（旧绩效表已不在，按已看过 2022、未通过登记）"
-            entries.append(_legacy(cfg, sectors.ALL_POOL, note, net))
+            entry = _legacy(cfg, sectors.ALL_POOL, note, net)
+            if name in perf.index:
+                logged_at = row.get("run_at") if "run_at" in row.index else None
+                result_dir = row.get("run_dir") if "run_dir" in row.index else None
+                if isinstance(logged_at, str) and logged_at.strip():
+                    entry["run_at"] = logged_at.strip()
+                if isinstance(result_dir, str) and result_dir.strip():
+                    entry["run_dir"] = result_dir.strip()
+            entries.append(entry)
 
     for params_path in sorted(C.RUNS_DIR.glob("*_retro_2022_sector_combo/params.json")):
         perf_path = params_path.with_name("performance.csv")
@@ -156,7 +170,9 @@ def write_validation_log(path: Path | None = None) -> Path:
         "换成本或执行口径也不能再验证。`time_combo:+1` 与四个时间因子等权是同一个 book_key。",
         "",
         "通过标准：净算术 Sharpe >= 0.5 且净年化收益 > 0%。Sharpe = 日均收益 / 日波动 × sqrt(252)。净绩效已扣手续费和滑点。",
-        "旧冻结方案的四行没有算术 Sharpe，这一列填的是几何年化 / 波动；那四本两个口径都是负的，通过与否不变。",
+        "旧冻结方案若只有几何年化 / 波动（`net_ret_risk`），Sharpe 列填的是那个数。",
+        "2026-09-28 补回的四行是按冻结口径（周五单批、波动目标 0）用当前代码重算的算术 Sharpe。",
+        "这些旧方案行保持 legacy，数字过门槛也不进入第 7 步。",
         "",
         "| 时间/来源 | 池 | 因子（乘在原始值上的方向） | 品种数 | 费率 | 滑点(tick) | 净年化 | 净 Sharpe | 净最大回撤 | 通过 | Fingerprint | 结果 |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | :---: | --- | --- |",

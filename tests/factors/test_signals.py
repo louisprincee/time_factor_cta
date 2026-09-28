@@ -43,6 +43,45 @@ def test_carry_is_positive_under_backwardation():
     assert (g != 0).sum() == 3
 
 
+def test_contract_month_gap_parses_yymm_codes():
+    assert daily.contract_month_gap('CU2106', 'CU2105') == 1
+    assert daily.contract_month_gap('M1101', 'M1009') == 4
+    assert np.isnan(daily.contract_month_gap('M1009', 'M1101'))
+
+
+def test_carry_roll_annualizes_latest_roll_and_holds_until_next():
+    """贴水 2%、合约隔 4 个月 → 年化 6%；只在换月日更新，之后沿用，换月前为空。"""
+    idx = _idx(60)
+    close = pd.Series(100.0, index=idx)
+    close.iloc[10:] = 98.0                 # 第 10 天换月，新合约便宜 2
+    close.iloc[40:] = 99.0                 # 第 40 天换月，新合约贵 1（升水）
+    closew = pd.Series(100.0, index=idx)
+    rolls = {'A': pd.DataFrame({
+        'trading_date': [idx[10], idx[40]],
+        'new_contract': ['A1101', 'A1105'], 'prev_contract': ['A1009', 'A1101']})}
+    c = daily.carry_roll(pd.DataFrame({'A': close}), pd.DataFrame({'A': closew}), rolls)['A']
+    assert c.iloc[:10].isna().all()
+    assert np.isclose(c.iloc[10], 2.0 / 98.0 * 12 / 4)
+    assert np.isclose(c.iloc[39], c.iloc[10])
+    assert np.isclose(c.iloc[40], -1.0 / 99.0 * 12 / 4)
+    stale = daily.carry_roll(pd.DataFrame({'A': close}), pd.DataFrame({'A': closew}),
+                             rolls, max_age=5)['A']
+    assert np.isnan(stale.iloc[16]) and np.isfinite(stale.iloc[15])
+
+
+def test_tsmom_sign_is_trailing_month_direction_and_ignores_the_future():
+    idx = _idx(30)
+    close = pd.DataFrame({'A': np.linspace(100, 130, len(idx))}, index=idx)
+    sign = daily.tsmom_sign(close, close.copy(), window=20)['A']
+    assert np.isnan(sign.iloc[19])
+    assert sign.iloc[20] == 1.0
+    crashed = close.copy()
+    crashed.iloc[-1, 0] = 50.0
+    sign_crashed = daily.tsmom_sign(crashed, crashed, window=20)['A']
+    pd.testing.assert_series_equal(sign.iloc[:-1], sign_crashed.iloc[:-1])
+    assert sign_crashed.iloc[-1] == -1.0
+
+
 def test_cross_sectional_momentum_ranks_only_current_year_universe():
     idx = pd.bdate_range('2020-01-01', periods=6)
     factor = pd.DataFrame({

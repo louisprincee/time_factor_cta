@@ -31,7 +31,13 @@ SIGNED_PRIORS = {
     'time_combo_trend': +1,
     **C.TECH_PRIOR_SIGNS,
     'tsmom': +1,
+    'tsmom_20': +1,
+    'ts_low_slow': +1,
     'carry': +1,
+    'carry_roll': +1,
+    'cs_carry_roll': +1,
+    'carry_ms': +1,
+    'cs_carry_ms': +1,
     'neg_clv': +1,
     'neg_ret_day': +1,
 }
@@ -55,6 +61,11 @@ def exante_z(factor: pd.DataFrame,
 def trail_z(raw: pd.DataFrame) -> pd.DataFrame:
     """入书用的标准化：252 日窗口、至少 120 日。"""
     return exante_z(raw, Z_WINDOW, Z_MIN)
+
+
+def trailing_mean(factor: pd.DataFrame, window: int = 20) -> pd.DataFrame:
+    """截至当日的滚动均值。窗口里有缺失就不给出值，避免用更早的数填平缺口。"""
+    return factor.rolling(int(window), min_periods=int(window)).mean()
 
 
 def average_signals(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -149,8 +160,17 @@ def assemble(bars: dict[str, pd.DataFrame],
 
     close, closew = bars['close'], bars['closew']
     out.signed['tsmom'] = daily.tsmom(close, closew)
+    out.signed['tsmom_20'] = daily.tsmom_sign(close, closew, window=20)
     out.signed['carry'] = daily.carry(close, closew)
-    out.family['tsmom'] = out.family['carry'] = '慢信号'
+    out.family['tsmom'] = out.family['tsmom_20'] = out.family['carry'] = '慢信号'
+    out.signed['carry_roll'] = daily.carry_roll(
+        close, closew, B.load_roll_calendar(symbols, close.index.max()))
+    out.family['carry_roll'] = '慢信号'
+    # 年化后不同换月节奏的品种可比，做截面排名：贴水越深越偏多
+    out.signed['cs_carry_roll'] = daily.cross_sectional_rank(out.signed['carry_roll'], universe)
+    out.family['cs_carry_roll'] = '慢信号(截面)'
+    out.signed['ts_low_slow'] = trailing_mean(out.signed['ts_low'], window=20)
+    out.family['ts_low_slow'] = '时间戳'
     out.signed['time_combo_trend'] = trend_filtered(out.signed['time_combo'], out.signed['tsmom'])
     out.family['time_combo_trend'] = '时间戳+持续期×趋势同向'
 
@@ -166,6 +186,12 @@ def assemble(bars: dict[str, pd.DataFrame],
     for name, factor in external.load_wide(symbols, external_partitions, close.index).items():
         out.unsigned[name] = factor
         out.family[name] = EXTERNAL_FAMILIES.get(name, '外部数据(候选)')
+    # 米筐主力-次主力年化展期收益，正值 = 贴水（与 carry_roll 同向，按定义而非 IC 定向）
+    if 'carry_main_sub_annualized' in out.unsigned:
+        out.signed['carry_ms'] = out.unsigned['carry_main_sub_annualized']
+        out.signed['cs_carry_ms'] = daily.cross_sectional_rank(out.signed['carry_ms'], universe)
+        out.family['carry_ms'] = '外部期限结构'
+        out.family['cs_carry_ms'] = '外部期限结构(截面)'
 
     rev = reversal_proxies(bars)
     out.signed['neg_clv'] = -rev['clv']

@@ -79,7 +79,8 @@ data/data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
 python -m pytest
 ```
 
-当前应是 108 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
+当前应是 161 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
+测试按功能放在 `tests/data`、`tests/factors`、`tests/research`、`tests/download`。
 这套测试不测"跑得通"，测的是几件**做错了也不会报错**的事：
 夜盘因子在无夜盘品种上是 NaN 而非 0、阈值网格与逐个调用逐元素相同、
 时间戳族不随 (N, M) 变化、抽查统计不混入预热年、因子表的每行对应一个
@@ -347,7 +348,7 @@ data/factor_daily/
 
 每个品种的分钟数据**只读一次**，日内坐标**只算一次**。
 若一次算多组 (N, M)，共用一个 `rolling_threshold_grid`。
-`tests/test_factor_cache.py` 证明网格结果与逐个调用逐元素相同。
+`tests/factors/test_factor_cache.py` 证明网格结果与逐个调用逐元素相同。
 
 **按 (组合, 品种) 粒度可续跑**：已存在的文件直接跳过，中断后重跑即可。
 要强制重算加 `--overwrite`。只跑一部分用
@@ -452,7 +453,7 @@ python scripts/step4_factor_ic.py    # --no-combos 跳过第 3 部分，--no-het
 **不要在月内算相关系数。** 旧口径就是月内 Spearman，它要在月内去均值；对 RSI、
 均线乖离这类日间高度持续的因子，20 个观测的月内去均值有 Stambaugh 型负偏差——
 纯随机游走上的 RSI 能得到 ic_ts≈−0.20、t≈−49。量价因子当初"t≈−30 的显著反转"
-全部是这个假象。`tests/test_research.py::test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor`
+全部是这个假象。`tests/research/test_research.py::test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor`
 钉住了这一条。`ic` 列（逐品种全年 Spearman）对持续性因子同样有偏，只看方向时也要谨慎。
 
 修正后四个时间因子的 t 在 2.3–3.4 之间，等权组合 t=3.8，六年全为正。
@@ -644,7 +645,7 @@ DFP 的持续期用 `closew`，FP 与分母用 `close`。
 
 ```bash
 conda activate factor-mining
-python -m pytest -q                              # 当前 155 项应全过
+python -m pytest -q                              # 当前 161 项应全过
 python scripts/step1_shard_minutes.py --dry-run
 python scripts/step1_shard_minutes.py
 python scripts/step2_universe.py

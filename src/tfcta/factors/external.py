@@ -44,6 +44,12 @@ FAMILIES = {
     'main_oi_change_60d': '外部持仓(候选)',
 }
 
+# 因子库里由外部因子派生的定向/截面版本 → 所依赖的外部因子
+DERIVED = {
+    'carry_ms': 'carry_main_sub_annualized',
+    'cs_carry_ms': 'carry_main_sub_annualized',
+}
+
 
 def partitions_through(partition: str) -> tuple[str, ...]:
     """``partition`` 及其之前的全部分区，按时间顺序。"""
@@ -318,7 +324,7 @@ def load_wide(symbols: list[str], partitions, index: pd.Index) -> dict[str, pd.D
 
 def require_partitions(factors, partitions) -> None:
     """选了外部因子却没构造对应分区时停下，而不是让信号在那一段悄悄变成 NaN。"""
-    used = [name for name in factors if name in FAMILIES]
+    used = sorted({DERIVED.get(name, name) for name in factors}.intersection(FAMILIES))
     if not used:
         return
     missing = [p for p in partitions if not shard_io.list_shards(EXTERNAL_FACTOR_ROOT / p)]
