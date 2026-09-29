@@ -25,3 +25,11 @@ step6 另按 book_key（等效因子权重 + 池 + 品种）拦截：同一组�
 | 2026-09-28T15:23:48 | 全部 | `time_combo_trend:+1` | 48 | 0.00025 | 1.0 | -0.91% | -0.408 | -2.77% | 未通过 | `b76aaf104c415ae1` | [运行结果](../runs/20260928_152348_step6_validation2022/performance.csv) |
 | 2026-09-28T15:26:23 | 全部 | `cs_mom_ra_250:+1` | 48 | 0.00025 | 1.0 | 0.15% | 0.076 | -1.36% | 未通过 | `26c2d8a4d478c1a3` | [运行结果](../runs/20260928_152623_step6_validation2022/performance.csv) |
 | 2026-09-28T16:55:17 | 全部 | `carry_ms:+1` | 48 | 0.00025 | 1.0 | -0.37% | -0.102 | -1.87% | 未通过 | `a0f6545aa1037213` | [运行结果](../runs/20260928_165517_step6_validation2022/performance.csv) |
+| 2026-09-28T17:19:38 | 有色金属 | `tsmom:+1,carry_roll:+1` | 7 | 0.00025 | 1.0 | 3.08% | 0.448 | -6.84% | 未通过 | `4e05aad12ce04f95` | [运行结果](../runs/20260928_171938_step6_validation2022/performance.csv) |
+| 2026-09-28T17:19:38 | 黑色金属 | `tsmom:+1,carry_roll:+1` | 9 | 0.00025 | 1.0 | 6.10% | 0.815 | -5.99% | 通过 | `bef5b79a9819194c` | [运行结果](../runs/20260928_171938_step6_validation2022/performance.csv) |
+| 2026-09-29T14:24:49 | 全部 | `vote4(tsmom,carry_ms,time_combo,cs_mom_ra_250):hold5` | 40 | - | 1.0 | -0.17% | -0.061 | -2.68% | 未通过 | `f120024bc67d2ec3` | [运行结果](../runs/20260929_142449_vote4_hold5_validation2022/performance.csv) |
+| 2026-09-29T14:34:34 | 全部 | `ml:ridge:fali|eod` | 40 | - | 1.0 | 1.74% | 0.918 | -1.06% | 通过 | `826dab322ebc31ad` | [运行结果](../runs/20260929_143433_ml_validation2022/performance.csv) |
+| 2026-09-29T14:34:34 | 全部 | `ml:ridge:orb30|eod` | 40 | - | 1.0 | 3.19% | 1.259 | -2.15% | 通过 | `6bfc5f9284536e0c` | [运行结果](../runs/20260929_143433_ml_validation2022/performance.csv) |
+| 2026-09-29T14:34:34 | 全部 | `ml:hgb:fali|eod` | 40 | - | 1.0 | 0.47% | 0.282 | -1.76% | 未通过 | `63cea267742a4561` | [运行结果](../runs/20260929_143433_ml_validation2022/performance.csv) |
+| 2026-09-29T14:34:34 | 全部 | `ml:hgb:orb30|eod` | 40 | - | 1.0 | 1.72% | 0.927 | -1.67% | 通过 | `16bc667d466f62e7` | [运行结果](../runs/20260929_143433_ml_validation2022/performance.csv) |
+| 2026-09-29T16:51:03 | 全部 | `ml:ridge10:orb30|eod:core+trend+carry` | 40 | - | 1.0 | -0.65% | -0.328 | -2.80% | 未通过 | `c853cb7b48fc326d` | [运行结果](../runs/20260929_165103_orb_ridge_validation2022/performance.csv) |

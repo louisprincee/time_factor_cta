@@ -81,28 +81,6 @@ def add_intraday_coords(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def has_night_session(df: pd.DataFrame,
-                      min_bars: int = C.NIGHT_BARS_MIN) -> pd.Series:
-    """每个 trading_date 是否存在夜盘（bar 数达到 min_bars 才算）。
-
-    返回以 trading_date 为 index 的布尔 Series。
-
-    为什么要 min_bars 而不是 ``> 0``：节假日后的首个交易日常有零星夜盘 bar，
-    把它们当成完整夜盘会让夜盘类因子的分母极小、数值爆炸。
-
-    门槛默认取 ``config.NIGHT_BARS_MIN``，与 ``classify_night_bars`` 同源——
-    两处判定"有没有夜盘"必须用同一个数，否则会出现"归类成有夜盘但因子按无夜盘算"。
-    """
-    if 'session' not in df.columns:
-        df = add_intraday_coords(df)
-    night = (df['session'] == C.SESSION_NIGHT).groupby(df['trading_date']).sum()
-    return night >= min_bars
-
-
-def session_mask(df: pd.DataFrame, session: str) -> np.ndarray:
-    return (df['session'] == session).to_numpy()
-
-
 def day_bar_counts(df: pd.DataFrame) -> pd.DataFrame:
     """每个 trading_date 的分时段 bar 数，用于 step1 验收与结构诊断。"""
     if 'session' not in df.columns:

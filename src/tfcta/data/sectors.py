@@ -55,17 +55,6 @@ _ALIASES = {
 }
 
 
-def sector_names() -> list[str]:
-    return list(SECTORS)
-
-
-def sector_of(symbol: str) -> str:
-    try:
-        return SECTOR_BY_SYMBOL[symbol]
-    except KeyError:
-        raise KeyError(f"品种 {symbol} 没有板块归属，请在 data/sectors.py 登记") from None
-
-
 def symbols_in(sector: str) -> list[str]:
     name = canonicalize(sector)
     if name == ALL_POOL:

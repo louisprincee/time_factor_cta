@@ -154,37 +154,3 @@ def make_symbol(trading_days: pd.DatetimeIndex,
         out.loc[out.index < listed_from, num] = np.nan
     return out
 
-
-def make_panel(symbols: dict[str, str],
-               start: str = '2015-01-01',
-               end: str = '2016-06-30',
-               seed: int = 7) -> pd.DataFrame:
-    """生成多品种宽面板，列为 (品种, 字段) 两层 MultiIndex——与真实文件同构。
-
-    参数
-    ----
-    symbols : ``{品种代码: 夜盘类别}``，或 ``{品种代码: {make_symbol 的关键字参数}}``。
-              后者用于构造流动性各异、上市时间各异的品种，检验品种池筛选。
-    """
-    days = pd.bdate_range(start, end)
-    parts = []
-    for i, (sym, spec) in enumerate(symbols.items()):
-        kw = {'night_class': spec} if isinstance(spec, str) else dict(spec)
-        kw.setdefault('night_class', 'night_2300')
-        kw.setdefault('start_price', 1000.0 * (i + 1))
-        kw.setdefault('seed', seed + i)
-        df = make_symbol(days, **kw)
-        df.columns = pd.MultiIndex.from_product([[sym], df.columns],
-                                                names=['future', 'field'])
-        parts.append(df)
-    panel = pd.concat(parts, axis=1).sort_index()
-    return panel
-
-
-DEFAULT_SYNTH_SYMBOLS = {
-    'RB': 'night_2300',
-    'CU': 'night_0100',
-    'AU': 'night_0230',
-    'JD': 'no_night',
-    'M': 'night_2300',
-}

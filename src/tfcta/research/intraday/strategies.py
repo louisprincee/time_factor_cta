@@ -21,15 +21,27 @@ class StrategyConfig:
     atr_multiple: float = 1.0
     rbreaker_setup: float = 0.35
     rbreaker_break: float = 0.25
-    rbreaker_reverse: float = 0.50
+    rbreaker_enter: float = 0.07
     opening_range_minutes: int = 30
+    # first：交易日第一根（夜盘品种从夜盘算起）；day：日盘第一根（约 09:00）
+    open_anchor: str = "first"
+    # 每日最多持仓段数（止损/止盈后再入场、反手开出的新仓都各算一段）
     max_entries_per_day: int = 1
     stop_atr_multiple: float | None = None
     target_atr_multiple: float | None = None
+    # 固定比例止损/止盈（占当日首根 bar 原始开盘价），与 ATR 止损二选一
+    stop_pct: float | None = None
+    target_pct: float | None = None
+    # 突破反向轨道时平仓并反手（Dual Thrust 原文逻辑）；R-Breaker 的反手由自身规则决定
+    reverse: bool = False
+    # 空中花园：开盘相对昨收的最小跳空幅度，以及上下轨取开盘后前几根 bar
+    gap_pct: float = 0.01
+    sky_bars: int = 1
 
 
 def available_strategies() -> tuple[str, ...]:
-    return ("dual_thrust", "atr", "rbreaker", "fali", "opening_range_assumption")
+    return ("dual_thrust", "atr", "rbreaker", "rbreaker_breakout", "fali", "sky_garden",
+            "opening_range_assumption")
 
 
 def _daily_context(df: pd.DataFrame, atr_window: int) -> pd.DataFrame:
@@ -74,13 +86,23 @@ def _atr_levels(daily: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
 
 
 def _rbreaker_levels(daily: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
+    """六个价位（原文系数 0.35 / 0.07 / 0.25）。
+
+    ``long_level``/``short_level`` 为突破买入/卖出价；``sell_setup``/``buy_setup`` 为
+    观察卖出/买入价；``sell_enter``/``buy_enter`` 为反转卖出/买入价。
+    """
     high, low, close = daily["prev_high"], daily["prev_low"], daily["prev_close"]
-    setup_buy = high + cfg.rbreaker_setup * (close - low)
-    setup_sell = low - cfg.rbreaker_setup * (high - close)
-    width = setup_buy - setup_sell
+    sell_setup = high + cfg.rbreaker_setup * (close - low)
+    buy_setup = low - cfg.rbreaker_setup * (high - close)
+    f = cfg.rbreaker_enter
+    sell_enter = (1 + f) / 2 * (high + low) - f * low
+    buy_enter = (1 + f) / 2 * (high + low) - f * high
+    width = sell_setup - buy_setup
     return pd.DataFrame({
-        "long_level": setup_buy + cfg.rbreaker_break * width,
-        "short_level": setup_sell - cfg.rbreaker_break * width,
+        "long_level": sell_setup + cfg.rbreaker_break * width,
+        "short_level": buy_setup - cfg.rbreaker_break * width,
+        "sell_setup": sell_setup, "buy_setup": buy_setup,
+        "sell_enter": sell_enter, "buy_enter": buy_enter,
         "atr": daily["atr"],
     }, index=daily.index)
 
@@ -93,13 +115,6 @@ def _fali_levels(daily: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     }, index=daily.index)
 
 
-def _opening_range_levels(day: pd.DataFrame, cfg: StrategyConfig) -> tuple[float, float]:
-    first = day.iloc[: int(cfg.opening_range_minutes)]
-    if len(first) < int(cfg.opening_range_minutes):
-        return np.nan, np.nan
-    return float(first["high"].max()), float(first["low"].min())
-
-
 def prepared_daily_levels(minute: pd.DataFrame,
                           cfg: StrategyConfig) -> pd.DataFrame:
     """一次性计算所有交易日的盘前水平线，避免重复扫描历史数据。"""
@@ -108,43 +123,14 @@ def prepared_daily_levels(minute: pd.DataFrame,
         return _range_levels(daily, cfg)
     if cfg.name == "atr":
         return _atr_levels(daily, cfg)
-    if cfg.name == "rbreaker":
+    if cfg.name in ("rbreaker", "rbreaker_breakout"):
         return _rbreaker_levels(daily, cfg)
     if cfg.name == "fali":
         return _fali_levels(daily, cfg)
-    if cfg.name == "opening_range_assumption":
-        return daily[["atr"]].assign(long_level=np.nan, short_level=np.nan)
+    if cfg.name in ("opening_range_assumption", "sky_garden"):
+        # 上下轨由开盘后的分钟 bar 给出；gap_points 为开盘减昨收的复权价差，
+        # 引擎再除以原始价格的昨收（= 当日原始开盘 − gap_points）得到跳空幅度
+        return daily[["atr"]].assign(long_level=np.nan, short_level=np.nan,
+                                     gap_points=daily["open"] - daily["prev_close"])
     raise ValueError(f"未知日内策略: {cfg.name}; 可选 {available_strategies()}")
 
-
-def levels_for_day(history: pd.DataFrame, day: pd.DataFrame,
-                   cfg: StrategyConfig) -> tuple[float, float, float]:
-    """返回 (多头突破价, 空头突破价, ATR)。
-
-    ``history`` 只包含当前日以前的分钟数据；开盘区间策略在当前日的前 N 根
-    bar 完成后才产生水平线，调用方必须从第 N 根之后开始寻找突破。
-    """
-    if cfg.name == "opening_range_assumption":
-        long_level, short_level = _opening_range_levels(day, cfg)
-        atr = float(history.groupby("trading_date").agg(
-            high=("high", "max"), low=("low", "min"), close=("close", "last")
-        ).pipe(lambda x: pd.concat([
-            x["high"] - x["low"],
-            (x["high"] - x["close"].shift(1)).abs(),
-            (x["low"] - x["close"].shift(1)).abs(),
-        ], axis=1).max(axis=1).shift(1).rolling(
-            cfg.atr_window, min_periods=cfg.atr_window).mean().iloc[-1]))
-        return long_level, short_level, atr
-
-    daily = _daily_context(pd.concat([history, day]), cfg.atr_window)
-    if cfg.name == "dual_thrust":
-        row = _range_levels(daily, cfg).iloc[-1]
-    elif cfg.name == "atr":
-        row = _atr_levels(daily, cfg).iloc[-1]
-    elif cfg.name == "rbreaker":
-        row = _rbreaker_levels(daily, cfg).iloc[-1]
-    elif cfg.name == "fali":
-        row = _fali_levels(daily, cfg).iloc[-1]
-    else:
-        raise ValueError(f"未知日内策略: {cfg.name}; 可选 {available_strategies()}")
-    return float(row["long_level"]), float(row["short_level"]), float(row["atr"])

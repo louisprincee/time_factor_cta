@@ -46,10 +46,6 @@ def dump_json(path: Path, obj) -> None:
     path.write_text(json.dumps(clean_json(obj), ensure_ascii=False, indent=2), encoding='utf-8')
 
 
-def load_json(path: Path):
-    return json.loads(Path(path).read_text(encoding='utf-8'))
-
-
 def not_ready_reason() -> str | None:
     if not shard_io.list_shards(C.RESEARCH_DIR):
         return (f"研究期分片为空: {C.RESEARCH_DIR}\n"

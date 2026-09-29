@@ -427,11 +427,3 @@ def screen_research(cfg: BookConfig,
     table = evaluate_cases(signal, day_ret, universe, cases, years,
                            cfg, slippage, research_period_label(), vol=signal_set.vol)
     return table, note, cases
-
-
-def print_table(table: pd.DataFrame, columns: list[str]) -> None:
-    cols = [c for c in columns if c in table.columns]
-    with pd.option_context("display.width", 240, "display.max_rows", 200,
-                           "display.max_columns", 40,
-                           "display.float_format", lambda v: f"{v:+.4f}"):
-        print(table[cols].to_string(index=False))

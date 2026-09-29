@@ -79,7 +79,7 @@ data/data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
 python -m pytest
 ```
 
-当前应是 161 项全过、几秒钟结束（别加 `-q | grep`，那样容易什么都看不到）。
+当前应是 235 项全过、约十秒结束（别加 `-q | grep`，那样容易什么都看不到）。
 测试按功能放在 `tests/data`、`tests/factors`、`tests/research`、`tests/download`。
 这套测试不测"跑得通"，测的是几件**做错了也不会报错**的事：
 夜盘因子在无夜盘品种上是 NaN 而非 0、阈值网格与逐个调用逐元素相同、
@@ -519,7 +519,7 @@ python scripts/step4_factor_ic.py    # --no-combos 跳过第 3 部分，--no-het
 
 为什么不用旧的周五单批：同一信号换成周一到周四调仓，研究期毛 Sharpe 从 1.14 掉到 −0.31～0.57，
 五个交易日相位都在 0.2～0.6。旧口径的收益大半押在"周五收盘取信号"这个日历相位上，
-错开调仓把这部分相位运气平均掉（诊断见 `scripts/research_compare_books.py` 的 `book_compare_phase.csv`）。
+错开调仓把这部分相位运气平均掉（当时的诊断表在 `data/research/book_compare_phase.csv`）。
 
 **配置指纹**：等效因子权重、池子、品种过滤、费率、滑点、阈值参数、调仓批数、波动率目标
 共同决定一本书的指纹。`名字` 和 `名字:先验符号` 算同一本；`time_combo:+1` 展开成四个时间因子
@@ -549,9 +549,25 @@ python scripts/step5_backtest_research.py --config config/strategy_example.json
 这一步只用研究期，跑多少次都不消耗验证期。但在这里按收益挑因子和板块，本身就是选参，
 进第 6 步之前要想清楚准备验证哪几本书。
 
-`scripts/research_compare_books.py` 是研究期的候选书对比（基线四种执行口径、快书、慢书、
-快慢风险平价、趋势交互、软状态书及 w≡0.5 对照），同样只读 2016–2021、不记台账。
-结果写 `data/research/book_compare*.csv`。
+日频候选书的那次对比（基线四种执行口径、快书、慢书、快慢风险平价、趋势交互、
+软状态书及 w≡0.5 对照）只读了 2016–2021、没有记台账，结果在 `data/research/book_compare*.csv`。
+
+当前在研究的是一条日内策略，不和日频书混在一起。交易日最前面 30 根 1 分钟 K 线做出开盘区间
+（有夜盘的品种从夜盘算起），之后突破才入场，当日收盘平仓。岭回归用区间、动量和期限结构
+（`core+trend+carry`，正则 `ridge10`），预测值大于 0 才保留这笔交易。研究期走步：
+
+```bash
+python scripts/research_orb_ridge.py
+```
+
+只读 2016–2021。对照「从日盘第一根算起的 30 根」以及预测值五档是否单调，结果写在
+`runs/*_orb_ridge_research/`。
+
+这本（`ridge10` + `core+trend+carry` + `orb30|eod`）已在 2022 测过一次，未通过：
+净 Sharpe −0.33，净年化 −0.65%（40 个品种，242 天）。指纹 `c853cb7b48fc326d`，
+留痕 `runs/20260929_165103_orb_ridge_validation2022`。因为没过 2022，没有读 2023–2025。
+不能换特征、正则或开盘定义再测这一本。更早一版不含这组特征的岭回归开盘区间已经单独测过
+2022 和 2023–2025，指纹在验证台账和样本外台账里，也不能再测。
 
 #### 第 6 步　2022 验证期测试
 
@@ -645,7 +661,7 @@ DFP 的持续期用 `closew`，FP 与分母用 `close`。
 
 ```bash
 conda activate factor-mining
-python -m pytest -q                              # 当前 161 项应全过
+python -m pytest -q                              # 当前 235 项应全过
 python scripts/step1_shard_minutes.py --dry-run
 python scripts/step1_shard_minutes.py
 python scripts/step2_universe.py
