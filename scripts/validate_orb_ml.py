@@ -1,17 +1,22 @@
-"""一次性检验：开盘区间突破 + ridge10 + 区间/动量/期限结构。
+"""一次性检验：开盘区间突破 + 元标签模型。每本书 2022 只测一次，过了才读 2023–2025。
 
 事先写定，看到结果前不改：
 - 只做 ``orb30|eod``：交易日第一根起 30 根（含夜盘），尾盘平；
-- 特征 ``core+trend+carry``，模型 ``ridge10``，预测值 > 0 才做；
+- 特征组（``walk_forward.GROUP_SETS``）与模型（``walk_forward.MODELS``）由命令行给定，预测值 > 0 才做；
 - 训练只用 2019–2021 的池内交易，标签不包含 2022 及以后；
 - 主口径 = 历史手续费 + 每边 1 tick；
 - 2022 净 Sharpe ≥ 0.5 且几何净年化 > 0 才读 2023–2025；
-- 样本外沿用已经拟合好的模型，不用 2022 及以后的标签重训。
+- 样本外沿用 2022 检验时存下的模型，不用 2022 及以后的标签重训。
 
-指纹含特征组。更早一版 ``ml:ridge:orb30|eod``（没有这组特征）已经在台账里，这本是另一本。
+一本书 = 模型 + 特征组，指纹由规格串算出，测过的书在台账里，脚本拒绝重测。
+
+用法：
+  python scripts/validate_orb_ml.py --model ridge10 --groups core          # 只测 2022
+  python scripts/validate_orb_ml.py --model ridge10 --groups core --oos    # 2022 已通过后读 2023–2025
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import pickle
 import sys
@@ -30,17 +35,25 @@ from tfcta.research.backtest import costs  # noqa: E402
 from tfcta.research.intraday import walk_forward as W  # noqa: E402
 from tfcta.research.workflow import context, history, ledger  # noqa: E402
 
-SPEC = "ml:ridge10:orb30|eod:core+trend+carry:pred>0:train2019-2021:test2022:hist+1tick"
-FACTORS = "ml:ridge10:orb30|eod:core+trend+carry"
 BASE = "orb30|eod"
-GROUPS = "core+trend+carry"
-MODEL = "ridge10"
 TRAIN = (2019, 2020, 2021)
 OOS_END = C.DEFAULT_OOS_END
 MIN_SHARPE = 0.5
 PARTITIONS_2022 = ("research", "validation_2022")
 PARTITIONS_OOS = ("research", "validation_2022", "holdout_locked")
-OLD_FINGERPRINT = "6bfc5f9284536e0c"
+MODEL = GROUPS = SPEC = FACTORS = SIDE_SCOPE = None  # main() 按命令行设定
+LONG_ONLY = False
+
+
+def select(model: str, groups: str, long_only: bool = False) -> None:
+    global MODEL, GROUPS, SPEC, FACTORS, SIDE_SCOPE, LONG_ONLY
+    MODEL, GROUPS = model, groups
+    LONG_ONLY = bool(long_only)
+    SIDE_SCOPE = "long_only" if LONG_ONLY else "both_sides"
+    FACTORS = f"ml:{MODEL}:{BASE}:{GROUPS}" + (":long_only" if LONG_ONLY else "")
+    SPEC = f"{FACTORS}:pred>0:train2019-2021:test2022:hist+1tick"
+    if LONG_ONLY:
+        SPEC += ":side=long"
 
 
 def fingerprint() -> str:
@@ -69,7 +82,7 @@ def build(symbols: list[str], universe: dict, partitions, oos_end=None):
     hist = history.History()
     frames, ctxs, skipped = [], {}, []
     costs.load_fee_history([s for s in symbols if s in costs.MULTIPLIER])
-    for i, symbol in enumerate(symbols, 1):
+    for symbol in symbols:
         minute = minute_frame(symbol, oos_end)
         if minute is None:
             skipped.append(symbol)
@@ -85,8 +98,6 @@ def build(symbols: list[str], universe: dict, partitions, oos_end=None):
             frames.append(trades)
         ctxs[symbol] = ctx
         del minute, coords
-        if i % 10 == 0 or i == len(symbols):
-            print(f"  已加载 {i}/{len(symbols)}", flush=True)
     loaded = list(hist.bars)
     scoped = {y: [s for s in names if s in loaded] for y, names in universe.items()}
     sig = history.signal_set(hist, scoped, partitions)
@@ -173,9 +184,9 @@ def ledger_row(fp, run, summary, n_symbols, passed, note, **extra) -> dict:
         "config": {
             "fee_rate": None, "slippage_ticks": 1.0, "tranches": 0, "vol_target": 0.0,
             "execution": "ml_meta_label", "fee_schedule": "hist", "train": "2019-2021",
-            "groups": GROUPS, "model": MODEL, "base": BASE, "rule": "pred>0",
+            "groups": GROUPS, "model": MODEL, "base": BASE, "side_scope": SIDE_SCOPE,
+            "rule": "pred>0 and side=long" if LONG_ONLY else "pred>0",
         },
-        "legacy": False,
         "run_at": ledger.stamp(),
         "run_dir": str(run),
         "criteria": {"min_net_sharpe": MIN_SHARPE, "min_net_ann_return": 0.0},
@@ -223,6 +234,7 @@ def predict(state, years) -> tuple[np.ndarray, np.ndarray, pd.Series]:
     pred = np.full(len(state["sub"]), np.nan)
     if hold.any():
         pred[hold] = state["fitted"].predict(state["X"].loc[hold, state["use"]])
+    pred = W.scope_predictions(pred, state["sub"], SIDE_SCOPE)
     net = score(state["panel"], state["member"], state["nets"], pred, state["year"], years)
     return pred, hold, net
 
@@ -242,7 +254,7 @@ def run_2022(fp: str):
     print(f"2022 净 Sharpe {summary['net_sharpe']:.3f}  净年化 {summary['net_ann']:.2%}  "
           f"波动 {summary['net_vol']:.2%}  回撤 {summary['net_mdd']:.2%}  "
           f"天数 {summary['n_days']:.0f}  保留 {taken}/{int(hold.sum())}", flush=True)
-    run = context.run_dir("orb_ridge_validation2022")
+    run = context.run_dir("orb_ml_validation2022")
     table = performance_table(net, pred, state["target"], hold, n_symbols, "2022")
     table.to_csv(run / "performance.csv", index=False, encoding="utf-8-sig")
     net.rename("net").to_csv(run / "daily_net.csv", header=True, encoding="utf-8-sig")
@@ -251,6 +263,8 @@ def run_2022(fp: str):
                      "n_train": state["n_train"], "token": state["token"]}, fh)
     context.dump_json(run / "params.json", {
         "spec": SPEC, "fingerprint": fp, "train": list(TRAIN), "groups": GROUPS,
+        "side_scope": SIDE_SCOPE,
+        "group_parts": list(W.GROUP_SETS[GROUPS]),
         "model": MODEL, "base": BASE, "n_train": state["n_train"], "token": state["token"],
         "use": state["use"], "universe_2022": state["universe"].get(2022, []),
         "skipped": state["skipped"],
@@ -258,7 +272,8 @@ def run_2022(fp: str):
     ok = passes(summary)
     ledger.append(ledger.validation_path(), [ledger_row(
         fp, run, summary, n_symbols, ok,
-        "开盘区间突破元标签，ridge10，core+trend+carry，2022 一次性，主口径 1 tick")])
+        f"开盘区间突破元标签，{MODEL}，{GROUPS}，"
+        f"{'只做多探索性' if LONG_ONLY else '双向'}，2022 一次性，主口径 1 tick")])
     ledger.write_validation_log()
     print(f"2022 {'通过' if ok else '未通过'}，留痕 {run}", flush=True)
     return ok, run, state
@@ -296,7 +311,7 @@ def run_oos(fp: str, fitted, use, n_train: int, token: str):
         one = W.summarize(net[net.index.year == y])
         print(f"  {y} 净 Sharpe {one['net_sharpe']:.3f}  净年化 {one['net_ann']:.2%}  "
               f"回撤 {one['net_mdd']:.2%}  天数 {one['n_days']:.0f}", flush=True)
-    run = context.run_dir("orb_ridge_oos")
+    run = context.run_dir("orb_ml_oos")
     table = performance_table(
         net, pred, state["target"], hold, n_symbols, f"{C.STRICT_OOS_START}..{OOS_END}")
     table.to_csv(run / "performance.csv", index=False, encoding="utf-8-sig")
@@ -305,6 +320,7 @@ def run_oos(fp: str, fitted, use, n_train: int, token: str):
         screen.to_csv(run / "universe_oos_screen.csv", index=False, encoding="utf-8-sig")
     context.dump_json(run / "params.json", {
         "spec": SPEC, "fingerprint": fp, "train": list(TRAIN), "frozen_model": True,
+        "side_scope": SIDE_SCOPE,
         "n_train": n_train, "oos_end": OOS_END.isoformat(),
         "universe_oos": {str(k): v for k, v in oos_universe.items()},
         "skipped": state["skipped"],
@@ -316,6 +332,7 @@ def run_oos(fp: str, fitted, use, n_train: int, token: str):
     entry.pop("passed", None)
     entry.pop("criteria", None)
     ledger.append(ledger.oos_path(), [entry])
+    ledger.write_validation_log()
     print(f"样本外留痕 {run}", flush=True)
 
 
@@ -327,38 +344,43 @@ def saved_model(entry: dict):
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description="开盘区间元标签书：2022 一次性检验，可选再读 2023–2025")
+    ap.add_argument("--model", required=True, choices=W.MODELS)
+    ap.add_argument("--groups", required=True, choices=list(W.GROUP_SETS))
+    ap.add_argument("--long-only", action="store_true",
+                    help="仅保留多头预测；探索性 2022 检查，不允许继续打开 OOS")
+    ap.add_argument("--oos", action="store_true", help="2022 已测过且通过后读 2023–2025")
+    args = ap.parse_args()
+    select(args.model, args.groups, args.long_only)
+    if LONG_ONLY and args.oos:
+        ap.error("--long-only 是事后提出的一次性探索变体，不允许继续读取 2023 及以后")
     if W.train_years(2022) != list(TRAIN):
         raise RuntimeError("训练年份和走步窗口不一致")
     if W.BASES[BASE].open_anchor != "first":
         raise RuntimeError("开盘定义不是交易日第一根")
-    if W.GROUP_SETS[GROUPS] != ("core", "trend", "carry"):
-        raise RuntimeError("特征组被改过")
     fp = fingerprint()
-    if fp == OLD_FINGERPRINT:
-        raise RuntimeError("指纹和已经测过的旧特征书重合")
-    print(f"规格 {SPEC}", flush=True)
-    print(f"指纹 {fp}", flush=True)
-    done = ledger.lookup(ledger.validation_entries(), fp)
-    oos_done = ledger.lookup(ledger.read(ledger.oos_path()), fp)
-    if oos_done:
-        print("这本的 2022 和样本外都已经测过，不再重测。")
+    print(f"规格 {SPEC}  指纹 {fp}", flush=True)
+    if ledger.lookup(ledger.read(ledger.oos_path()), fp):
+        print("这本的样本外已经测过，不再重测。")
         return 2
-    if done:
-        entry = done[-1]
-        sharpe, ann = entry.get("net_sharpe"), entry.get("net_ann_return")
-        ok = (not entry.get("legacy")) and np.isfinite(sharpe) and np.isfinite(ann) \
-            and float(sharpe) >= MIN_SHARPE and float(ann) > 0
-        if not ok:
-            print("2022 已经测过且未通过，不读 2023–2025。")
-            return 1
-        fitted, use, n_train, token = saved_model(entry)
-        run_oos(fp, fitted, use, n_train, token)
-        return 0
-    ok, _run, state = run_2022(fp)
+    done = ledger.lookup(ledger.validation_entries(), fp)
+    if not args.oos:
+        if done:
+            print("这本的 2022 已经测过，不再重测。要读 2023–2025 加 --oos。")
+            return 2
+        ok, _run, _state = run_2022(fp)
+        return 0 if ok else 1
+    if not done:
+        print("这本还没测 2022，先不带 --oos 跑一次。")
+        return 1
+    entry = done[-1]
+    sharpe, ann = entry.get("net_sharpe"), entry.get("net_ann_return")
+    ok = np.isfinite(sharpe) and np.isfinite(ann) and float(sharpe) >= MIN_SHARPE and float(ann) > 0
     if not ok:
         print("2022 未通过，不读 2023–2025。")
         return 1
-    run_oos(fp, state["fitted"], state["use"], state["n_train"], state["token"])
+    fitted, use, n_train, token = saved_model(entry)
+    run_oos(fp, fitted, use, n_train, token)
     return 0
 
 

@@ -1,4 +1,4 @@
-"""日内模块测试：撮合与信息时点、向量化撮合对照逐 bar 参考循环、手续费口径、
+"""日内 ORB 测试：撮合口径、向量化撮合对照逐 bar 参考循环、手续费口径、
 开盘区间与元标签不使用未来信息。"""
 
 from __future__ import annotations
@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta.research.intraday import BacktestConfig, StrategyConfig, run_intraday
 from tfcta.research.backtest import costs
 from tfcta.research.intraday import engine as E
 from tfcta.research.intraday import walk_forward as P
@@ -21,61 +20,6 @@ def _bar_time(day, minute: int) -> pd.Timestamp:
     return pd.Timestamp(day) + pd.Timedelta(9 * 60 + int(minute), unit="min")
 
 
-def _minutes(days: int = 3) -> pd.DataFrame:
-    rows = []
-    for day in pd.bdate_range("2021-01-04", periods=days):
-        for minute in range(5):
-            value = 100.0
-            rows.append({
-                "timestamp": _bar_time(day, minute),
-                "openw": value, "highw": value, "loww": value,
-                "closew": value, "trading_date": day,
-            })
-    return pd.DataFrame(rows).set_index("timestamp")
-
-
-def test_requires_completed_previous_day_for_fali():
-    df = _minutes(2)
-    df.loc[df.index[5], "highw"] = 105.0
-    result = run_intraday(df, StrategyConfig(name="fali"),
-                          BacktestConfig(margin_rate=0.3), "RB")
-    assert result.trades.iloc[0]["entry_time"].date() == pd.Timestamp("2021-01-05").date()
-
-
-def test_same_bar_stop_loss_wins_over_target():
-    df = _minutes(2)
-    df.loc[df.index[5], "highw"] = 105.0
-    df.loc[df.index[6], ["openw", "highw", "loww", "closew"]] = [105.0, 110.0, 90.0, 100.0]
-    result = run_intraday(
-        df, StrategyConfig(name="fali", atr_window=1,
-                           stop_atr_multiple=1, target_atr_multiple=1),
-        BacktestConfig(margin_rate=0.3), "RB")
-    assert len(result.trades) == 1
-    assert result.trades.iloc[0]["exit_reason"] == "stop_loss"
-
-
-def test_every_position_is_closed_at_end_of_day():
-    df = _minutes(2)
-    df.loc[df.index[5], "highw"] = 105.0
-    result = run_intraday(df, StrategyConfig(name="fali"),
-                          BacktestConfig(margin_rate=0.3), "RB")
-    assert len(result.trades) == 1
-    assert result.trades.iloc[0]["exit_reason"] == "end_of_day"
-    assert result.trades.iloc[0]["exit_time"].date() == pd.Timestamp("2021-01-05").date()
-
-
-def test_margin_rate_scales_daily_return():
-    df = _minutes(2)
-    df.loc[df.index[5], "highw"] = 105.0
-    df.loc[df.index[6], ["openw", "highw", "loww", "closew"]] = [105.0, 105.0, 105.0, 110.0]
-    one = run_intraday(df, StrategyConfig(name="fali"),
-                       BacktestConfig(fee_rate=0, margin_rate=1), "RB")
-    half = run_intraday(df, StrategyConfig(name="fali"),
-                        BacktestConfig(fee_rate=0, margin_rate=0.5), "RB")
-    assert half.daily.iloc[-1]["net_return"] == pytest.approx(
-        2 * one.daily.iloc[-1]["net_return"])
-
-
 def test_train_years_stop_before_the_predicted_year():
     assert P.train_years(2019) == [2016, 2017, 2018]
     assert P.train_years(2017) == [2016]
@@ -83,58 +27,91 @@ def test_train_years_stop_before_the_predicted_year():
     assert 2022 not in P.train_years(2022)
 
 
-# --------------------------------------------------------------------------
-# 向量化撮合与保守成交口径
-# --------------------------------------------------------------------------
-def _reference(df, long_level, short_level, stop_dist, target_dist, max_entries, start=0):
-    """逐 bar 参考实现，口径与 engine.simulate 的文档一致。"""
-    out = []
-    for d, (_, day) in enumerate(df.groupby("trading_date", sort=True)):
-        o, h, l, c = (day[k].to_numpy() for k in ("openw", "highw", "loww", "closew"))
-        vol = day["volume"].to_numpy()
-        up, dn = long_level[d], short_level[d]
-        i, entries = start, 0
-        while i < len(day) and entries < max_entries:
-            side = 0
-            for j in range(i, len(day)):
-                if vol[j] <= 0:
-                    continue
-                hl, hs = h[j] > up, l[j] < dn
-                if hl and hs:
-                    ol, os_ = o[j] >= up, o[j] <= dn
-                    if ol == os_:
-                        side = None
-                        break
-                    side = 1 if ol else -1
-                elif hl:
-                    side = 1
-                elif hs:
-                    side = -1
-                if side:
-                    break
-            if not side:
-                break
-            entries += 1
-            px = max(o[j], up) if side > 0 else min(o[j], dn)
-            stop, target = px - side * stop_dist[d], px + side * target_dist[d]
-            exit_bar, exit_px, reason = len(day) - 1, c[-1], "end_of_day"
-            for k in range(j, len(day)):
-                if (side > 0 and l[k] <= stop) or (side < 0 and h[k] >= stop):
-                    exit_bar, reason = k, "stop_loss"
-                    exit_px = stop if k == j else (min(o[k], stop) if side > 0 else max(o[k], stop))
-                    break
-                if k > j and ((side > 0 and h[k] >= target) or (side < 0 and l[k] <= target)):
-                    exit_bar, reason = k, "take_profit"
-                    exit_px = max(o[k], target) if side > 0 else min(o[k], target)
-                    break
-            out.append((day.index[j], day.index[exit_bar], side, px, exit_px, reason))
-            if reason == "end_of_day":
-                break
-            i = exit_bar + 1
-    return out
+@pytest.mark.parametrize("model", P.MODELS)
+def test_models_skip_empty_columns_and_rank_the_signal(model):
+    """训练集里全缺 / 常数的列要剔掉；预测值要和真实信号同向（logit 的 > 0 即概率 > 50%）。"""
+    rng = np.random.default_rng(0)
+    n = 4000
+    signal = rng.normal(size=n)
+    X = pd.DataFrame({"signal": signal, "noise": rng.normal(size=n),
+                      "empty": np.nan, "const": 1.0})
+    X.loc[rng.random(n) < 0.1, "noise"] = np.nan
+    y = 0.5 * signal + rng.normal(size=n)
+    train = np.arange(n) < 3000
+    pred, _, use = P.fit_predict(model, X, y, train, ~train)
+    assert set(use) == {"signal", "noise"}
+    assert np.isfinite(pred).all() and len(pred) == (~train).sum()
+    assert np.corrcoef(pred, signal[~train])[0, 1] > 0.5
 
 
-def _random_minutes(seed: int, days: int = 60, bars: int = 40) -> pd.DataFrame:
+# --------------------------------------------------------------------------
+# ORB 撮合
+# --------------------------------------------------------------------------
+def _orb_days(bars=6, days=2):
+    """每天 ``bars`` 根平盘 bar（高 101 / 低 99），开盘区间取前 2 根。"""
+    rows = []
+    for day in pd.bdate_range("2021-01-04", periods=days):
+        for b in range(bars):
+            rows.append({"timestamp": _bar_time(day, b + 1), "open": 100.0,
+                         "openw": 100.0, "highw": 101.0, "loww": 99.0, "closew": 100.0,
+                         "volume": 1.0, "trading_date": day})
+    return pd.DataFrame(rows).set_index("timestamp")
+
+
+ORB2 = E.OrbConfig(2)
+
+
+def _set(df, i, **values):
+    df.iloc[i, df.columns.get_indexer([k + "w" if k != "volume" else k for k in values])] = \
+        list(values.values())
+
+
+def test_orb_waits_for_the_range_and_exits_at_the_close():
+    df = _orb_days()
+    _set(df, 1, high=103.0)                  # 区间内的突破不算，只抬高上轨
+    _set(df, 3, high=103.5)                  # 第 4 根穿过上轨 103 → 按 103 入场
+    _set(df, 5, close=104.0)                 # 尾盘按收盘价平
+    tr = E.orb_trades(E.prepare(df), ORB2, 1)
+    assert tr["day"].tolist() == [0] and tr["entry_bar"].tolist() == [3]
+    assert tr["exit_bar"].tolist() == [5] and tr["entry"][0] == 103.0 and tr["exit"][0] == 104.0
+    assert tr["gross"][0] == pytest.approx(1.0 / 100.0)
+    # 只碰到不算穿过
+    df2 = _orb_days()
+    _set(df2, 3, high=101.0)
+    assert not len(E.orb_trades(E.prepare(df2), ORB2, 1)["day"])
+
+
+def test_orb_open_beyond_level_fills_at_open_and_short_mirrors():
+    df = _orb_days()
+    _set(df, 2, open=98.0, high=99.5, low=97.0)
+    tr = E.orb_trades(E.prepare(df), ORB2, -1)
+    assert tr["entry"].tolist() == [98.0] and tr["gross"][0] == pytest.approx(-2.0 / 100.0)
+    assert not len(E.orb_trades(E.prepare(df), ORB2, 1)["day"])
+
+
+def test_orb_zero_volume_bar_cannot_enter():
+    df = _orb_days()
+    _set(df, 2, high=102.0, volume=0.0)
+    _set(df, 4, high=102.0)
+    assert E.orb_trades(E.prepare(df), ORB2, 1)["entry_bar"].tolist() == [4]
+
+
+def test_orb_day_anchor_skips_the_night_and_days_without_day_session():
+    idx = pd.to_datetime(["2021-01-04 21:01", "2021-01-04 21:02", "2021-01-05 09:01",
+                          "2021-01-05 09:02", "2021-01-05 09:03", "2021-01-05 21:01",
+                          "2021-01-05 21:02", "2021-01-05 21:03"])
+    df = pd.DataFrame({"openw": 100.0, "highw": [110, 90, 101, 101, 102, 101, 101, 105.0],
+                       "loww": 99.0, "closew": 100.0, "volume": 1.0,
+                       "trading_date": pd.to_datetime(["2021-01-05"] * 5 + ["2021-01-06"] * 3)},
+                      index=idx)
+    p = E.prepare(df)
+    day = E.orb_trades(p, E.OrbConfig(2, open_anchor="day"), 1)
+    assert day["entry_bar"].tolist() == [4]          # 区间 = 日盘前两根，不含夜盘的 110
+    first = E.orb_trades(p, E.OrbConfig(2), 1)
+    assert first["entry_bar"].tolist() == [7]        # 含夜盘区间上轨 110，第一天不触发
+
+
+def _random_minutes(seed: int, days: int = 40, bars: int = 20) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     rows, price = [], 100.0
     for day in pd.bdate_range("2020-01-02", periods=days):
@@ -143,217 +120,40 @@ def _random_minutes(seed: int, days: int = 60, bars: int = 40) -> pd.DataFrame:
             c = o + rng.normal(0, 0.3)
             hi, lo = max(o, c) + abs(rng.normal(0, 0.2)), min(o, c) - abs(rng.normal(0, 0.2))
             price = c
-            rows.append({"timestamp": _bar_time(day, b + 1),
-                         "open": o, "openw": o, "highw": hi, "loww": lo, "closew": c,
+            rows.append({"timestamp": _bar_time(day, b + 1), "open": o + 50, "openw": o,
+                         "highw": hi, "loww": lo, "closew": c,
                          "volume": float(rng.random() > 0.05), "trading_date": day})
     return pd.DataFrame(rows).set_index("timestamp")
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("max_entries", [1, 3])
-def test_vectorized_engine_matches_reference_loop(seed, max_entries):
+@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("side", [1, -1])
+def test_orb_matches_reference_loop(seed, side):
     df = _random_minutes(seed)
-    cfg = StrategyConfig(name="dual_thrust", lookback=2, k1=0.3, k2=0.3, atr_window=3,
-                         stop_atr_multiple=0.3, target_atr_multiple=0.5,
-                         max_entries_per_day=max_entries)
-    result = run_intraday(df, cfg, BacktestConfig(fee_rate=0, margin_rate=1), "T")
-    from tfcta.research.intraday.strategies import prepared_daily_levels
-    levels = prepared_daily_levels(
-        df.assign(open=df["openw"], high=df["highw"], low=df["loww"], close=df["closew"]), cfg)
-    ref = _reference(df, levels["long_level"].to_numpy(), levels["short_level"].to_numpy(),
-                     levels["atr"].to_numpy() * 0.3, levels["atr"].to_numpy() * 0.5, max_entries)
-    got = list(result.trades[["entry_time", "exit_time", "direction", "entry_price",
-                              "exit_price", "exit_reason"]].itertuples(index=False, name=None))
-    assert len(got) == len(ref) > 0
-    for a, b in zip(got, ref):
-        assert a[:3] == b[:3] and a[5] == b[5]
-        assert a[3] == pytest.approx(b[3]) and a[4] == pytest.approx(b[4])
-
-
-def _two_days(bars=4):
-    rows = []
-    for day in pd.bdate_range("2021-01-04", periods=2):
-        for b in range(bars):
-            rows.append({"timestamp": _bar_time(day, b + 1),
-                         "openw": 100.0, "highw": 101.0, "loww": 99.0, "closew": 100.0,
-                         "volume": 1.0, "trading_date": day})
-    return pd.DataFrame(rows).set_index("timestamp")
-
-
-FALI = StrategyConfig(name="fali", atr_window=1, stop_atr_multiple=0.5)
-
-
-def test_bar_crossing_both_levels_skips_the_day():
-    df = _two_days()
-    df.iloc[5, df.columns.get_indexer(["highw", "loww"])] = [102.0, 98.0]
-    assert run_intraday(df, FALI, BacktestConfig(margin_rate=1)).trades.empty
-
-
-def test_open_beyond_one_level_resolves_the_order():
-    df = _two_days()
-    df.iloc[5, df.columns.get_indexer(["openw", "highw", "loww"])] = [101.5, 102.0, 98.0]
-    trades = run_intraday(df, FALI, BacktestConfig(margin_rate=1)).trades
-    assert trades.iloc[0]["direction"] == 1 and trades.iloc[0]["entry_price"] == 101.5
-
-
-def test_entry_bar_stop_fills_at_stop_not_open():
-    df = _two_days()
-    # ATR=2，止损距离 1：入场 101 后同一根 bar 跌到 99.5，按 100 止损而不是开盘 100.5
-    df.iloc[5, df.columns.get_indexer(["openw", "highw", "loww"])] = [100.5, 102.0, 99.5]
-    trade = run_intraday(df, FALI, BacktestConfig(margin_rate=1)).trades.iloc[0]
-    assert trade["exit_reason"] == "stop_loss"
-    assert trade["entry_price"] == 101.0 and trade["exit_price"] == 100.0
-
-
-def test_zero_volume_bar_cannot_open_a_position():
-    df = _two_days()
-    df.iloc[5, df.columns.get_indexer(["highw", "volume"])] = [102.0, 0.0]
-    assert run_intraday(df, FALI, BacktestConfig(margin_rate=1)).trades.empty
-
-
-def test_reentry_after_stop_on_later_bar():
-    df = _two_days(bars=6)
-    df.iloc[6:, df.columns.get_indexer(["openw", "highw", "loww", "closew"])] = [100.6, 100.8, 100.4, 100.6]
-    df.iloc[7, df.columns.get_indexer(["highw"])] = [102.0]     # 入场 101
-    df.iloc[8, df.columns.get_indexer(["loww"])] = [99.8]       # 止损 100
-    df.iloc[10, df.columns.get_indexer(["highw"])] = [102.0]    # 再次入场
-    cfg = StrategyConfig(name="fali", atr_window=1, stop_atr_multiple=0.5, max_entries_per_day=2)
-    trades = run_intraday(df, cfg, BacktestConfig(margin_rate=1)).trades
-    assert list(trades["exit_reason"]) == ["stop_loss", "end_of_day"]
-    one = run_intraday(df, FALI, BacktestConfig(margin_rate=1)).trades
-    assert len(one) == 1
-
-
-def test_slippage_ticks_by_year():
-    df = _two_days()
-    df.iloc[5, df.columns.get_indexer(["highw"])] = [102.0]
-    cfg = StrategyConfig(name="fali")
-    zero = run_intraday(df, cfg, BacktestConfig(fee_rate=0, margin_rate=1)).trades.iloc[0]
-    slip = run_intraday(df, cfg, BacktestConfig(fee_rate=0, margin_rate=1, slippage_ticks=1),
-                        tick={2021: 0.5}).trades.iloc[0]
-    assert slip["entry_price"] == zero["entry_price"] + 0.5
-    assert slip["exit_price"] == zero["exit_price"] - 0.5
-
-
-# --------------------------------------------------------------------------
-# 带反手的撮合（E.simulate_path）
-# --------------------------------------------------------------------------
-def _find_entry(p, lv, j, e, al, ash):
-    o, h, l, vol = p.o, p.h, p.l, p.tradable
-    EL, ES = lv["enter_long"], lv["enter_short"]
-    for k in range(j, e + 1):
-        if not vol[k]:
-            continue
-        hl, hs = al and h[k] > EL[k], ash and l[k] < ES[k]
-        if hl and hs:
-            ol, osh = o[k] >= EL[k], o[k] <= ES[k]
-            return k, (None if ol == osh else (1 if ol else -1))
-        if hl or hs:
-            return k, (1 if hl else -1)
-    return e + 1, None
-
-
-def _first_exit(p, lv, d, eb, side, px):
-    o, h, l, c, vol = p.o, p.h, p.l, p.c, p.tradable
-    RS, RL, e = lv["rev_to_short"], lv["rev_to_long"], p.ends[d]
-    stop, target = px - side * lv["stop_dist"][d], px + side * lv["target_dist"][d]
-    for k in range(eb, e + 1):
-        sh = (l[k] <= stop) if side > 0 else (h[k] >= stop)
-        th = k > eb and ((h[k] >= target) if side > 0 else (l[k] <= target))
-        rh = k > eb and vol[k] and ((l[k] < RS[k]) if side > 0 else (h[k] > RL[k]))
-        spx = stop if k == eb else (min(o[k], stop) if side > 0 else max(o[k], stop))
-        rpx = min(o[k], RS[k]) if side > 0 else max(o[k], RL[k])
-        if sh or rh:
-            if rh and (not sh or side * (rpx - spx) >= 0):
-                return k, rpx, "reverse"
-            return k, spx, "stop_loss"
-        if th:
-            return k, (max(o[k], target) if side > 0 else min(o[k], target)), "take_profit"
-    return e, c[e], "end_of_day"
-
-
-def _reference_path(p, lv, allow_long, allow_short, max_legs):
-    """逐 bar 参考实现，口径与 E.simulate_path 的文档一致。"""
-    out = []
-    for d, (s, e) in enumerate(zip(p.starts, p.ends)):
-        al, ash = allow_long[d], allow_short[d]
-        j, legs, side = s + lv["start_bar"][d], 0, 0
-        while j <= e:
-            if side == 0:
-                if legs >= max_legs:
-                    break
-                eb, side = _find_entry(p, lv, j, e, al, ash)
-                if side is None:
-                    break
-                legs += 1
-                px = max(p.o[eb], lv["enter_long"][eb]) if side > 0 else \
-                    min(p.o[eb], lv["enter_short"][eb])
-            xi, xpx, reason = _first_exit(p, lv, d, eb, side, px)
-            out.append((d, eb, xi, side, px, xpx, reason))
-            if reason == "end_of_day":
+    got = E.orb_trades(E.prepare(df), E.OrbConfig(5), side)
+    ref = []
+    for d, (_, g) in enumerate(df.groupby("trading_date", sort=True)):
+        start = df.index.get_loc(g.index[0])
+        level = g["highw"].iloc[:5].max() if side > 0 else g["loww"].iloc[:5].min()
+        for j in range(5, len(g)):
+            bar = g.iloc[j]
+            if bar["volume"] > 0 and side * (bar["highw" if side > 0 else "loww"] - level) > 0:
+                entry = max(bar["openw"], level) if side > 0 else min(bar["openw"], level)
+                ref.append((d, start + j, entry,
+                            side * (g["closew"].iloc[-1] - entry) / bar["open"]))
                 break
-            if reason == "reverse" and xi < e and legs < max_legs and (ash if side > 0 else al):
-                side, eb, px, legs = -side, xi, xpx, legs + 1
-                continue
-            side, j = 0, xi + 1
-    return out
+    assert len(ref) > 5
+    assert list(zip(got["day"], got["entry_bar"])) == [r[:2] for r in ref]
+    assert np.allclose(got["entry"], [r[2] for r in ref])
+    assert np.allclose(got["gross"], [r[3] for r in ref])
 
 
-def _compare_path(p, lv, allow_long, allow_short, max_legs):
-    sim = E.simulate_path(p.o, p.h, p.l, p.c, p.codes, p.starts, p.ends,
-                             lv["enter_long"], lv["enter_short"], lv["rev_to_short"],
-                             lv["rev_to_long"], lv["stop_dist"], lv["target_dist"],
-                             lv["start_bar"], allow_long, allow_short, p.tradable, max_legs)
-    ref = _reference_path(p, lv, allow_long, allow_short, max_legs)
-    got = list(zip(sim["day"], sim["entry_bar"], sim["exit_bar"], sim["direction"],
-                   sim["entry"], sim["exit"], sim["reason"]))
-    assert len(got) == len(ref) > 0
-    for a, b in zip(got, ref):
-        assert tuple(int(x) for x in a[:4]) == b[:4] and a[6] == b[6]
-        assert a[4] == pytest.approx(b[4]) and a[5] == pytest.approx(b[5])
-    return ref
-
-
-PATH_STRATEGIES = [
-    StrategyConfig("dual_thrust", lookback=2, k1=0.2, k2=0.2, atr_window=3, reverse=True),
-    StrategyConfig("dual_thrust", lookback=2, k1=0.2, k2=0.3, atr_window=3, reverse=True,
-                   stop_atr_multiple=0.4, target_atr_multiple=0.8),
-    StrategyConfig("rbreaker", atr_window=3, rbreaker_setup=0.1, rbreaker_break=0.1),
-    StrategyConfig("rbreaker", atr_window=3, rbreaker_setup=0.1, stop_pct=0.004),
-    StrategyConfig("fali", atr_window=3, reverse=True, target_pct=0.01),
-]
-
-
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("max_legs", [1, 2, 5])
-@pytest.mark.parametrize("strategy", PATH_STRATEGIES)
-def test_simulate_path_matches_reference(seed, max_legs, strategy):
-    from tfcta.research.intraday.engine import bar_levels, prepare
-    p = prepare(_random_minutes(seed, days=40, bars=60))
-    lv = bar_levels(p, strategy)
-    rng = np.random.default_rng(seed + 100)
-    n = len(p.starts)
-    everything = np.ones(n, bool)
-    _compare_path(p, lv, everything, everything, max_legs)
-    _compare_path(p, lv, rng.random(n) > 0.3, rng.random(n) > 0.3, max_legs)
-
-
-def test_reverse_flips_and_rbreaker_gates_use_prior_bars():
-    from tfcta.research.intraday.engine import bar_levels, prepare
-    from tfcta.research.intraday.strategies import prepared_daily_levels
-    p = prepare(_random_minutes(5, days=40, bars=60))
-    cfg = StrategyConfig("rbreaker", atr_window=3, rbreaker_setup=0.1, rbreaker_break=0.1)
-    lv = bar_levels(p, cfg)
-    everything = np.ones(len(p.starts), bool)
-    ref = _compare_path(p, lv, everything, everything, 5)
-    assert any(r[6] == "reverse" for r in ref)
-    lvl = prepared_daily_levels(p.df, cfg).reindex(p.dates)
-    for d, (s, e) in enumerate(zip(p.starts, p.ends)):
-        for k in range(s, e + 1):
-            prior = p.h[s:k].max() if k > s else -np.inf
-            expect = lvl["sell_enter"].iloc[d] if prior > lvl["sell_setup"].iloc[d] else np.nan
-            got = lv["rev_to_short"][k]
-            assert (np.isnan(expect) and np.isnan(got)) or got == pytest.approx(expect)
+def test_tick_per_day_carries_the_last_known_year():
+    dates = pd.DatetimeIndex(["2019-06-01", "2020-06-01", "2023-06-01"])
+    assert E.tick_per_day({2020: 0.5, 2021: 1.0}, dates).tolist() == [0.5, 0.5, 1.0]
+    assert E.tick_per_day(2.0, dates).tolist() == [2.0] * 3
+    with pytest.raises(ValueError):
+        E.tick_per_day({2020: np.nan}, dates)
 
 
 # --------------------------------------------------------------------------
@@ -402,7 +202,7 @@ def test_panel_book_and_pool():
 
 
 # --------------------------------------------------------------------------
-# 手续费：2026 表、历史交易所费率（注入小表）、情景重组、成本上下文、持有书
+# 手续费：2026 表、历史交易所费率（注入小表）、情景重组、成本上下文
 # --------------------------------------------------------------------------
 def _fee_table():
     """RB 按比例（2021-01-05 起平今翻倍）；AL 按手、平今交易所收 0。"""
@@ -432,12 +232,6 @@ def test_table_fees_rates_fixed_and_close_today():
     assert costs.round_trip("AL", 20000.0, T, close_today=False) == pytest.approx(2 * 3.03 / (20000 * 5))
     assert costs.round_trip("CU", 60000.0, costs.FeeModel("2026", scale=2.0)) == pytest.approx(2 * 1.51e-4)
     assert all(costs.has_schedule(s) for s in costs.FEES_2026)
-    df = _two_days()
-    df["open"] = df["openw"]
-    df.iloc[5, df.columns.get_indexer(["highw"])] = [102.0]
-    trade = run_intraday(df, StrategyConfig("fali"),
-                         BacktestConfig(margin_rate=1, fee_schedule="table"), "RB").trades.iloc[0]
-    assert trade["cost"] == pytest.approx(2 * 1.01e-4)
 
 
 def test_hist_fees_broker_markup_legs_and_dates(fee_history):
@@ -464,24 +258,10 @@ def test_hist_fees_broker_markup_legs_and_dates(fee_history):
     assert costs.has_schedule("RB", "hist") and not costs.has_schedule("CU", "hist")
     with pytest.raises(ValueError):
         costs.round_trip("RB", 4000.0, H)
-    df = _two_days()
-    df["open"] = df["openw"]
-    df.iloc[5, df.columns.get_indexer(["highw"])] = [102.0]
-    trade = run_intraday(df, StrategyConfig("fali"),
-                         BacktestConfig(margin_rate=1, fee_schedule="hist"), "RB").trades.iloc[0]
-    assert trade["cost"] == pytest.approx((1e-4 + 6e-4) * 1.01)
-
-
-def test_fee_wide_uses_prior_year_price_and_fallback(fee_history):
-    tick_table = pd.DataFrame({"symbol": ["AL", "AL"], "year": [2020, 2021],
-                               "median_close": [10000.0, 20000.0]})
-    index = pd.DatetimeIndex(["2020-06-01", "2021-06-01"])
-    wide = costs.fee_wide(index, ["AL", "ZZ"], costs.FeeModel("hist"), tick_table, fallback=2e-4)
-    # 第一年没有上一年，用当年；2021 用 2020 的价位；单边 = (开仓 + 平昨) / 2
-    assert np.allclose(wide["AL"], [3.01 / (10000 * 5), 3.01 / (10000 * 5)])
-    assert np.allclose(wide["ZZ"], 2e-4)
-    with pytest.raises(KeyError):
-        costs.fee_wide(index, ["ZZ"], costs.FeeModel("hist"), tick_table)
+    # 候选交易的三列手续费：主口径（平今）、平昨、2026 表
+    fee, fee_oo, fee26 = P.trade_fees("RB", np.array([4000.0]), pd.DatetimeIndex([d1]))
+    assert np.allclose([fee[0], fee_oo[0], fee26[0]],
+                       [(1e-4 + 6e-4) * 1.01, (1e-4 + 1.5e-4) * 1.01, 2 * 1.01e-4])
 
 
 def test_scenario_net_recombines_cost_parts():
@@ -541,7 +321,7 @@ def test_signed_features_flip_with_the_trade_and_factors_lag_one_day():
         "or30_atr": [1.0, 1.2, 1.4], "vol30_ratio": [0.8, 0.9, 1.1],
     }, index=dates)
     factor = pd.DataFrame({"RB": [1.0, 2.0, 3.0]}, index=dates)
-    names = ("tsmom", "tsmom_20", "cs_mom_ra_250", "er", "vol_ratio")
+    names = P.FACTORS
     out = P.attach_features(trades, {"RB": ctx}, {name: factor for name in names})
     # 第二天的交易看到的是前一日收盘的因子，不是当天的值
     assert out["f_tsmom"].tolist() == pytest.approx([1.0, 2.0])
@@ -549,3 +329,119 @@ def test_signed_features_flip_with_the_trade_and_factors_lag_one_day():
     assert X.loc[0, "gap_atr"] == pytest.approx(0.2)
     assert X.loc[1, "gap_atr"] == pytest.approx(-0.5)
     assert X.loc[1, "f_tsmom"] == pytest.approx(-2.0)
+
+
+def test_economic_gate_masks_use_signed_trend_and_finite_thresholds():
+    trades = pd.DataFrame({
+        "side": [1, -1, 1, -1],
+        "f_tsmom": [1.0, 1.0, -1.0, -1.0],
+        "or_atr": [0.4, 0.6, 0.7, np.nan],
+        "open_move_atr": [0.3, 0.5, 0.6, np.nan],
+    })
+    assert P.economic_gate_mask(trades, "trend_align").tolist() == [True, False, False, True]
+    assert P.economic_gate_mask(trades, "range_compress", 0.6).tolist() == [True, True, False, False]
+    assert P.economic_gate_mask(trades, "avoid_chase").tolist() == [True, True, False, False]
+    with pytest.raises(ValueError):
+        P.economic_gate_mask(trades, "range_compress")
+    with pytest.raises(ValueError):
+        P.economic_gate_mask(trades, "unknown")
+
+
+def test_scope_predictions_filters_only_short_predictions():
+    trades = pd.DataFrame({"side": [-1, 1, -1, 1]})
+    predictions = np.array([0.4, -0.2, -0.1, 0.8])
+    assert P.scope_predictions(predictions, trades).tolist() == predictions.tolist()
+    assert np.allclose(P.scope_predictions(predictions, trades, "long_only")[[1, 3]], [-0.2, 0.8])
+    assert np.isnan(P.scope_predictions(predictions, trades, "long_only")[[0, 2]]).all()
+    with pytest.raises(ValueError):
+        P.scope_predictions(predictions[:-1], trades, "long_only")
+    with pytest.raises(ValueError):
+        P.scope_predictions(predictions, trades, "short_only")
+
+
+# --------------------------------------------------------------------------
+# 多策略清单：通用撮合、多日记账、小时线、池级序列与选格
+# --------------------------------------------------------------------------
+def test_touch_trades_uses_per_day_levels_and_skips_negative_start():
+    df = _orb_days(bars=6, days=3)
+    _set(df, 3, high=103.0)                       # 第 1 天第 4 根摸到 102
+    _set(df, 6 + 2, low=97.0)                     # 第 2 天第 3 根摸到 98（做多不看）
+    _set(df, 12 + 4, high=103.0)                  # 第 3 天第 5 根也摸到，但 start = -1 不做
+    p = E.prepare(df)
+    got = E.touch_trades(p, np.array([102.0, 102.0, 102.0]), np.array([1, 1, -1]), 1)
+    assert got["day"].tolist() == [0] and got["entry_bar"].tolist() == [3]
+    assert got["entry"][0] == 102.0 and got["exit_bar"][0] == 5
+    assert np.isclose(got["gross"][0], (100.0 - 102.0) / 100.0)
+
+
+def test_next_open_trades_enters_on_the_next_bar_and_ignores_the_last_bar():
+    df = _orb_days(bars=4, days=2)
+    _set(df, 2, open=105.0)
+    p = E.prepare(df)
+    sig = np.zeros(len(df), bool)
+    sig[[1, 2, 7]] = True                         # 第 1 天第 2、3 根；第 2 天最后一根（无下一根）
+    got = E.next_open_trades(p, sig, -1)
+    assert got["day"].tolist() == [0] and got["entry_bar"].tolist() == [2]
+    assert np.isclose(got["gross"][0], -(100.0 - 105.0) / 100.0)
+
+
+def test_position_returns_charges_turnover_and_books_gaps_to_the_old_position():
+    o = np.array([100.0, 101.0, 103.0, 102.0])
+    c = np.array([101.0, 102.0, 102.0, 104.0])
+    codes = np.array([0, 0, 1, 1])
+    sig = np.array([1.0, np.nan, -1.0, np.nan])   # 第 1 根收盘做多，第 3 根收盘翻空
+    r = E.position_returns(o, c, o, codes, 2, sig, np.array([1.0, 2.0]),
+                           {"slip": np.array([0.01, 0.02])})
+    # bar1 多 1：(102-101)/101；bar2 多 2：跳空 1×(103-102) + 2×(102-103)；bar3 空 2：跳空 2×0 + (-2)×2
+    assert np.allclose(r["gross"], [1 / 101, (1 - 2) / 103 - 4 / 102])
+    # 换手：bar1 0→1，bar2 1→2（权重变），bar3 2→-2
+    assert np.allclose(r["slip"], [0.01, 1 * 0.02 + 4 * 0.02])
+    assert r["n"].tolist() == [1.0, 1.0]
+
+
+def test_hourly_bars_split_on_clock_hours_and_trading_days():
+    rows = []
+    for day, stamps in (("2021-01-04", ["21:01", "21:59", "22:00", "22:01"]),
+                        ("2021-01-05", ["09:01", "10:00"])):
+        for k, hm in enumerate(stamps):
+            ts = pd.Timestamp(f"{day} {hm}") - pd.Timedelta(int(hm >= "21"), unit="D")
+            px = 100.0 + k
+            rows.append({"timestamp": ts, "open": px, "openw": px, "highw": px + 1,
+                         "loww": px - 1, "closew": px + 0.5, "volume": 1.0,
+                         "trading_date": pd.Timestamp(day)})
+    h = P.hourly_bars(E.prepare(pd.DataFrame(rows).set_index("timestamp")))
+    # 21:01..22:00 是 21 点那根；22:01 是 22 点；次日 09:01..10:00 一根
+    assert h["codes"].tolist() == [0, 0, 1]
+    assert h["o"].tolist() == [100.0, 103.0, 100.0] and h["c"].tolist() == [102.5, 103.5, 101.5]
+
+
+def test_slate_series_pools_weighted_legs_and_select_variant_uses_train_years():
+    dates = pd.bdate_range("2019-12-30", periods=4)
+    panel = P.Panel(dates, ["A", "B"], avail=np.ones((4, 2), bool),
+                    weight=np.full((4, 2), 9.0), di=np.array([], int), si=np.array([], int))
+    legs = pd.DataFrame({
+        "symbol": ["A", "B", "A", "A"], "strategy": "s", "variant": ["x", "x", "x", "y"],
+        "date": dates[[0, 0, 2, 2]], "gross": [0.02, 0.04, 0.01, -0.01],
+        "slip": [0.01, 0.0, 0.0, 0.0], "fee": 0.0, "fee_oo": 0.0, "fee26": 0.0, "n": 1.0})
+    out = P.slate_series(legs, panel, np.ones((4, 2), bool))
+    # 已乘权重，不再乘面板权重 9
+    assert np.allclose(out[("s", "x", "main")].to_numpy(), [0.025, 0.0, 0.005, 0.0])
+    assert np.allclose(out[("s", "y", "main")].to_numpy(), [0.0, 0.0, -0.005, 0.0])
+    s = pd.Series([0.01, -0.01, 0.02, 0.03], index=pd.bdate_range("2019-12-30", periods=4))
+    good = pd.Series([0.0, 0.0, 0.01, 0.012], index=s.index)
+    assert P.select_variant({"a": s, "b": good}, [2020]) == "b"
+    assert P.select_variant({"a": s * 0, "b": s * 0}, [2020]) == "a"
+
+
+def test_slate_legs_cover_every_book_without_lookahead_columns(fee_history):
+    df = _random_minutes(3, days=60, bars=40)
+    df["trading_date"] = pd.to_datetime(df["trading_date"])
+    si = P.slate_input("RB", df, 1.0, carry=pd.Series(0.1, index=df["trading_date"].unique()))
+    legs = P.slate_legs(si, start="2020-01-01")
+    assert list(legs.columns) == P.LEG_COLUMNS
+    assert set(legs["strategy"]) <= set(P.SLATE)
+    assert np.isfinite(legs[P.SLATE_NUMERIC].to_numpy(np.float64)).all()
+    assert (legs["slip"] >= 0).all() and (legs["fee"] >= 0).all()
+    # 前 20 天 ATR 未知，权重为 NaN：任何书都不能在那里记账
+    first = pd.DatetimeIndex(si.p.dates[np.isfinite(si.weight)]).min()
+    assert pd.DatetimeIndex(legs["date"]).min() >= first

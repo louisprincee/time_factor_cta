@@ -1,0 +1,163 @@
+{
+  "train": [
+    2019,
+    2020,
+    2021
+  ],
+  "test": 2022,
+  "scenario": "main",
+  "rule": "每本 2022 净 Sharpe >= 0.5 且净年化 > 0 才读 2023–2025",
+  "books": {
+    "orb30": {
+      "kind": "intraday",
+      "variant": "m30",
+      "params": {},
+      "train_sharpe": -4.188202708112066,
+      "train_vol": 0.020058061078189898,
+      "wf_sharpe": -4.188202708112066
+    },
+    "orb30_trend": {
+      "kind": "intraday",
+      "variant": "L120",
+      "params": {
+        "lookback": 120
+      },
+      "train_sharpe": -1.202509342536048,
+      "train_vol": 0.01998824667417739,
+      "wf_sharpe": -1.4746147362945958
+    },
+    "orb30_compress": {
+      "kind": "intraday",
+      "variant": "pr0.8",
+      "params": {
+        "rule": 0.8
+      },
+      "train_sharpe": -1.710262878489052,
+      "train_vol": 0.010326889591309032,
+      "wf_sharpe": -1.710262878489052
+    },
+    "dual_thrust": {
+      "kind": "intraday",
+      "variant": "k0.7",
+      "params": {
+        "k": 0.7
+      },
+      "train_sharpe": -1.7559229153359994,
+      "train_vol": 0.007547522622122758,
+      "wf_sharpe": -2.288762657895947
+    },
+    "intraday_momentum": {
+      "kind": "intraday",
+      "variant": "last30",
+      "params": {},
+      "train_sharpe": -9.799942571745667,
+      "train_vol": 0.007539424412608832,
+      "wf_sharpe": -9.799942571745667
+    },
+    "vwap_fade": {
+      "kind": "intraday",
+      "variant": "k1.0",
+      "params": {
+        "k": 1.0
+      },
+      "train_sharpe": 1.7188989689258674,
+      "train_vol": 0.004942782758208635,
+      "wf_sharpe": 1.7188989689258674
+    },
+    "gap_fade": {
+      "kind": "intraday",
+      "variant": "g0.6",
+      "params": {
+        "g": 0.6
+      },
+      "train_sharpe": -1.2786819984757423,
+      "train_vol": 0.00621409460671831,
+      "wf_sharpe": -1.2786819984757423
+    },
+    "overnight_momentum": {
+      "kind": "overnight",
+      "variant": "day",
+      "params": {
+        "window": "day"
+      },
+      "train_sharpe": -5.266438710122379,
+      "train_vol": 0.018070373557013998,
+      "wf_sharpe": -5.266438710122379
+    },
+    "donchian_hourly": {
+      "kind": "position",
+      "variant": "n120",
+      "params": {
+        "n": 120
+      },
+      "train_sharpe": 0.9343633607461029,
+      "train_vol": 0.03769616175478073,
+      "wf_sharpe": 0.7756768464089997
+    },
+    "ema_hourly": {
+      "kind": "position",
+      "variant": "20/120",
+      "params": {
+        "fast": 20,
+        "slow": 120
+      },
+      "train_sharpe": 1.1333132948823628,
+      "train_vol": 0.03872766399134808,
+      "wf_sharpe": 1.0454961383302985
+    },
+    "tsmom_daily": {
+      "kind": "position",
+      "variant": "L250",
+      "params": {
+        "lookback": 250
+      },
+      "train_sharpe": 1.4360768821321386,
+      "train_vol": 0.036188689293793826,
+      "wf_sharpe": 1.2185486317839134
+    },
+    "bollinger_reversion": {
+      "kind": "position",
+      "variant": "z2.0",
+      "params": {
+        "entry": 2.0
+      },
+      "train_sharpe": -1.4068273558472457,
+      "train_vol": 0.026554513484928148,
+      "wf_sharpe": -1.5039412821705709
+    },
+    "carry_daily": {
+      "kind": "position",
+      "variant": "band0.05",
+      "params": {
+        "band": 0.05
+      },
+      "train_sharpe": 1.8334385432296294,
+      "train_vol": 0.023562818032240685,
+      "wf_sharpe": 1.8334385432296294
+    },
+    "tsmom_carry_daily": {
+      "kind": "position",
+      "variant": "L250",
+      "params": {
+        "lookback": 250
+      },
+      "train_sharpe": 1.5668360622523614,
+      "train_vol": 0.029042128632429384,
+      "wf_sharpe": 1.4511744691365729
+    }
+  },
+  "combo": {
+    "name": "slate_combo",
+    "rule": "走步主口径 Sharpe > 0，按 2019–2021 波动倒数定权",
+    "weights": {
+      "carry_daily": 0.11816065869933516,
+      "vwap_fade": 0.5632855489912694,
+      "tsmom_carry_daily": 0.09586756310944804,
+      "tsmom_daily": 0.07693558826900115,
+      "ema_hourly": 0.0718917128625195,
+      "donchian_hourly": 0.07385892806842681
+    }
+  },
+  "research_run": "D:\\liushengqi\\time_factor_cta\\runs\\20260930_150321_intraday_slate_research",
+  "frozen_at": "2026-09-30T15:03:21"
+}

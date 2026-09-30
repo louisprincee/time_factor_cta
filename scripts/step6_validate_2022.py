@@ -137,7 +137,6 @@ def main() -> int:
             "case": row["universe"],
             "factors": strategy.factor_label(cfg.factors),
             "config": cfg.to_dict(),
-            "legacy": False,
             "run_at": stamp,
             "run_dir": str(run),
             "criteria": {"min_net_sharpe": cfg.min_net_sharpe,
@@ -168,7 +167,7 @@ def main() -> int:
         note += f" 跳过 {skipped}。"
     paths = [
         (ledger.validation_path(), '2022 验证台账（指纹、是否通过；每本书只记一次）'),
-        (validation_log, '2022 验证结果登记簿（因子、池、成本与绩效；自动同步）'),
+        (validation_log, '研究笔记末尾的验证 / 样本外登记簿（自动同步）'),
         (run / "performance.csv", '本次验证的毛/净绩效与是否通过'),
         (run / "universe_2022_screen.csv", '2022 时点品种池筛选明细'),
         (run / "params.json", '本次配置、加载品种与跳过原因'),

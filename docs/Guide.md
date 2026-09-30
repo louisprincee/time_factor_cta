@@ -1,11 +1,11 @@
 # 实验指导：高频时间维度因子的商品期货时序 CTA 复现
 
-面向第一次上手这个仓库的人。目标是把兴业证券《基于高频时间维度的国债期货择时因子》
-里的因子，在 75 个商品期货上做成**时序 CTA**（每个品种自己多空，等权组合），
-并给出一个没有被样本外信息污染的绩效结论。
+面向第一次上手这个仓库的人。项目借鉴兴业证券《基于高频时间维度的国债期货择时因子》，
+在商品期货分钟数据上构造因子，并提供研究期筛选、一次性验证和样本外评估流程。
+2016–2021 是研究期，2022 是一次性验证期，2023–2025 是严格样本外，后两段都只在策略冻结后各读一次。
 
 设计依据见 [Design.md](Design.md)，本文只讲怎么做。
-下一阶段的文献核验、因子可实现性和研究期候选结果见 [FactorResearchNotes.md](FactorResearchNotes.md)。
+验证 / 样本外登记簿由台账自动生成，写在 `docs/ResearchNotes.md`（第一次写台账时创建）。
 文档里提到"第 N 节"时，指的都是那份设计文档。
 
 ---
@@ -17,21 +17,24 @@
 这三条是整个实验可信度的全部来源。破了任何一条，后面所有数字都失去意义，
 而且**不会有任何报错**——这才是危险的地方。
 
-**规矩一：研究止于 2021；2022 只验证一次；2023 年及以后是严格 OOS。**
+**规矩一：策略筛选止于 2021；2022 与 2023 起的数据各只看一次。**
 研究期代码拒绝读取 `holdout_locked/`，2022 验证只读取 `validation_2022/`，验证 loader
 拒绝非 2022 日期。验证分片只能由第 1 步写：要么从切研究期的同一个单体文件按 `trading_date`
 取 2022（`--validation-from-monolith`，与切 holdout 同一处过滤，2023+ 的行不落盘、不参与计算），
 要么来自独立的 2022-only 源文件。任何其他代码都不得从 `holdout_locked/` 或混合文件拼出 2022。
+看过 2022 结果之后不许再改配置重测；台账按指纹和 `book_key` 拦截重复验证，不要删除台账绕过。
 
 **规矩二：因子方向是先验，不许事后按数据翻转。**
-`config.FACTOR_SIGNS` 里每个符号都来自论文原文或上一轮小时频的实测，
-注释里写了出处。第 4 步发现某个因子的 IC 符号与先验相反时，脚本返回 1 并停下——
+方向先验分别来自论文、已有实证或因子定义，见 `config.FACTOR_SIGNS`、
+`config.TECH_PRIOR_SIGNS` 与 `factors.library.SIGNED_PRIORS`。第 4 步发现核心先验因子的 IC 符号显著相反时，脚本返回 1 并停下——
 正确的反应是**回去查实现**，不是把符号改过来。改了就等于用样本内信息定向，
-全部 t 值作废。没有先验的因子登记在 `NO_PRIOR_FACTORS` 里，只做对照组，不进主结论。
+全部 t 值作废。没有方向先验的因子登记在因子目录中，只报 IC；进入 step5 时必须显式写 `:+1` 或 `:-1`，
+且方向需由经济逻辑事前确定，不能根据研究期 IC 事后定向。
 
-**规矩三：第 5 步不选参。**
-周频书用固定的 N=250、M=55，以及第 4 步核过的符号，四个因子等权。
-不扫网格，也不按收益风险比挑参数。
+**规矩三：区分因子构造参数与策略筛选。**
+step3 默认构造 N=250、M=55 的分钟因子；step5 可指定因子、板块、持有批数和风险目标，
+只读 2016–2021 研究期。step5 结果是同一研究样本上的筛选，不能当成独立验证；
+先按经济假设限定候选与比较规则，不要根据多轮回测结果不断扩展搜索。
 
 ---
 
@@ -52,8 +55,8 @@ python scripts/step3_build_factors.py
 
 中文输出在 GBK 终端下会乱码，命令前加 `PYTHONIOENCODING=utf-8`。
 
-依赖只有四个：`pandas`、`numpy`、`pyarrow`（分片格式，缺了会自动退回 pickle）、
-`pytest`（自检）。
+基础流程依赖 `pandas`、`numpy`、`pyarrow`（分片格式；缺少时 step1 会退回 pickle）和
+`pytest`（自检）。ORB 研究模型另需 `scipy`、`scikit-learn`。
 
 #### 1.2 原始数据
 
@@ -79,7 +82,7 @@ data/data_min/future_all1mdata_20100101-20251231.txt   10.7 GB
 python -m pytest
 ```
 
-当前应是 235 项全过、约十秒结束（别加 `-q | grep`，那样容易什么都看不到）。
+以当前工作区运行结果为准，不依赖固定测试数量或耗时；不要把输出管道接到 `grep`，以免隐藏退出状态。
 测试按功能放在 `tests/data`、`tests/factors`、`tests/research`、`tests/download`。
 这套测试不测"跑得通"，测的是几件**做错了也不会报错**的事：
 夜盘因子在无夜盘品种上是 NaN 而非 0、阈值网格与逐个调用逐元素相同、
@@ -177,6 +180,11 @@ DFP 必须除以收盘价归一化，否则铜和玻璃差几个数量级，等�
 | 6  | `step6_validate_2022.py`     | 2022 验证期测试，自选因子和板块，每本书只测一次         | `data/validation_2022/ledger.jsonl`                                    |
 | 7  | `step7_oos_test.py`          | 严格样本外测试，验证未通过或测试期未结束则拒绝          | `data/oos/ledger.jsonl`                                                |
 
+日内开盘区间突破（ORB）元标签是另一条独立的线，只依赖第 1–3 步的产物：
+`research_orb_ml.py` 做研究期模型比较，`validate_orb_ml.py` 执行 2022 / 样本外流程，见第 5 节末尾。
+`research_intraday_slate.py` / `validate_intraday_slate.py` 是日内多策略清单的研究与一次性检验，见第 5 节末尾。
+第 6、7 步、`validate_orb_ml.py` 和 `validate_intraday_slate.py` 每次写台账后，会同步刷新 `docs/ResearchNotes.md` 末尾的登记簿。
+
 以后新增因子一律在第 3 步构造，不再另开脚本：分钟级因子写进 `factors/intraday.py`
 （落盘在 `factors/cache.py`），外部数据因子写进 `factors/external.py`，日频量价/慢信号写进
 `factors/daily.py` 并在 `factors/library.py::assemble` 登记（已定向的在 `SIGNED_PRIORS` 登记先验符号）。
@@ -245,8 +253,23 @@ conda run -n gu python download/getRiceQuantExternalData.py \
 python scripts/step1_shard_minutes.py
 ```
 
-默认切 75 个商品品种（`--all` 会连 8 个金融期货一起切，本实验不需要）。
-先用 `--dry-run` 空跑一遍确认面板结构和品种齐全，再正式跑。
+默认切 75 个商品品种。先用 `--dry-run` 空跑一遍确认面板结构和品种齐全，再正式跑。
+
+| 参数 | 含义 |
+| --- | --- |
+| `--symbols RB CU ...` | 只切这些品种；缺省为全部商品期货 |
+| `--all` | 连 8 个金融期货一起切（共 83 个），本实验不需要 |
+| `--dry-run` | 只读单体文件、报告结构，不落盘、不验收 |
+| `--monolith <路径>` | 分钟单体文件，缺省 `config.MINUTE_MONOLITH` |
+| `--format auto\|parquet\|pickle` | 分片格式；`auto` 有 pyarrow 用 parquet，否则 pickle |
+| `--validation-from-monolith` | 从 `--monolith` 按 `trading_date` 取 2022 年，只写 `validation_2022/` |
+| `--validation-source <路径>` | 独立的 2022-only 单体 pickle，只写 `validation_2022/` |
+
+```bash
+python scripts/step1_shard_minutes.py --dry-run
+python scripts/step1_shard_minutes.py
+python scripts/step1_shard_minutes.py --symbols RB CU --dry-run   # 只看两个品种
+```
 
 做了四件事：按品种取出 `FACTOR_FIELDS + PRICE_FIELDS` 八列、
 把 `trading_date` 规范化、丢掉全字段皆空的行（未上市期）、
@@ -289,6 +312,15 @@ python scripts/step2_universe.py
 逐年筛：日均成交额 ≥ 30 亿、当年 `closew` 非空的交易日占比 ≥ 90%、
 有效交易日 ≥ 200。金融期货在 `config` 层面就已剔除。
 
+| 参数 | 含义 |
+| --- | --- |
+| `--symbols ...` | 只筛这些品种；缺省为全部商品期货 |
+| `--lookback N` | 回看年数，缺省 `C.UNIVERSE_LOOKBACK_YEARS = 1` |
+| `--min-turnover-yi X` | 日均成交额门槛（亿元），缺省 30 |
+| `--quiet` | 不打印逐年进出池 |
+
+主结论一律用缺省参数；门槛是写死的规矩（见第 7 节），改了就要同步改设计文档。
+
 关键是**时点有效**：第 y 年的池子只用 `[y − 1, y − 1]` 的统计量判定，
 绝不用当年或以后的数据。回看窗口取 1 年而不是 3 年是刻意的——
 ZC（动力煤）这类僵尸品种的成交额是断崖式塌缩，回看越长，塌缩之后还被留在池里的
@@ -310,9 +342,9 @@ python scripts/step3_build_factors.py
 先对 RB、CU、M 做持续期形态抽查，不过就停止，不会进入因子计算。
 
 这一步不产生因子，只回答"持续期算出来的东西像不像持续期"。
-默认抽查 3 个品种（RB、CU、M）× 2 列（`closew`、`volume`）× 3 个年份
-（2016、2018、2021），用 N=250、M=55。要扩大范围就传
-`--symbols` / `--years` / `--cols`。
+默认抽查 3 个品种（RB、CU、M）× 1 列（`closew`）× 3 个年份
+（2016、2018、2021），用 N=250、M=55。抽查范围写死在脚本的 `PROBE_SYMBOLS` / `PROBE_YEARS`，
+`--symbols` 不影响抽查，只影响后面的因子计算。
 
 验收标准只有一条：**`p95 / p50 ≥ 3`** 且非全 NaN。
 持续期的分布本来就是右偏的长尾——大部分 bar 一两分钟就突破阈值，
@@ -370,15 +402,14 @@ data/factor_daily/
    JD / AP 至今没有。所以判定必须逐 (品种, **交易日**) 做，
    按品种整体判会让 2019 年之前的那些年悄悄算出非 NaN 值。
 
-产物快照在 `runs/*_step3/`
-（`factor_health.csv`、`build_log.csv`、`night_flags.csv`，以及
-`night_by_year.csv`——逐 (品种, 年) 的有夜盘天数占比，用来核对上面那件事）。
+产物快照在 `runs/*_step3/`，包括 `duration_probe.csv`（持续期抽查）、
+`factor_health.csv`（因子健康度）、`build_log.csv`（品种构建/跳过状态）和 `manifest.json`。
 
 #### 外部因子与因子目录
 
 分钟级因子之后，同一个脚本接着做两件事：
 
-1. **外部因子**：从 `data/external_rqdata/` 构造期限结构、仓单、主力持仓、现货基差，
+1. **外部因子**：从 `data/external_rqdata/` 构造期限结构、仓单和主力持仓，
    按分区写进 `data/factor_daily/external/{research,validation_2022,holdout_locked}/`。
    默认只构造 `research` 和 `validation_2022`。样本外分区必须显式要求，并给出**已经过去**的截止日，
    日历只构造到那一天：
@@ -393,16 +424,44 @@ data/factor_daily/
    （分钟缓存 / 外部数据 / 日频装配）、是否已定向、先验符号、第 5–7 步的写法、
    2016–2021 池内覆盖率和首个有效日期。第 5–7 步的 `--list-factors` 打印的就是这张表。
 
-常用开关：`--skip-minute`（分钟级因子已缓存时只重建外部因子和目录）、
-`--no-external`、`--no-catalog`。
+第 3 步全部参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--symbols ...` | 只算这些品种（分钟级、外部因子和因子目录都受影响）；缺省为品种池内全部 |
+| `--combos N250_M55 ...` | 持续期族的 (N, M) 组合；缺省只算周频书用的 `N250_M55` |
+| `--overwrite` | 已有缓存也重算；缺省按 (组合, 品种) 跳过已存在的文件 |
+| `--no-timestamp` | 不重算时间戳族，只改了持续期族公式时配合 `--overwrite` 用 |
+| `--health-combo N250_M55` | 健康度验收用哪个组合，缺省取中间那组 |
+| `--skip-minute` | 跳过持续期抽查和分钟级因子，只重建外部因子和因子目录 |
+| `--external-partitions research validation_2022 holdout_locked` | 外部因子分区，缺省前两个；`holdout_locked` 必须同时给 `--oos-end` |
+| `--oos-end YYYY-MM-DD` | 样本外外部因子的截止日，必须已经过去 |
+| `--no-external` | 跳过外部因子 |
+| `--no-catalog` | 跳过因子目录 |
+
+```bash
+python scripts/step3_build_factors.py                                   # 全量
+python scripts/step3_build_factors.py --symbols RB CU --combos N250_M55 # 小范围试跑
+python scripts/step3_build_factors.py --overwrite --no-timestamp        # 只重算持续期族
+python scripts/step3_build_factors.py --skip-minute --no-external       # 只重建因子目录
+```
 
 分钟级健康度、外部因子任何一项不过，脚本最终返回 1。
 
 #### 第 4 步　单因子 IC、符号闸门与逻辑组合
 
 ```bash
-python scripts/step4_factor_ic.py    # --no-combos 跳过第 3 部分，--no-heterogeneity 跳过第 4 部分
+python scripts/step4_factor_ic.py
+python scripts/step4_factor_ic.py --symbols RB CU M --no-combos --no-heterogeneity   # 快速看符号闸门
 ```
+
+| 参数 | 含义 |
+| --- | --- |
+| `--symbols ...` | 只用这些品种；缺省为品种池并集 |
+| `--no-combos` | 跳过第 3 部分的逻辑组合回测 |
+| `--no-heterogeneity` | 跳过第 4 部分的稳定性与板块异质性 |
+
+符号闸门（第 1 部分）总会跑；缩小品种范围得到的 IC 只用来检查流程，不作结论。
 
 四部分输出：
 
@@ -479,13 +538,13 @@ python scripts/step4_factor_ic.py    # --no-combos 跳过第 3 部分，--no-het
 #### 第 5–7 步共用的配置
 
 三个脚本接受同一组参数，也可以写进 JSON 文件用 `--config` 读入（命令行覆盖文件）。
-示例见 `config/strategy_example.json`：
+下面是配置结构示例；仓库当前不附带 `config/strategy_example.json`：
 
 ```json
 {
-  "factors": {"time_combo": 1, "neg_clv": 1, "neg_ret_day": 1},
-  "pools": ["黑色金属", "农产品"],
-  "merge_pools": true,
+  "factors": {"tsmom": 1, "carry_roll": 1},
+  "pools": [],
+  "merge_pools": false,
   "symbols": null,
   "fee_rate": 0.00025,
   "slippage_ticks": 1.0,
@@ -497,29 +556,46 @@ python scripts/step4_factor_ic.py    # --no-combos 跳过第 3 部分，--no-het
 
 | 参数                                   | 含义                                                                                     |
 | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `--config <json>`                    | 读 JSON 配置；键名同上例，命令行给出的同名参数覆盖文件                                      |
 | `--factors`                          | 等权因子。`名字` 取先验方向；`名字:+1` / `名字:-1` 把符号乘在**原始值**上（与冻结方案 JSON 同口径）。无方向因子必须写符号 |
 | `--pools`                            | 板块，可多选，每个板块单独成一本书；`全部` 表示不分板块。缺省即 `全部`         |
 | `--merge-pools`                      | 多个板块之外，再把它们合成一本                                                           |
 | `--symbols`                          | 与板块取交集；不给板块时这些品种合成一本                                                 |
 | `--fee-rate`、`--slippage-ticks`    | 手续费率、滑点 tick 数，缺省 0.00025 与 1                                                |
-| `--tranches`                         | 错开调仓批数，缺省 5；`0` = 旧的每周最后一个交易日单批调仓                               |
+| `--tranches`                         | 错开调仓批数，缺省 5（每批持有 5 个交易日）；`0` = 旧的每周最后一个交易日单批调仓       |
 | `--vol-target`                       | 单品种年化波动目标，缺省 0.20，杠杆上限 `C.VOL_TARGET_CAP = 2.5`；`0` = 不缩放            |
 | `--min-sharpe`、`--min-ann-return`  | 第 5、6 步同一套门槛：扣费后算术 Sharpe ≥ 0.5 且扣费后年化 > 0。Sharpe = 日均收益 / 日波动 × √252，不是几何年化 / 波动 |
 | `--list-pools`、`--list-factors`    | 打印板块分类 / 第 3 步因子目录后退出                                                     |
 
-所有书都是：每个因子乘上符号后做一次 252 日事前 z 分数，等权后截到 [−1, 1]。
-`time_combo` 已经是四个时间因子 z 分数的平均，入书时不再标准化第二次。
+写法示例（三个脚本通用）：
+
+```bash
+# 先看有哪些因子、哪些已定向、写法是什么
+python scripts/step5_backtest_research.py --list-factors
+python scripts/step5_backtest_research.py --list-pools
+# 已定向因子写名字即可；无方向因子（如 er、warehouse_low）必须带符号
+--factors time_combo neg_clv carry_ms:+1 er:-1
+# 两个板块各成一本，再合成第三本；板块名可用简称（黑色 / 能化 / 农产品 ...）
+--pools 黑色金属 农产品 --merge-pools
+# 只在几个品种上合成一本
+--symbols RB HC I J JM
+# 旧口径对照：周五单批、不做波动率缩放
+--tranches 0 --vol-target 0
+```
+
+普通因子乘上符号后按 252 日窗口（至少 120 个有效值）做事前 z 分数，等权后截到 [−1, 1]。
+`time_combo` 和 `time_combo_trend` 已经标准化，入书时不再标准化第二次。
 `time_combo_trend` = `time_combo × 1{sign(time_combo) = sign(tsmom)}`：只保留与 tsmom 同向的
 时间因子观点，反向记 0、任一缺失记 NaN；同样不再标准化。它是独立因子名，book_key 与 `time_combo` 不同。
 
-执行链 `strategy.book_position`：收盘信号 → **波动率缩放**（× 20% / 事前 60 日年化波动，
-杠杆截到 2.5；波动为 0 或缺失则该格 NaN）→ **五批错开调仓**（第 k 批在交易日序号 ≡ k (mod 5)
-的收盘取值、持有 5 个交易日，仓位取五批平均；某批调仓日信号缺失则该批持有期内空仓）→
+执行链 `strategy.book_position`：收盘信号 → **波动率缩放**（× 目标波动 / 事前 60 日年化波动，
+缺省目标 20%，杠杆截到 2.5；波动为 0 或缺失则该格 NaN）→ **按 `--tranches` 分批错开调仓**
+（缺省 5 批，每批持有 5 个交易日；仓位取各批平均；某批调仓日信号缺失则该批持有期内空仓）→
 次日开盘成交。当年池内等权，扣手续费和 tick 滑点。研究期没过门槛的池子，第 6 步不测。
 
 为什么不用旧的周五单批：同一信号换成周一到周四调仓，研究期毛 Sharpe 从 1.14 掉到 −0.31～0.57，
 五个交易日相位都在 0.2～0.6。旧口径的收益大半押在"周五收盘取信号"这个日历相位上，
-错开调仓把这部分相位运气平均掉（当时的诊断表在 `data/research/book_compare_phase.csv`）。
+错开调仓把这部分相位运气平均掉。
 
 **配置指纹**：等效因子权重、池子、品种过滤、费率、滑点、阈值参数、调仓批数、波动率目标
 共同决定一本书的指纹。`名字` 和 `名字:先验符号` 算同一本；`time_combo:+1` 展开成四个时间因子
@@ -532,42 +608,23 @@ python scripts/step4_factor_ic.py    # --no-combos 跳过第 3 部分，--no-het
 #### 第 5 步　研究期回测
 
 ```bash
-python scripts/step5_backtest_research.py                      # 默认：四个时间因子，不分板块
-python scripts/step5_backtest_research.py --factors time_combo neg_clv neg_ret_day \
-    --pools 黑色金属 农产品 --merge-pools
-python scripts/step5_backtest_research.py --config config/strategy_example.json
+python scripts/step5_backtest_research.py                      # 默认四个时间因子，5 批错开、不分板块
+python scripts/step5_backtest_research.py --factors tsmom carry_roll --tranches 10
+python scripts/step5_backtest_research.py --factors cs_mom_ra_250 --tranches 20
+python scripts/step5_backtest_research.py --factors time_combo neg_clv \
+  --pools 黑色金属 农产品 --merge-pools
+python scripts/step5_backtest_research.py --config <研究配置.json>
 ```
 
-默认配置是四个时间因子等权：`ts_high` × −1，`ts_low`、`dfp_max`、`dfp_top3` × +1。
-新执行口径下这本书毛 Sharpe 0.81、扣费后 −0.42（年换手 40），不过门槛；
-旧周五单批口径是扣费后 Sharpe 1.02，差别来自上面说的日历相位。
-这本书（`全部` 池）在改版前已看过 2022，book_key 已消耗，不能再进第 6 步。
+默认因子取 `config.FACTOR_SIGNS`（四个时间戳/持续期因子），默认 5 批错开、单品种年化波动目标 20%。
+默认值只是基线，不代表已选定的最佳策略。研究期门槛通过只表示可作为研究候选，不表示已验证或可以直接进入第 6 步。
 拼接 2016–2021 六个 walk-forward 测试年，
 每个池子输出整段一行（毛/净年化、Sharpe、最大回撤、换手、合成信号的时序 IC 与 t）和逐年各一行。
 结果写 `data/research/backtest_research.csv`，快照在 `runs/*_step5_backtest/`。
 
-这一步只用研究期，跑多少次都不消耗验证期。但在这里按收益挑因子和板块，本身就是选参，
-进第 6 步之前要想清楚准备验证哪几本书。
-
-日频候选书的那次对比（基线四种执行口径、快书、慢书、快慢风险平价、趋势交互、
-软状态书及 w≡0.5 对照）只读了 2016–2021、没有记台账，结果在 `data/research/book_compare*.csv`。
-
-当前在研究的是一条日内策略，不和日频书混在一起。交易日最前面 30 根 1 分钟 K 线做出开盘区间
-（有夜盘的品种从夜盘算起），之后突破才入场，当日收盘平仓。岭回归用区间、动量和期限结构
-（`core+trend+carry`，正则 `ridge10`），预测值大于 0 才保留这笔交易。研究期走步：
-
-```bash
-python scripts/research_orb_ridge.py
-```
-
-只读 2016–2021。对照「从日盘第一根算起的 30 根」以及预测值五档是否单调，结果写在
-`runs/*_orb_ridge_research/`。
-
-这本（`ridge10` + `core+trend+carry` + `orb30|eod`）已在 2022 测过一次，未通过：
-净 Sharpe −0.33，净年化 −0.65%（40 个品种，242 天）。指纹 `c853cb7b48fc326d`，
-留痕 `runs/20260929_165103_orb_ridge_validation2022`。因为没过 2022，没有读 2023–2025。
-不能换特征、正则或开盘定义再测这一本。更早一版不含这组特征的岭回归开盘区间已经单独测过
-2022 和 2023–2025，指纹在验证台账和样本外台账里，也不能再测。
+有池子过门槛返回 0，全部没过返回 1。
+这一步只用研究期，不读取验证/OOS 分区；但反复按收益挑因子、板块、持有期或成本仍会过拟合研究期。
+执行 step6 前先冻结全部配置。
 
 #### 第 6 步　2022 验证期测试
 
@@ -583,10 +640,12 @@ python scripts/step6_validate_2022.py --factors time_combo neg_clv neg_ret_day \
 
 研究期整段没过同一套门槛的池子，这一步直接拒绝，不读 2022 分片、不写入验证台账。
 **每本书在 2022 上只测一次。** 结果与是否通过写进 `data/validation_2022/ledger.jsonl`，
-同一指纹或同一 book_key 再跑会直接拒绝。改版前已经在 2022 上看过结果的书也算已消耗：
-旧 step6 冻结方案的四个策略（全部品种）和旧 step10 回溯诊断的三因子（全部品种）。
-冻结方案只要 `config/validation_2022_plan.json` 在就登记，旧绩效表不在时按未通过、指标记 NaN。
-有池子通过返回 0，全部未通过返回 1。
+同一指纹或同一 book_key 再跑会直接拒绝。
+有池子通过返回 0；没有可运行的候选时返回 1；前置条件或数据缺失时返回 2。
+写完台账会刷新 `docs/ResearchNotes.md` 末尾的登记簿（标记之间的内容自动生成，不要手改）。
+
+第 6 步的参数就是上面第 5–7 步共用的那一组，**必须与第 5 步研究时用的完全一致**，
+最稳妥是把配置写成 JSON，第 5、6、7 步都用 `--config` 读同一份。
 
 #### 第 7 步　严格样本外测试
 
@@ -598,9 +657,8 @@ python scripts/step7_oos_test.py --factors time_combo neg_clv neg_ret_day \
 两道闸门，任何一道不过都不读样本外数据：
 
 1. **测试期必须已经结束**：`--oos-end`（缺省 2025-12-31）必须早于今天；
-2. **这本书必须通过了 2022 验证**：同一指纹在验证台账里有非旧版记录，且用台账里的指标
-   按**默认门槛**（Sharpe ≥ 0.5、年化 > 0）重算仍通过；配置文件里放宽的门槛不算数，
-   改版前的旧记录一律不放行。没验证过、没通过的池子逐个拒绝，全部被拒就直接退出。
+2. **这本书必须通过了 2022 验证**：同一指纹在验证台账里有记录，且用台账里的指标
+   按**默认门槛**（Sharpe ≥ 0.5、年化 > 0）重算仍通过；配置文件里放宽的门槛不算数。没验证过、没通过的池子逐个拒绝，全部被拒就直接退出。
 
 同一本书在样本外只测一次：同一指纹在 `data/oos/ledger.jsonl` 里有任何记录就拒绝，
 换 `--oos-end` 也不行（否则可以逐年延长窗口反复看）。
@@ -611,6 +669,97 @@ python scripts/step7_oos_test.py --factors time_combo neg_clv neg_ret_day \
 **价格口径**：分片的 `closew` 是加法复权（`close − closew` 日内恒定、只在换月日跳变），
 比例类指标必须先经 `data/bars.py::multiplicative_prices` 转换，收益写成 `Δclosew / close`；
 DFP 的持续期用 `closew`，FP 与分母用 `close`。
+
+参数：第 5–7 步共用的那一组，外加 `--oos-end YYYY-MM-DD`（缺省 `C.DEFAULT_OOS_END`，必须已经过去）。
+通过的书写进样本外台账后同样刷新登记簿。有池子测完返回 0，闸门拒绝返回 1 或 2。
+样本外结果只用来报告，不许据此回头挑策略或调参。
+
+#### 日内 ORB 元标签（独立流程）
+
+与第 5–7 步的日频书分开，只依赖第 1–3 步的产物（研究期 / 2022 / 样本外分钟分片、tick 表、日频因子缓存）。
+这里只讲口径和怎么跑。
+
+- 候选交易：交易日最前面 30 根 1 分钟 K 线做开盘区间，之后突破入场，当日最后一根按收盘价平；
+  多空两条单边路径分别撮合。`orb30|eod` 从交易日第一根算起（有夜盘的品种含夜盘），
+  `orb30day|eod` 从日盘第一根算起。
+- 元标签：目标 = 主口径单笔净收益 / ATR%，截在 ±5；模型预测值 > 0 才做这笔。
+- 主口径：历史交易所手续费（经纪商加收）+ 每边 1 tick。
+
+**研究期网格**（只读 2016–2021，不读取验证期；重复网格仍会增加研究期选择偏差）：
+
+```bash
+python scripts/research_orb_ml.py                                        # 全网格
+python scripts/research_orb_ml.py --models ridge10 huber --groups core core+carry+time
+python scripts/research_orb_ml.py --bases "orb30|eod" --rebuild          # 重建候选交易缓存
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `--models ...` | 模型，缺省全部：`ridge1` `ridge10` `ridge100` `ridge1000`（岭回归四档正则）、`huber`、`logit`（按目标正负做逻辑回归）、`hgb`、`hgb_d2`（深度 2）、`rf`、`et`（树模型） |
+| `--groups ...` | 特征组，缺省全部（见下表） |
+| `--bases ...` | 开盘定义，缺省 `orb30\|eod` 和 `orb30day\|eod` 两个；含竖线，命令行要加引号 |
+| `--rebuild` | 重建候选交易缓存 `data/research/orb_candidates.pkl`；改了撮合、成本或上下文特征后要加 |
+
+| 特征组 | 内容 |
+| --- | --- |
+| `core` | 开盘区间本身：区间宽度 / ATR、跳空、入场位置、区间成交量、成本占 ATR 等 |
+| `trend` | 滞后一日的 `tsmom`、`tsmom_20`、`cs_mom_ra_250`（按交易方向取号），及 `er`、`vol_ratio` |
+| `carry` | 滞后一日的 `carry_ms`、`cs_carry_ms`（按交易方向取号） |
+| `time` | 滞后一日的 `time_combo`、`neg_clv`、`neg_ret_day`（按交易方向取号） |
+| 组合 | `carry`、`time`、`carry+time`、`core`、`core+trend`、`core+carry`、`core+time`、`core+trend+carry`、`core+carry+time`、`all`（四组全用） |
+
+训练用预测年之前三年（不早于 2016），测试年 2019–2021，2018 只用于嵌套选择
+（预测 T 年只按 2018..T−1 的走步结果挑配置）。产物在 `runs/*_orb_ml_research/`：
+`grid.csv`（每格逐年与整段净 Sharpe、保留率）、`nested.csv`（嵌套选择）、`daily_net_top.csv`（前几格的日净收益）。
+
+**2022 验证与样本外**（一本书 = 一个模型 + 一个特征组及方向范围，开盘定义固定 `orb30|eod`）：
+
+```bash
+python scripts/validate_orb_ml.py --model ridge10 --groups core                # 只测 2022
+python scripts/validate_orb_ml.py --model ridge10 --groups core --long-only     # 事后探索变体，只测 2022
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `--model` | 必填，取值同上面的模型列表 |
+| `--groups` | 必填，取值同上面的特征组列表（一次一个） |
+| `--long-only` | 仅保留多头预测的探索变体；不允许继续读取 OOS |
+| `--oos` | 读 2023–2025。要求 2022 已测过且通过（净 Sharpe ≥ 0.5 且净年化 > 0），沿用 2022 那次保存的模型，不重训 |
+
+模型只用 2019–2021 的池内交易训练。指纹 = 规格串的 sha256 前 16 位，2022 结果写验证台账，
+样本外写样本外台账，两处都会刷新登记簿。产物：`runs/*_orb_ml_validation2022/`
+（`performance.csv`、`daily_net.csv`、`model.pkl`）和 `runs/*_orb_ml_oos/`。
+退出码：0 跑完且通过（`--oos` 时为跑完），1 未通过 / 还没测 2022 / 2022 未通过，
+2 这本已经测过。已测过哪些书看登记簿；同一本不能重测，换一个特征组或正则再测 2022 也要算进验证次数。
+
+#### 日内多策略清单（独立流程）
+
+十几条池级、多空对称的规则放在 `intraday/walk_forward.py` 的 `SLATE` 里，每条只有一小格参数：
+
+- 日内：`orb30`、`orb30_trend`、`orb30_compress`、`dual_thrust`、`intraday_momentum`、`vwap_fade`、`gap_fade`；
+- 隔夜：`overnight_momentum`；
+- 多日持仓（小时或日线重采样）：`donchian_hourly`、`ema_hourly`、`tsmom_daily`、`bollinger_reversion`、
+  `carry_daily`、`tsmom_carry_daily`。
+
+所有书都按同一套逐腿记账（毛收益、滑点、手续费），与 ORB 元标签口径相同：主口径为历史手续费 + 每边 1 tick，
+另报 slip2 / fee_x2 / fee_2026 / close_yday。
+
+```bash
+python scripts/research_intraday_slate.py [--rebuild] [--no-freeze]   # 研究期走步，只读 2016–2021
+python scripts/validate_intraday_slate.py                             # 全部冻结书一次性测 2022
+python scripts/validate_intraday_slate.py --oos                       # 2022 通过的书读 2023–2025
+python scripts/validate_intraday_slate.py --void <书> --reason "..."   # 数据缺陷时作废 2022 记录
+```
+
+- 研究：每个测试年（2019–2021）用前三年的主口径 Sharpe 选格。冻结时用 2019–2021 选格，写进
+  `config/intraday_slate.json`，文件已存在时不改写。组合书 `slate_combo` 由走步 Sharpe > 0 的书组成，
+  按 2019–2021 波动的倒数定权。
+- 检验：开跑前先重算 2019–2021 的 Sharpe，与冻结值相差超过 0.02 就拒绝。指纹由规格串算出。
+- 作废：数据有缺陷时，比如外部分区没覆盖 2022，用 `--void` 追加作废记录，然后不带参数再跑一次。
+  这一次只重跑作废的书，规格不变。作废清单列在登记簿末尾。
+- 带 carry 的书要求外部分区覆盖检验窗口：
+  - 2022 要先下载 `validation_2022` 的 roll_yield / dominant，再跑 `step3 --external-partitions validation_2022`；
+  - 样本外同理，用 `holdout_locked` 加 `--oos-end`。
 
 ---
 
@@ -646,7 +795,7 @@ DFP 的持续期用 `closew`，FP 与分母用 `close`。
   每一次验证都会留在台账里，报告时要如实给出一共验证了多少本书。
 - 看了第 4 步的 IC 符号之后去改 `FACTOR_SIGNS`。
 - 在第 5 步以外另开地方扫参数，或按收益风险比改成员和符号。
-- 把 `NO_PRIOR_FACTORS` 里的因子按 IC 符号定向后放进主合成。
+- 把无先验因子按研究期 IC 符号事后定向后放进主合成。
 - 给夜盘类因子 `fillna(0)`。
 - 把分位轨窗口改成含当日。
 - 为了让某个验收通过而放宽门槛（`SKEW_MIN`、`MIN_NON_NULL`、
@@ -658,19 +807,29 @@ DFP 的持续期用 `closew`，FP 与分母用 `close`。
 
 确认 `data/data_min/future_all1mdata_20100101-20251231.txt` 在位之后，
 按顺序执行。每一步都要看退出码：非 0 就停下处理，不要往后跑。
+这是从干净数据状态重建的示例，不是日常刷新命令：step1 会重写已有研究/锁定分片，后续步骤也会更新下游产物。
+已有分片和缓存时不要盲目整段重跑；先备份需要保留的产物，只补跑确实缺失或因公式版本需要重建的步骤。
+验证分片已有时，step1 的验证写入会拒绝覆盖；不要通过删除目录绕过。
 
 ```bash
 conda activate factor-mining
-python -m pytest -q                              # 当前 235 项应全过
+python -m pytest
 python scripts/step1_shard_minutes.py --dry-run
 python scripts/step1_shard_minutes.py
+python scripts/step1_shard_minutes.py --validation-from-monolith   # 2022 验证分片
 python scripts/step2_universe.py
 python scripts/step3_build_factors.py
 python scripts/step4_factor_ic.py
-python scripts/step5_backtest_research.py
-# 选定要验证的书之后
-python scripts/step6_validate_2022.py --config <配置>
-python scripts/step7_oos_test.py --config <同一配置>
+python scripts/step5_backtest_research.py --factors <因子 ...>
+# 配置冻结后才跑 step6，2022 通过的书才跑 step7
+python scripts/step6_validate_2022.py --config <冻结配置.json>
+python scripts/step7_oos_test.py --config <冻结配置.json>
+# 日内 ORB 元标签（独立于第 4–7 步）
+python scripts/research_orb_ml.py
+python scripts/validate_orb_ml.py --model <模型> --groups <特征组>
+# 日内多策略清单
+python scripts/research_intraday_slate.py
+python scripts/validate_intraday_slate.py
 ```
 
 想在合成数据上先把整条管道跑通一遍而不碰真实分片，设
@@ -697,7 +856,7 @@ python scripts/step7_oos_test.py --config <同一配置>
 | 载入单体文件时内存爆           | `pickle.load` 无法分块。分批 `--symbols`，或换内存更大的机器                              |
 | 第 5 步报缺少因子列            | 第 3 步的缓存里没有`ts_high` / `ts_low` / `dfp_max` / `dfp_top3`。补跑第 3 步         |
 | 第 5–7 步报"没有事前方向"     | 选了无方向因子，写成`名字:+1` 或 `名字:-1`；`--list-factors` 看哪些已定向             |
-| 第 6 步"这本书已经在 2022 上测过" | 同一指纹或 book_key 已在验证台账或改版前的旧验证里。这是保护，不要删台账              |
+| 第 6 步"已经测过" | 同一指纹或 book_key 已在 `data/validation_2022/ledger.jsonl` 里，这本书不能再测 2022 |
 | 读因子缓存报版本不符           | 缓存由旧版公式生成（`cache.CACHE_VERSION`），`step3_build_factors.py --overwrite` 重建 |
 | 第 7 步"没有做过 2022 验证"    | 第 7 步的参数必须与第 6 步完全一致（同一配置文件最稳妥），指纹才对得上                |
 | 第 7 步"测试期尚未结束"        | `--oos-end` 不能是今天或以后                                                            |

@@ -399,28 +399,3 @@ def round_trip(symbol: str, raw_price, model: FeeModel = FeeModel(),
     """一开一平的手续费合计（比例）。"""
     o, c = fee_legs(symbol, raw_price, model, close_today=close_today, dates=dates)
     return o + c
-
-
-def fee_wide(index: pd.Index, columns, model: FeeModel, tick_table: pd.DataFrame,
-             fallback: float | None = None) -> pd.DataFrame:
-    """日频书用的 (交易日 × 品种) 单边手续费比例 = (开仓 + 平昨) / 2。
-
-    与 ``slippage_wide`` 同口径：第 y 年按第 y-1 年的价位中位数把按手收费折成比例，
-    按换手计费，可以直接加在滑点宽表上。没有费率的品种用 ``fallback``（单边比例），
-    不给就报错。
-    """
-    cols = list(columns)
-    px = tick_table.set_index(["symbol", "year"])["median_close"].sort_index()
-    year = pd.DatetimeIndex(index).year
-    span = sorted(set(year.tolist()) | set(px.index.get_level_values(1).tolist()))
-    data = {}
-    for c in cols:
-        if not has_schedule(c, model.schedule):
-            if fallback is None:
-                raise KeyError(f"{c} 没有 {model.schedule} 手续费")
-            data[c] = np.full(len(index), float(fallback) * float(model.scale))
-            continue
-        price = px.loc[c].reindex(span).ffill().shift(1).bfill().reindex(year).to_numpy("float64")
-        o, cl = fee_legs(c, price, model, close_today=False, dates=index)
-        data[c] = (np.asarray(o) + np.asarray(cl)) / 2.0
-    return pd.DataFrame(data, index=index, columns=cols)

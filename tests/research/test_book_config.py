@@ -72,51 +72,6 @@ def test_cases_split_by_pool_and_optionally_merge():
         "全部": ["CU", "RB"]}
 
 
-def test_legacy_frozen_plan_counts_as_consumed_validation(tmp_path, monkeypatch):
-    config_dir, data = tmp_path / "config", tmp_path / "data"
-    config_dir.mkdir()
-    (data / "validation_2022").mkdir(parents=True)
-    (config_dir / "validation_2022_plan.json").write_text(json.dumps({
-        "fee_rate": C.FEE_BASE, "slippage_ticks": C.SLIPPAGE_TICKS,
-        "strategies": {"baseline": dict(C.FACTOR_SIGNS)},
-    }), encoding="utf-8")
-    (data / "validation_2022" / "performance.csv").write_text(
-        "strategy,net_ann_return,net_ret_risk\nbaseline,-0.05,-0.6\n", encoding="utf-8")
-    monkeypatch.setattr(C, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(ledger, "VALIDATION_ROOT", data / "validation_2022")
-
-    entries = ledger.validation_entries()
-    old = strategy.config_from_args(_args(["--tranches", "0", "--vol-target", "0"]))
-    hits = ledger.lookup(entries, strategy.fingerprint(old, "全部"))
-    assert len(hits) == 1 and hits[0]["passed"] is False
-    # 新的执行口径指纹不同，但 book_key 相同：换调仓节奏再测同一组因子也要被拦
-    new = strategy.config_from_args(_args([]))
-    assert strategy.fingerprint(new, "全部") != strategy.fingerprint(old, "全部")
-    assert hits[0]["book_key"] == strategy.book_key(new, "全部")
-    # time_combo 就是四个时间因子等权，同一个 book_key
-    combo = strategy.config_from_args(_args(["--factors", "time_combo"]))
-    assert strategy.book_key(combo, "全部") == hits[0]["book_key"]
-
-
-def test_legacy_plan_is_consumed_even_without_old_performance_table(tmp_path, monkeypatch):
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    (config_dir / "validation_2022_plan.json").write_text(json.dumps({
-        "fee_rate": C.FEE_BASE, "slippage_ticks": C.SLIPPAGE_TICKS,
-        "strategies": {"baseline": dict(C.FACTOR_SIGNS),
-                       "plus_er": {**C.FACTOR_SIGNS, "er_signed": 1}},
-    }), encoding="utf-8")
-    monkeypatch.setattr(C, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
-    monkeypatch.setattr(ledger, "VALIDATION_ROOT", tmp_path / "missing")
-
-    entries = ledger.validation_entries()
-    assert len(entries) == 2
-    assert all(e["passed"] is False and e["legacy"] for e in entries)
-    assert all(e["net_sharpe"] != e["net_sharpe"] for e in entries)  # NaN
-
-
 def test_fingerprint_is_invariant_to_merged_case_order_and_tracks_execution():
     cfg = strategy.config_from_args(_args(["--factors", "tsmom"]))
     assert strategy.fingerprint(cfg, "黑色金属+贵金属") == strategy.fingerprint(cfg, "贵金属+黑色金属")
@@ -140,13 +95,50 @@ def test_validation_log_lists_factors_costs_and_deduplicates_fingerprints(tmp_pa
          "passed": False, "run_at": "2026-09-27T12:00:00"},
     ])
 
-    path = ledger.write_validation_log(tmp_path / "Validation2022Log.md")
+    monkeypatch.setattr(ledger, "OOS_ROOT", tmp_path / "oos")
+    ledger.append(ledger.oos_path(), [{"fingerprint": "book-b", "factors": "carry_ms:+1",
+                                       "net_sharpe": 0.2}])
+    notes = tmp_path / "ResearchNotes.md"
+    notes.write_text("# 笔记\n\n手写内容\n", encoding="utf-8")
+    ledger.write_validation_log(notes)
+    path = ledger.write_validation_log(notes)          # 第二次只替换标记之间的内容
     content = path.read_text(encoding="utf-8")
 
+    assert content.startswith("# 笔记\n\n手写内容\n") and content.count(ledger.LOG_BEGIN) == 1
+    assert "`book-b`" in content
     assert content.count("`book-a`") == 1
     assert "`ts_high:-1,ts_low:+1`" in content
     assert "0.00025" in content and "1.0" in content
     assert "-4.00%" in content and "-0.500" in content and "-8.00%" in content
+
+
+def test_void_entry_releases_fingerprint_and_is_listed_separately(tmp_path, monkeypatch):
+    first = {"fingerprint": "book-v", "factors": "carry", "net_sharpe": 1.8, "passed": True,
+             "run_at": "2026-09-30T15:00:00"}
+    rerun = {**first, "net_sharpe": 0.3, "passed": False, "run_at": "2026-09-30T17:00:00"}
+    entries = [first, ledger.void_entry("book-v", "外部分区缺 2022", "runs/x")]
+    assert ledger.lookup(entries, "book-v") == []
+    entries.append(rerun)
+    assert ledger.lookup(entries, "book-v") == [rerun]
+
+    monkeypatch.setattr(ledger, "validation_entries", lambda: entries)
+    monkeypatch.setattr(ledger, "OOS_ROOT", tmp_path / "oos")
+    notes = tmp_path / "ResearchNotes.md"
+    notes.write_text("# 笔记\n", encoding="utf-8")
+    content = ledger.write_validation_log(notes).read_text(encoding="utf-8")
+    assert "作废记录" in content and "外部分区缺 2022" in content
+    assert "0.300" in content and "1.800" not in content
+
+
+def test_missing_run_artifacts_are_reported_without_dead_links(tmp_path, monkeypatch):
+    monkeypatch.setattr(ledger.C, "PROJECT_ROOT", tmp_path)
+    entry = {"run_dir": str(tmp_path / "deleted-run"), "note": "2022 检验"}
+
+    rendered = ledger._result_link(entry)
+
+    assert "2022 检验" in rendered
+    assert "运行明细已删除，仅保留台账摘要" in rendered
+    assert "[运行结果]" not in rendered
 
 
 def test_oos_gate_refuses_books_without_passing_validation(tmp_path, monkeypatch):

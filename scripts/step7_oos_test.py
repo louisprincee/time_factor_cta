@@ -38,7 +38,7 @@ def validated(entry: dict) -> bool:
     def num(key):
         value = entry.get(key)
         return float(value) if value is not None else float("nan")
-    return (not entry.get("legacy")) and bool(entry.get("passed")) and strategy.passes(
+    return bool(entry.get("passed")) and strategy.passes(
         {"net_sharpe": num("net_sharpe"), "net_ann_return": num("net_ann_return")}, default)
 
 
@@ -149,6 +149,7 @@ def main() -> int:
         **{k: row.get(k) for k in ("n_symbols", "net_ann_return", "net_sharpe",
                                    "net_max_drawdown", "turnover", "ic_ts", "ic_t")},
     } for _, row in overall.iterrows()])
+    ledger.write_validation_log()
 
     ledger.OOS_ROOT.mkdir(parents=True, exist_ok=True)
     table.to_csv(run / "performance.csv", index=False, encoding="utf-8-sig")
@@ -167,6 +168,7 @@ def main() -> int:
         note += f"；跳过 {skipped}"
     C.report_step(7, passed=True, paths=[
         (ledger.oos_path(), '样本外台账（同一本书同一窗口只记一次）'),
+        (ledger.validation_log_path(), '研究笔记末尾的验证 / 样本外登记簿（自动同步）'),
         (ledger.OOS_ROOT / "latest_performance.csv", '本次样本外整段与逐年绩效'),
         (run / "params.json", '本次配置、放行/拒绝的池子、各年品种池'),
         (run, '上述文件所在的本次留痕目录'),

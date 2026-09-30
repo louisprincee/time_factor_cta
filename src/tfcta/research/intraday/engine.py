@@ -1,18 +1,21 @@
-"""1 分钟日内策略撮合与绩效计算。
+"""1 分钟开盘区间突破（ORB）等日内单边撮合、多日持仓记账与绩效计算。
 
-成交规则固定为保守口径（撮合在 ``simulate_path``）：
-- 突破在当前 bar 内触发时按突破价成交，开盘已越过突破价则按开盘价成交；
-- 同一根 bar 同时触及上下轨无法判断先后，当日不交易；成交量为 0 的 bar 不能入场或反手；
-- 入场 bar 内只检查止损；之后止盈和止损同一根 bar 同时触发时按止损；
-- 反手（Dual Thrust ``reverse=True``、R-Breaker 反转）在入场 bar 之后按反手价平仓并同价反向开仓；
-- 每个交易日最后一根 bar 按收盘价强制平仓，不持仓到下一个交易日。
+成交规则固定为保守口径：
+- 开盘区间 = 从开盘起点（交易日第一根，或日盘第一根）起连续 ``minutes`` 根 bar 的最高最低价，
+  区间走完后的下一根 bar 起才可入场；
+- 做多：bar 最高价严格高于上轨（穿过而非碰到）触发，开盘已越过上轨按开盘价成交，否则按上轨；
+  做空对称。成交量为 0 的 bar 不能入场；
+- 每天最多一笔，当日最后一根 bar 按收盘价平仓，不持仓到下一个交易日。
+
+同样的撮合口径推广到 ``touch_trades``（任意触价水平）和 ``next_open_trades``（bar 收盘信号、
+下一根开盘入场）；多日持仓策略用 ``position_returns`` 按 bar 记仓位、按交易日记收益与换手成本。
+
+多空两条单边路径分别撮合（``orb_trades(..., side=±1)``），不存在同一根 bar 上下轨都被穿过、
+先后无法判断的情况。
 
 ``trading_date`` 以夜盘开盘为一日之始，所以有夜盘品种的"日内"持仓会跨过夜盘收盘到
 次日 9:00 的休市。价格用加法复权（``*w``）列，收益分母用入场 bar 的原始开盘价。
-手续费：``fee_schedule="flat"`` 为每边 ``fee_rate``；``"hist"`` 为当日主力合约的历史交易所标准
-（``costs.load_fee_history``，研究期主口径）；``"table"`` 为 ``costs.FEES_2026``。后两者都按
-开仓 + 平今（比例 + 元/手 ÷ 原始价格 × 乘数）。
-该模块不读取或修改现有日频研究产物。
+撮合只给不含滑点、不含手续费的收益；成本在 ``walk_forward`` 里按笔拆开计算。
 """
 from __future__ import annotations
 
@@ -21,46 +24,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ..backtest import costs
-from .strategies import StrategyConfig, prepared_daily_levels
-
-TRADE_COLUMNS = ["symbol", "direction", "entry_time", "exit_time", "entry_price",
-                 "exit_price", "exit_reason", "gross_return", "cost", "net_return"]
-
 
 @dataclass(frozen=True)
-class BacktestConfig:
-    fee_rate: float = 0.00025
-    slippage_points: float = 0.0
-    margin_rate: float = 0.30
-    initial_capital: float = 1.0
-    # 每边滑点的 tick 数，tick 大小由 run_intraday(tick=...) 按年份给出
-    slippage_ticks: float = 0.0
-    # "flat"：每边 fee_rate；"hist"：历史交易所费率；"table"：2026 费率表（见 backtest/costs.py）
-    fee_schedule: str = "flat"
-    fee_scale: float = 1.0
-    close_today_as_open: bool = False
-
-    def fee_model(self) -> costs.FeeModel:
-        schedule = {"table": "2026", "hist": "hist"}[self.fee_schedule]
-        return costs.FeeModel(schedule, self.fee_scale, self.close_today_as_open)
-
-
-def trade_cost(config: BacktestConfig, symbol: str, raw_price, dates=None) -> np.ndarray:
-    """日内一次开平（平今）的手续费占名义金额的比例。"hist" 口径需要逐笔交易日 ``dates``。"""
-    price = np.asarray(raw_price, dtype="float64")
-    if config.fee_schedule == "flat":
-        return np.full(price.shape, 2.0 * config.fee_rate)
-    if config.fee_schedule in ("table", "hist"):
-        return costs.round_trip(symbol, price, config.fee_model(), close_today=True, dates=dates)
-    raise ValueError(f"未知手续费口径: {config.fee_schedule}")
-
-
-@dataclass
-class BacktestResult:
-    trades: pd.DataFrame
-    daily: pd.DataFrame
-    metrics: dict[str, float]
+class OrbConfig:
+    minutes: int = 30
+    # "first"：交易日第一根 bar 起（夜盘品种含夜盘）；"day"：日盘第一根 bar 起
+    open_anchor: str = "first"
 
 
 def performance(net_return: pd.Series) -> dict[str, float]:
@@ -94,26 +63,9 @@ class Prepared:
     ends: np.ndarray
     dates: pd.DatetimeIndex
     tradable: np.ndarray
-    prior_high: np.ndarray   # 当日此前（不含当前 bar）的最高价，首根 bar 为 -inf
-    prior_low: np.ndarray
 
 
 def prepare(minute: pd.DataFrame) -> Prepared:
-    df, raw_open = _prepare(minute)
-    o, h, l, c = (df[k].to_numpy("float64") for k in ("open", "high", "low", "close"))
-    codes, starts, ends = day_layout(df["trading_date"].to_numpy())
-    dates = pd.DatetimeIndex(df["trading_date"].to_numpy()[starts])
-    tradable = (pd.to_numeric(df["volume"], errors="coerce").to_numpy("float64") > 0
-                if "volume" in df else np.ones(len(df), bool))
-    first = np.zeros(len(df), bool)
-    first[starts] = True
-    ph = pd.Series(h).groupby(codes).cummax().shift(1).to_numpy()
-    pl = pd.Series(l).groupby(codes).cummin().shift(1).to_numpy()
-    return Prepared(df, raw_open, o, h, l, c, codes, starts, ends, dates, tradable,
-                    np.where(first, -np.inf, ph), np.where(first, np.inf, pl))
-
-
-def _prepare(minute: pd.DataFrame):
     df = minute.copy()
     raw_open = pd.to_numeric(df["open"], errors="coerce") if "open" in df else None
     for raw, adjusted in {"open": "openw", "high": "highw", "low": "loww", "close": "closew"}.items():
@@ -128,7 +80,13 @@ def _prepare(minute: pd.DataFrame):
     if df.index.has_duplicates:
         raise ValueError("分钟数据存在重复时间戳")
     raw_open = df["open"] if raw_open is None else raw_open.reindex(df.index)
-    return df, raw_open.to_numpy("float64")
+    o, h, l, c = (df[k].to_numpy("float64") for k in ("open", "high", "low", "close"))
+    codes, starts, ends = day_layout(df["trading_date"].to_numpy())
+    dates = pd.DatetimeIndex(df["trading_date"].to_numpy()[starts])
+    tradable = (pd.to_numeric(df["volume"], errors="coerce").to_numpy("float64") > 0
+                if "volume" in df else np.ones(len(df), bool))
+    return Prepared(df, raw_open.to_numpy("float64"), o, h, l, c, codes, starts, ends, dates,
+                    tradable)
 
 
 def tick_per_day(tick, dates: pd.DatetimeIndex) -> np.ndarray:
@@ -150,147 +108,6 @@ def tick_per_day(tick, dates: pd.DatetimeIndex) -> np.ndarray:
                 0, len(years) - 1)
     return values[i]
 
-
-def bar_levels(p: Prepared, strategy: StrategyConfig) -> dict[str, np.ndarray]:
-    """逐 bar 的开仓/反手价，及逐日的 ATR、止损止盈距离、最早入场 bar、是否可交易。"""
-    level = prepared_daily_levels(p.df, strategy).reindex(p.dates)
-    atr = level["atr"].to_numpy("float64")
-    n_days, codes = len(p.starts), p.codes
-    day_ok = np.ones(n_days, bool)
-    start_bar = np.zeros(n_days, dtype=np.int64)
-    if strategy.name in ("opening_range_assumption", "sky_garden"):
-        minutes = int(strategy.sky_bars if strategy.name == "sky_garden"
-                      else strategy.opening_range_minutes)
-        if strategy.name == "opening_range_assumption" and strategy.open_anchor == "day":
-            origin = day_open_offset(p.df.index, codes, p.starts)
-        else:
-            origin = np.zeros(n_days, np.int64)
-        long_d, short_d = opening_range(p.h, p.l, codes, p.starts, p.ends, minutes, origin)
-        start_bar[:] = np.where(origin >= 0, origin + minutes, np.iinfo(np.int64).max // 4)
-        if strategy.open_anchor == "day":
-            day_ok = origin >= 0
-        if strategy.name == "sky_garden":
-            # 跳空幅度 = 复权价差 / 原始昨收（= 当日原始开盘 − 复权价差）
-            gap_pts = level["gap_points"].to_numpy("float64")
-            raw_prev = p.raw_open[p.starts] - gap_pts
-            with np.errstate(invalid="ignore", divide="ignore"):
-                gap = gap_pts / np.where(raw_prev > 0, raw_prev, np.nan)
-                day_ok = (gap >= strategy.gap_pct) | (gap <= -strategy.gap_pct)
-    else:
-        long_d = level["long_level"].to_numpy("float64")
-        short_d = level["short_level"].to_numpy("float64")
-    enter_long, enter_short = long_d[codes], short_d[codes]
-    rev_to_short = rev_to_long = np.full(len(p.o), np.nan)
-    if strategy.name == "rbreaker":
-        # 当日此前最高价超过观察卖出价后，跌破反转卖出价即做空（持多则反手）；做多对称
-        with np.errstate(invalid="ignore"):
-            gate_s = p.prior_high > level["sell_setup"].to_numpy("float64")[codes]
-            gate_l = p.prior_low < level["buy_setup"].to_numpy("float64")[codes]
-        rev_to_short = np.where(gate_s, level["sell_enter"].to_numpy("float64")[codes], np.nan)
-        rev_to_long = np.where(gate_l, level["buy_enter"].to_numpy("float64")[codes], np.nan)
-        enter_long = np.where(gate_l, rev_to_long, enter_long)
-        enter_short = np.where(gate_s, rev_to_short, enter_short)
-    elif strategy.reverse:
-        rev_to_short, rev_to_long = enter_short, enter_long
-    day_open = p.raw_open[p.starts]
-    nan = np.full(n_days, np.nan)
-    if strategy.stop_pct is not None:
-        stop_dist = strategy.stop_pct * day_open
-    elif strategy.stop_atr_multiple is not None:
-        stop_dist = atr * strategy.stop_atr_multiple
-    else:
-        stop_dist = nan
-    if strategy.target_pct is not None:
-        target_dist = strategy.target_pct * day_open
-    elif strategy.target_atr_multiple is not None:
-        target_dist = atr * strategy.target_atr_multiple
-    else:
-        target_dist = nan
-    return {"enter_long": enter_long, "enter_short": enter_short,
-            "rev_to_short": rev_to_short, "rev_to_long": rev_to_long, "atr": atr,
-            "stop_dist": stop_dist, "target_dist": target_dist,
-            "start_bar": start_bar, "day_ok": day_ok}
-
-
-def run_intraday(minute: pd.DataFrame | Prepared, strategy: StrategyConfig,
-                 config: BacktestConfig = BacktestConfig(),
-                 symbol: str = "", tick=None,
-                 allow_long: np.ndarray | None = None,
-                 allow_short: np.ndarray | None = None) -> BacktestResult:
-    """单品种日内回测。``allow_long``/``allow_short`` 是逐交易日的方向过滤（按交易日顺序）。
-
-    ``minute`` 可以直接传 ``prepare()`` 的结果，同一品种跑多组参数时不必重复整理数据。
-    """
-    p = minute if isinstance(minute, Prepared) else prepare(minute)
-    lv = bar_levels(p, strategy)
-    n_days = len(p.starts)
-    base_long = np.ones(n_days, bool) if allow_long is None else np.asarray(allow_long, bool)
-    base_short = np.ones(n_days, bool) if allow_short is None else np.asarray(allow_short, bool)
-    sim = simulate_path(p.o, p.h, p.l, p.c, p.codes, p.starts, p.ends,
-                             lv["enter_long"], lv["enter_short"], lv["rev_to_short"],
-                             lv["rev_to_long"], lv["stop_dist"], lv["target_dist"],
-                             lv["start_bar"], base_long & lv["day_ok"],
-                             base_short & lv["day_ok"], p.tradable,
-                             max_legs=int(strategy.max_entries_per_day))
-    pieces = [sim] if len(sim["day"]) else []
-    trades = _trades_frame(pieces, p.df.index, p.raw_open, config,
-                           tick_per_day(tick, p.dates), symbol, p.dates)
-
-    # atr_pct 是开盘前已知的 ATR 占当日首根 bar 原始开盘价的比例，组合层按它做风险缩放
-    first_open = p.raw_open[p.starts]
-    daily = pd.DataFrame({"net_return": 0.0, "gross_return": 0.0, "n_trades": 0,
-                          "atr_pct": lv["atr"] / np.where(first_open > 0, first_open, np.nan)},
-                         index=pd.Index(p.dates, name="trading_date"))
-    if len(trades):
-        agg = trades.groupby("day").agg(net=("net_return", "sum"),
-                                        gross=("gross_return", "sum"),
-                                        size=("net_return", "size"))
-        pos = agg.index.to_numpy()
-        daily.iloc[pos, 0] = agg["net"].to_numpy() / config.margin_rate
-        daily.iloc[pos, 1] = agg["gross"].to_numpy() / config.margin_rate
-        daily.iloc[pos, 2] = agg["size"].to_numpy()
-    daily["equity"] = config.initial_capital * (1.0 + daily["net_return"]).cumprod()
-    metrics = performance(daily["net_return"])
-    metrics["n_trades"] = float(len(trades))
-    return BacktestResult(trades.drop(columns="day"), daily, metrics)
-
-
-def _trades_frame(pieces, index, raw_open, config, tick, symbol, dates) -> pd.DataFrame:
-    if not pieces:
-        return pd.DataFrame(columns=[*TRADE_COLUMNS, "day"])
-    sim = {k: np.concatenate([p[k] for p in pieces]) for k in pieces[0]}
-    day, direction = sim["day"], sim["direction"].astype(np.int64)
-    slip = config.slippage_points + config.slippage_ticks * tick[day]
-    entry = sim["entry"] + direction * slip
-    exit_ = sim["exit"] - direction * slip
-    ref = raw_open[sim["entry_bar"]]
-    ref = np.where(np.isfinite(ref) & (ref > 0), ref, entry)
-    gross = direction * (exit_ - entry) / ref
-    cost = trade_cost(config, symbol, ref, dates[day])
-    out = pd.DataFrame({
-        "symbol": symbol, "direction": direction,
-        "entry_time": index[sim["entry_bar"]], "exit_time": index[sim["exit_bar"]],
-        "entry_price": entry, "exit_price": exit_, "exit_reason": sim["reason"],
-        "gross_return": gross, "cost": cost, "net_return": gross - cost, "day": day,
-    })
-    return out.sort_values("entry_time", kind="mergesort").reset_index(drop=True)
-
-
-# --------------------------------------------------------------------------
-# 向量化撮合
-# --------------------------------------------------------------------------
-# 单次入场日内突破的向量化撮合。
-#
-# 把"当日第一根触发的 bar"换成按交易日分段的 ``minimum.reduceat``，整段分钟数据只扫常数遍。
-# 测试里与逐 bar 参考循环互相对照。
-#
-# 成交口径：
-# - 入场：多头 bar 最高价严格高于上轨（价格穿过而非只碰到），开盘已越过上轨则按开盘价，
-#   否则按上轨；空头对称。同一根 bar 上下轨都被穿过时，开盘已在某一侧之外就按该侧，
-#   否则先后无法判断，当日不交易。
-# - 入场 bar 内只检查止损（按止损价成交），不检查止盈：bar 内先后未知，取保守一侧。
-# - 之后的 bar：止损、止盈同一根 bar 都触发时按止损；跳空越过时按开盘价。
-# - 其余持仓在当日最后一根 bar 按收盘价平仓。
 
 def day_layout(trading_date: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """每根 bar 的交易日编号，及每个交易日首末 bar 的位置。要求已按时间排序。"""
@@ -345,193 +162,104 @@ def opening_range(high: np.ndarray, low: np.ndarray, codes: np.ndarray,
     return np.where(enough, hi, np.nan), np.where(enough, lo, np.nan)
 
 
-def simulate(o, h, l, c, codes, starts, ends, long_level, short_level,
-             stop_dist, target_dist, start_bar, allow_long, allow_short, tradable=None):
-    """返回逐笔成交的数组字典（只含有成交的交易日），价格未含滑点。
+def orb_origin(p: Prepared, orb: OrbConfig) -> np.ndarray:
+    """每个交易日开盘区间起点在当日的序号（``"day"`` 口径没有日盘时为 -1）。"""
+    if orb.open_anchor == "day":
+        return day_open_offset(p.df.index, p.codes, p.starts)
+    if orb.open_anchor == "first":
+        return np.zeros(len(p.starts), np.int64)
+    raise ValueError(f"未知开盘定义: {orb.open_anchor}")
 
-    日级数组长度等于交易日数：``long_level``/``short_level`` 为突破价，
-    ``stop_dist``/``target_dist`` 为距入场价的止损/止盈距离（NaN 表示不设），
-    ``start_bar`` 为当日最早可入场的 bar 序号，``allow_*`` 为当日允许的方向。
-    ``tradable`` 为逐 bar 布尔数组（通常是成交量 > 0），为假的 bar 不能入场。
+
+def orb_trades(p: Prepared, orb: OrbConfig, side: int) -> dict[str, np.ndarray]:
+    """单边 ORB 撮合（``side`` = 1 做多 / -1 做空），只返回有成交的交易日。
+
+    逐笔数组：``day``（交易日编号）、``entry_bar``/``exit_bar``（全局 bar 位置）、
+    ``entry``/``exit``（复权价）、``ref``（入场 bar 原始开盘价，收益分母）、
+    ``gross``（未扣滑点和手续费的收益）。
     """
-    n = len(o)
-    bar = np.arange(n)
-    pos = bar - starts[codes]
-    ok = pos >= start_bar[codes]
-    if tradable is not None:
-        ok &= np.asarray(tradable, dtype=bool)
-    with np.errstate(invalid="ignore"):
-        hit_long = ok & allow_long[codes] & (h > long_level[codes])
-        hit_short = ok & allow_short[codes] & (l < short_level[codes])
-        open_long = o >= long_level[codes]
-        open_short = o <= short_level[codes]
-    # 同一根 bar 两侧都穿过：开盘已越过的一侧在先；都没越过（或两侧都越过）则无法判断
-    both = hit_long & hit_short
-    hit_long = hit_long & ~(both & ~(open_long & ~open_short))
-    hit_short = hit_short & ~(both & ~(open_short & ~open_long))
-    ambiguous = both & (open_long == open_short)
-    fl, fs = first_true(hit_long, starts), first_true(hit_short, starts)
-    fa = first_true(ambiguous, starts)
-    entry_bar = np.minimum(fl, fs)
-    traded = (entry_bar < n) & (fa > entry_bar)
-    days = np.flatnonzero(traded)
-    ei = entry_bar[days]
-    direction = np.where(fl[days] < fs[days], 1, -1)
-    entry = np.where(direction > 0, np.maximum(o[ei], long_level[days]),
-                     np.minimum(o[ei], short_level[days]))
-    stop = entry - direction * stop_dist[days]
-    target = entry + direction * target_dist[days]
-
-    n_days = len(starts)
-    d_dir = np.zeros(n_days, dtype=np.int8)
-    d_dir[days] = direction
-    d_entry_bar = np.full(n_days, n)
-    d_entry_bar[days] = ei
-    d_stop = np.full(n_days, np.nan)
-    d_stop[days] = stop
-    d_target = np.full(n_days, np.nan)
-    d_target[days] = target
-    b_dir, b_entry = d_dir[codes], d_entry_bar[codes]
-    b_stop, b_target = d_stop[codes], d_target[codes]
-    at, after = bar == b_entry, bar > b_entry
-    with np.errstate(invalid="ignore"):
-        stop_hit = (at | after) & (((b_dir > 0) & (l <= b_stop)) | ((b_dir < 0) & (h >= b_stop)))
-        target_hit = after & (((b_dir > 0) & (h >= b_target)) | ((b_dir < 0) & (l <= b_target)))
-    fstop = first_true(stop_hit, starts)[days]
-    ftarget = first_true(target_hit, starts)[days]
-    eod = ends[days]
-    by_stop = (fstop < n) & (fstop <= ftarget)
-    by_target = ~by_stop & (ftarget < n)
-    xi = np.where(by_stop, fstop, np.where(by_target, ftarget, eod))
-    ox = o[xi]
-    stop_px = np.where(xi == ei, stop,
-                       np.where(direction > 0, np.minimum(ox, stop), np.maximum(ox, stop)))
-    target_px = np.where(direction > 0, np.maximum(ox, target), np.minimum(ox, target))
-    exit_px = np.where(by_stop, stop_px, np.where(by_target, target_px, c[eod]))
-    reason = np.where(by_stop, "stop_loss", np.where(by_target, "take_profit", "end_of_day"))
-    return {"day": days, "entry_bar": ei, "exit_bar": xi, "direction": direction,
-            "entry": entry, "exit": exit_px, "reason": reason}
+    origin = orb_origin(p, orb)
+    upper, lower = opening_range(p.h, p.l, p.codes, p.starts, p.ends, orb.minutes, origin)
+    start = np.where(origin >= 0, origin + int(orb.minutes), -1)
+    return touch_trades(p, upper if side > 0 else lower, start, side)
 
 
-def _entries(o, h, l, n, codes, pos, flat, nxt, allow_long, allow_short, enter_long,
-             enter_short, tradable, starts):
-    """空仓交易日在 ``nxt`` 之后第一根触发的入场 bar（口径同 ``simulate``）。"""
-    ok = flat[codes] & (pos >= nxt[codes]) & tradable
-    with np.errstate(invalid="ignore"):
-        hit_long = ok & allow_long[codes] & (h > enter_long)
-        hit_short = ok & allow_short[codes] & (l < enter_short)
-        open_long = o >= enter_long
-        open_short = o <= enter_short
-    both = hit_long & hit_short
-    hit_long = hit_long & ~(both & ~(open_long & ~open_short))
-    hit_short = hit_short & ~(both & ~(open_short & ~open_long))
-    ambiguous = both & (open_long == open_short)
-    fl, fs = first_true(hit_long, starts), first_true(hit_short, starts)
-    fa = first_true(ambiguous, starts)
-    eb = np.minimum(fl, fs)
-    return eb, (eb < n) & (fa > eb), np.where(fl < fs, 1, -1)
+def _check_side(side: int) -> None:
+    if side not in (1, -1):
+        raise ValueError("side 只能是 1 或 -1")
 
 
-def simulate_path(o, h, l, c, codes, starts, ends, enter_long, enter_short,
-                  rev_to_short, rev_to_long, stop_dist, target_dist, start_bar,
-                  allow_long, allow_short, tradable=None, max_legs=1):
-    """带反手的日内撮合。返回字段同 ``simulate``，``reason`` 多一种 ``reverse``。
+def _trade_arrays(p: Prepared, days, ei, xi, entry, side) -> dict[str, np.ndarray]:
+    exit_ = p.c[xi]
+    ref = p.raw_open[ei]
+    ref = np.where(np.isfinite(ref) & (ref > 0), ref, entry)
+    return {"day": days, "entry_bar": ei, "exit_bar": xi, "entry": entry, "exit": exit_,
+            "ref": ref, "gross": side * (exit_ - entry) / ref}
 
-    逐 bar 数组：``enter_long``/``enter_short`` 为空仓时的开仓价（NaN 为不开）；
-    ``rev_to_short`` 为持多时的反手价（最低价严格跌破即平多，允许做空则按同价开空），
-    ``rev_to_long`` 对称。逐日数组：止损/止盈距离、最早入场 bar、允许的方向。
 
-    口径（与 ``simulate`` 一致并补充反手）：
-    - 反手只在入场 bar 之后、且成交量 > 0 的 bar 上触发，按 min(开盘, 反手价)（多头）成交；
-    - 同一根 bar 止损与反手都触发时，按成交价先到的一侧（多头取较高者；相同则算反手）；
-      止损/反手与止盈同 bar 时按不利一侧；
-    - 反手开出的新仓在同一根 bar 只检查止损；最后一根 bar 上只平不反；
-    - 反手不允许的方向（``allow_*`` 为假）时只平仓，之后仍可按开仓价重新入场；
-    - ``max_legs`` 为每日最多持仓段数（反手开出的仓也算一段）。
+def touch_trades(p: Prepared, level: np.ndarray, start: np.ndarray,
+                 side: int) -> dict[str, np.ndarray]:
+    """单边触价入场、尾盘平：当日序号不小于 ``start`` 的 bar 里，第一根穿过 ``level`` 的成交。
+
+    ``level``/``start`` 逐交易日给出，``start`` < 0 或 ``level`` 缺失当天不做。做多要求最高价
+    严格高于 ``level``，开盘已越过按开盘价成交，否则按 ``level``；做空对称。
     """
-    n, n_days = len(o), len(starts)
-    bar = np.arange(n)
-    pos = bar - starts[codes]
-    tradable = np.ones(n, bool) if tradable is None else np.asarray(tradable, bool)
-    allow_long = np.asarray(allow_long, bool)
-    allow_short = np.asarray(allow_short, bool)
-    side = np.zeros(n_days, np.int64)
-    ebar = np.full(n_days, n)
-    epx = np.full(n_days, np.nan)
-    nxt = np.asarray(start_bar, np.int64).copy()
-    legs = np.zeros(n_days, np.int64)
-    alive = ends >= starts
-    out = {k: [] for k in ("day", "entry_bar", "exit_bar", "direction", "entry", "exit", "reason")}
-    while True:
-        flat = alive & (side == 0)
-        if flat.any():
-            eb, got, dirn = _entries(o, h, l, n, codes, pos, flat, nxt, allow_long, allow_short,
-                                     enter_long, enter_short, tradable, starts)
-            alive &= ~(flat & ~got)
-            d = np.flatnonzero(flat & got)
-            ei, dd = eb[d], dirn[d]
-            side[d], ebar[d], legs[d] = dd, ei, legs[d] + 1
-            epx[d] = np.where(dd > 0, np.maximum(o[ei], enter_long[ei]),
-                              np.minimum(o[ei], enter_short[ei]))
-        held = alive & (side != 0)
-        if not held.any():
-            break
-        d = np.flatnonzero(held)
-        stop_d = np.where(held, epx - side * stop_dist, np.nan)
-        target_d = np.where(held, epx + side * target_dist, np.nan)
-        b_dir = np.where(held, side, 0)[codes]
-        b_e, b_stop, b_target = ebar[codes], stop_d[codes], target_d[codes]
-        at, after = bar == b_e, bar > b_e
-        longs, shorts = b_dir > 0, b_dir < 0
-        with np.errstate(invalid="ignore"):
-            stop_hit = (at | after) & ((longs & (l <= b_stop)) | (shorts & (h >= b_stop)))
-            target_hit = after & ((longs & (h >= b_target)) | (shorts & (l <= b_target)))
-            rev_hit = after & tradable & ((longs & (l < rev_to_short)) | (shorts & (h > rev_to_long)))
-        fsx = first_true(stop_hit, starts)[d]
-        ftx = first_true(target_hit, starts)[d]
-        frx = first_true(rev_hit, starts)[d]
-        dirn, ei, stop, target = side[d], ebar[d], stop_d[d], target_d[d]
+    _check_side(side)
+    n = len(p.o)
+    start = np.asarray(start)
+    lv = np.asarray(level, np.float64)[p.codes]
+    pos = np.arange(n) - p.starts[p.codes]
+    ok = (start[p.codes] >= 0) & (pos >= start[p.codes]) & p.tradable
+    with np.errstate(invalid="ignore"):
+        hit = ok & ((p.h > lv) if side > 0 else (p.l < lv))
+    first = first_true(hit, p.starts)
+    days = np.flatnonzero(first < n)
+    ei, xi = first[days], p.ends[days]
+    entry = np.maximum(p.o[ei], lv[ei]) if side > 0 else np.minimum(p.o[ei], lv[ei])
+    return _trade_arrays(p, days, ei, xi, entry, side)
 
-        def _px(idx, lvl_long, lvl_short):
-            j = np.minimum(idx, n - 1)
-            return np.where(dirn > 0, np.minimum(o[j], lvl_long), np.maximum(o[j], lvl_short)), j
 
-        stop_px, js = _px(fsx, stop, stop)
-        stop_px = np.where(js == ei, stop, stop_px)
-        jr = np.minimum(frx, n - 1)
-        rev_px = np.where(dirn > 0, np.minimum(o[jr], rev_to_short[jr]),
-                          np.maximum(o[jr], rev_to_long[jr]))
-        jt = np.minimum(ftx, n - 1)
-        target_px = np.where(dirn > 0, np.maximum(o[jt], target), np.minimum(o[jt], target))
-        with np.errstate(invalid="ignore"):
-            rev_first = (frx < fsx) | ((frx == fsx) & (frx < n) & (dirn * (rev_px - stop_px) >= 0))
-        adverse = np.minimum(fsx, frx)
-        is_adv = (adverse < n) & (adverse <= ftx)
-        is_rev = is_adv & rev_first
-        is_stop = is_adv & ~rev_first
-        is_tgt = ~is_adv & (ftx < n)
-        xi = np.where(is_rev, frx, np.where(is_stop, fsx, np.where(is_tgt, ftx, ends[d])))
-        exit_px = np.where(is_rev, rev_px, np.where(is_stop, stop_px,
-                                                    np.where(is_tgt, target_px, c[ends[d]])))
-        reason = np.where(is_rev, "reverse", np.where(is_stop, "stop_loss",
-                                                      np.where(is_tgt, "take_profit", "end_of_day")))
-        for k, v in (("day", d), ("entry_bar", ei), ("exit_bar", xi), ("direction", dirn),
-                     ("entry", epx[d]), ("exit", exit_px), ("reason", reason)):
-            out[k].append(v)
-        # 状态更新
-        eod = ~(is_rev | is_stop | is_tgt)
-        can_flip = is_rev & (xi < ends[d]) & (legs[d] < max_legs) & np.where(
-            dirn > 0, allow_short[d], allow_long[d])
-        side[d] = np.where(can_flip, -dirn, 0)
-        ebar[d] = np.where(can_flip, xi, n)
-        epx[d] = np.where(can_flip, exit_px, np.nan)
-        legs[d] += can_flip
-        nxt[d] = xi - starts[d] + 1
-        alive[d] = ~eod & (can_flip | (legs[d] < max_legs))
-    if not out["day"]:
-        empty = np.array([], dtype=np.int64)
-        return {"day": empty, "entry_bar": empty, "exit_bar": empty, "direction": empty,
-                "entry": np.array([]), "exit": np.array([]), "reason": np.array([], dtype="<U11")}
-    res = {k: np.concatenate(v) for k, v in out.items()}
-    order = np.lexsort((res["entry_bar"], res["day"]))
-    return {k: v[order] for k, v in res.items()}
+def next_open_trades(p: Prepared, signal: np.ndarray, side: int) -> dict[str, np.ndarray]:
+    """信号在 bar 收盘时成立 → 同一交易日下一根可成交 bar 按开盘价入场，尾盘平。
+
+    每天只取第一个信号。信号出在当日最后一根，或之后没有可成交的 bar，当天不做。
+    """
+    _check_side(side)
+    n = len(p.o)
+    fired = first_true(np.asarray(signal, bool), p.starts)
+    after = p.tradable & (np.arange(n) > fired[p.codes])
+    first = first_true(after, p.starts)
+    days = np.flatnonzero(first < n)
+    ei, xi = first[days], p.ends[days]
+    return _trade_arrays(p, days, ei, xi, p.o[ei], side)
+
+
+def position_returns(o: np.ndarray, c: np.ndarray, raw: np.ndarray, codes: np.ndarray,
+                     n_days: int, signal: np.ndarray, weight: np.ndarray,
+                     side_costs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """多日持仓：逐 bar 目标方向 → 逐交易日收益与换手成本（均已乘风险权重）。
+
+    - ``signal[b]``：bar b 收盘时的目标方向（-1..1），缺失沿用上一个，下一根 bar 开盘成交；
+    - 名义仓位 = 方向 × 当日风险权重 ``weight[day]``（开盘前已知，缺失记 0），权重变化也算换手；
+    - bar 之间的跳空归调仓前的仓位；价差用复权价，分母用该 bar 原始开盘价；
+    - ``side_costs``：逐交易日、每单位名义单边的成本（如每边 1 tick、单边手续费），乘换手后按日加总；
+    - ``n``：当日方向改变的次数（调仓笔数），``position``：当日平均名义敞口。
+    """
+    sgn = pd.Series(np.asarray(signal, np.float64)).ffill().fillna(0.0).to_numpy()
+    held = np.r_[0.0, sgn[:-1]]
+    x = held * np.nan_to_num(np.asarray(weight, np.float64))[codes]
+    x_prev = np.r_[0.0, x[:-1]]
+    c_prev = np.r_[np.nan, c[:-1]]
+    ref = np.where(np.isfinite(raw) & (raw > 0), raw, np.nan)
+    with np.errstate(invalid="ignore"):
+        gap = np.where(np.isfinite(c_prev), x_prev * (o - c_prev), 0.0)
+        pnl = np.nan_to_num((gap + x * (c - o)) / ref)
+    turn = np.abs(x - x_prev)
+    out = {"gross": np.bincount(codes, pnl, minlength=n_days),
+           "n": np.bincount(codes, (held != np.r_[0.0, held[:-1]]).astype(float), minlength=n_days),
+           "position": np.bincount(codes, np.abs(x), minlength=n_days)
+           / np.maximum(np.bincount(codes, minlength=n_days), 1)}
+    for name, rate in side_costs.items():
+        out[name] = np.bincount(codes, np.nan_to_num(turn * np.asarray(rate)[codes]),
+                                minlength=n_days)
+    return out

@@ -56,12 +56,7 @@ STRICT_OOS_START = _dt.date(2023, 1, 1)
 DEFAULT_OOS_END = _dt.date(2025, 12, 31)
 RESEARCH_END = _dt.date(2021, 12, 31)
 
-WARMUP_START = _dt.date(2014, 7, 1)       # 阈值+信号双层滚动预热（约 360 个交易日）
 STUDY_START = _dt.date(2016, 1, 1)        # 第一个计入绩效的信号日
-STUDY_END = RESEARCH_END
-
-BACKWARD_OOS_START = _dt.date(2010, 1, 1)  # 向后时间外检验（只看符号，不得选参）
-BACKWARD_OOS_END = _dt.date(2014, 12, 31)
 
 # 研究期逐年折。参数全部事前固定，没有训练窗口；逐年只用来看稳定性。
 WF_TEST_YEARS_LIST = [2016, 2017, 2018, 2019, 2020, 2021]
@@ -214,7 +209,6 @@ TECH_UNSIGNED = ['er', 'vol_ratio', 'atr_pct', 'pv_corr']
 DURATION_FACTORS = ['dfp_max', 'dfp_top3']
 TIMESTAMP_FACTORS = ['ts_high', 'ts_low']
 PRIOR_FACTORS = list(FACTOR_SIGNS)
-BOOK_FACTORS = list(FACTOR_SIGNS)
 
 
 # --------------------------------------------------------------------------
