@@ -85,7 +85,8 @@ def test_rolling_threshold_excludes_current_day():
     d = D.intraday_abs_diff(v, days)
     thr = D.rolling_threshold(d, days, lookback=3, pct=55.0)
     assert np.isnan(thr.iloc[0])
-    assert thr.iloc[1:].notna().all()
+    assert thr.iloc[:3].isna().all()
+    assert thr.iloc[3:].notna().all()
 
 
 def test_rolling_threshold_pools_not_averages():
@@ -103,7 +104,7 @@ def test_rolling_threshold_pools_not_averages():
         np.r_[np.nan, np.full(9, 100.0)],          # 第 2 日：9 个 100
         np.full(5, np.nan),                        # 第 3 日：取值无关，只看历史
     ])
-    thr = D.rolling_threshold(d, days, lookback=10, pct=50.0)
+    thr = D.rolling_threshold(d, days, lookback=2, pct=50.0)
 
     assert thr.loc[2] == pytest.approx(1.0)        # 第 2 日只看第 1 日
     # 第 3 日池子 = 59 个 1 + 9 个 100 -> 中位数被样本多的一侧主导

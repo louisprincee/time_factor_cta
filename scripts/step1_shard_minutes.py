@@ -429,7 +429,7 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
 
 
 def verify_validation(syms: list[str], run: Path, paths: list, notes: list[str]) -> int:
-    """按 step6 的验证 loader 把分片读回来：日期限于 2022，夜盘归属与 bar 数同研究期口径。"""
+    """按验证 loader 检查分片：日期限于 2022，夜盘归属与 bar 数同研究期口径。"""
     rows, failures = [], []
     try:
         C.assert_validation_only(C.RESEARCH_DIR / 'RB.parquet')

@@ -1,13 +1,4 @@
-"""全局配置：路径、时间切分、时段定义、参数网格。
-
-本模块是唯一的常量来源。任何脚本都不应硬编码路径或日期。
-
-关键纪律（见 docs/Design.md 第 0 节）：
-    研究期只读 2016–2021；2022 是验证期，每本书只由 step6 测一次；2023 起是样本外，
-    只由 step7 对 2022 通过的书测一次。
-    HOLDOUT_DIR 由 step1 写入后即锁定，任何研究代码读取它都算 bug。
-    load_shard() 会主动拒绝越界访问。
-"""
+"""Paths, time partitions, data conventions and research priors. See README.md."""
 from __future__ import annotations
 
 import datetime as _dt
@@ -33,17 +24,16 @@ DATA_ROOT = Path(_os.environ.get("TFCTA_DATA_ROOT", PROJECT_ROOT / "data"))
 # step1 产出
 SHARD_ROOT = DATA_ROOT / "minute_shards"
 RESEARCH_DIR = SHARD_ROOT / "research"                     # <= 2021-12-31，可自由使用
-HOLDOUT_DIR = SHARD_ROOT / "holdout_locked"                # >= 2022-01-01，本阶段禁止读取
+HOLDOUT_DIR = SHARD_ROOT / "holdout_locked"                # >= 2023-01-01，本阶段禁止读取
 VALIDATION_DIR = SHARD_ROOT / "validation_2022"            # 仅 2022，一次性验证
 ROLL_DIR = DATA_ROOT / "roll_dates"
 
 # 因子缓存与运行留痕
-FACTOR_DAILY_DIR = DATA_ROOT / "factor_daily"
+FACTOR_DAILY_DIR = DATA_ROOT / "factor_daily_v3"
 UNIVERSE_DIR = DATA_ROOT / "universe"
 RUNS_DIR = Path(_os.environ.get("TFCTA_RUNS_ROOT", PROJECT_ROOT / "runs"))
 CONFIG_DIR = Path(_os.environ.get("TFCTA_CONFIG_DIR", PROJECT_ROOT / "config"))
-# 第 3-5 步的研究产物（因子目录、IC、异质性、回测、tick 表）。
-# runs/ 是每次运行的留痕快照；这里是下游步骤接着读的最新一份。
+# 研究输入费用与 tick 表；实验结果只写独立 runs/ 目录。
 RESEARCH_OUT_DIR = DATA_ROOT / "research"
 
 # --------------------------------------------------------------------------
@@ -58,7 +48,7 @@ RESEARCH_END = _dt.date(2021, 12, 31)
 
 STUDY_START = _dt.date(2016, 1, 1)        # 第一个计入绩效的信号日
 
-# 研究期逐年折。参数全部事前固定，没有训练窗口；逐年只用来看稳定性。
+# 日频因子研究逐年诊断；ML 的训练/测试折由 intraday.ml 明确指定。
 WF_TEST_YEARS_LIST = [2016, 2017, 2018, 2019, 2020, 2021]
 # 2016/2017 两年的滚动阈值与标准化窗口落在夜盘未全面铺开的 2014-2016，报告中须标注
 WF_FOLDS_WITH_SPARSE_NIGHT = [2016, 2017]
@@ -105,7 +95,7 @@ NIGHT_BARS_0100 = 285          # 21:00-01:00 约 240 分钟
 # --------------------------------------------------------------------------
 # 因子计算实际需要的字段（设计文档第 3.1 节）。丢掉 dominant_id 这个 object 列是省内存的关键。
 FACTOR_FIELDS = [
-    'closew',          # 价格持续期（加法复权，价差不受换月跳变影响）
+    'closew',          # 加法复权收盘价，用于价格形状与位置对照
     'close',           # FP 与 DFP 分母（比例量一律用原始价）
     'highw', 'loww',   # 日内极值时间戳
     'volume',          # 成交量持续期 / 量峰时间戳
@@ -137,39 +127,19 @@ PM_END = _dt.time(15, 30)
 EXPECTED_BARS_PER_DAY = {'no_night': 225, 'night_2300': 345, 'night_0100': 465, 'night_0230': 555}
 
 # --------------------------------------------------------------------------
-# 当前策略用到的阈值。周频书只读这一组，不再扫 N×M 网格。
-# --------------------------------------------------------------------------
+# Time-factor definition (fixed before research; no parameter sweep).
 THRESHOLD_LOOKBACKS = [250]
 THRESHOLD_PCTS = [55.0]
 FP_TOP_NS = [1, 3]
-
-FEE_BASE = 0.00025
-
-# 滑点按每次换手穿越几个最小变动价位计。同样穿一个 tick，低价位品种的比例成本
-# 远高于高价位品种（本样本约 0.7–9.9bp，中位 3.3bp）。
 SLIPPAGE_TICKS = 1.0
-
-# 组合构造：五批错开调仓，仓位按事前 60 日波动缩放到单品种年化 20%，杠杆上限 2.5。
-# 研究期品种年化波动中位数约 19%，所以平均杠杆接近 1，与旧的等名义口径量级可比。
-REBALANCE_TRANCHES = 5
 VOL_TARGET = 0.20
-VOL_TARGET_CAP = 2.5
+VOL_TARGET_CAP = 1.0
 
-# 第 4 步 IC 与周频书共用的阈值。不扫网格。
 IC_REFERENCE_LOOKBACK = 250
 IC_REFERENCE_PCT = 55.0
 IC_MIN_OBS = 60
-# IC 的预测期与持仓期一致：t 日收盘信号对 t+1..t+H 的累计日收益（五批错开、各持五天
-# 的书，t 日信号恰好以 1/H 的权重持有这 H 天）。1 日 IC 在滞后 1..5 上正负交替，
-# 用它判显著性会被周内季节性主导，另列一列备查。
-IC_HORIZON = 5
-
-# IC 显著性的**时序**口径（research/analysis/stats.py::ic_period_series / timeseries_t）。
-# 一期（默认一个自然月）先在品种内求 mean(事前 z × 事前波动标准化收益)、再在期内对
-# 品种取平均，得到一条 IC 时间序列，t 值是这条序列均值的 Newey-West t。
-# 不在期内算相关：持续性因子的期内去均值有 Stambaugh 型负偏差。分母来自时间上的变异，商品之间
-# 的同期相关性被期内平均吸收掉——跨品种口径把高度相关的商品当独立样本，t 会虚高。
-IC_PERIOD = 'ME'            # 月末重采样；一个测试年约 12 个观测
+# Diagnostics evaluate 1/3/5/10-day horizons separately from rebalancing.
+IC_PERIOD = 'ME'
 IC_PERIOD_MIN_OBS = 10      # 一期至少这么多个有效 (因子, 收益) 配对才算一个观测
 IC_PERIOD_MIN_COUNT = 6     # 少于这么多期不给 t 值，宁可留空也不给一个假精度
 # 事前标准化窗口。因子 z 与收益的波动都只用 t 日已知的数据。
@@ -196,16 +166,6 @@ FACTOR_SIGNS = {
     'ts_high': -1,
     'ts_low': +1,
 }
-# 传统量价因子的方向同样事前指定，不按 IC 定。依据是商品时序动量文献
-# （Moskowitz-Ooi-Pedersen 2012 及国内商品期货的同类实证）：2-6 周窗口的趋势类指标
-# 越高越看多。er / vol_ratio / atr_pct / pv_corr 本身不带方向，只能作条件变量，
-# 不单独做择时；er_signed 是给 er 乘上窗口内涨跌方向后的带方向版本。
-TECH_PRIOR_SIGNS = {
-    'po': +1, 'bias': +1, 'rsv': +1, 'rsi': +1,
-    'obv': +1, 'pvt': +1, 'er_signed': +1,
-}
-TECH_UNSIGNED = ['er', 'vol_ratio', 'atr_pct', 'pv_corr']
-
 DURATION_FACTORS = ['dfp_max', 'dfp_top3']
 TIMESTAMP_FACTORS = ['ts_high', 'ts_low']
 PRIOR_FACTORS = list(FACTOR_SIGNS)
@@ -221,10 +181,11 @@ class HoldoutViolation(RuntimeError):
 def assert_research_only(path) -> None:
     """拒绝任何指向 holdout_locked/ 的读取。在所有加载函数入口调用。"""
     p = Path(path).resolve()
-    if HOLDOUT_DIR.resolve() in p.parents or p == HOLDOUT_DIR.resolve():
+    if any(root.resolve() in p.parents or p == root.resolve()
+           for root in (HOLDOUT_DIR, VALIDATION_DIR)):
         raise HoldoutViolation(
             f"本阶段禁止读取样本外数据: {p}\n"
-            "见 docs/Design.md 第 0 节约束一。"
+            "研究入口禁止读取验证期和样本外路径。"
         )
 
 
@@ -304,7 +265,7 @@ def assert_no_holdout_dates(index_or_series, what: str = "data") -> None:
 
 
 def ensure_dirs() -> None:
-    for d in (SHARD_ROOT, RESEARCH_DIR, HOLDOUT_DIR, VALIDATION_DIR, ROLL_DIR,
+    for d in (SHARD_ROOT, RESEARCH_DIR, ROLL_DIR,
               FACTOR_DAILY_DIR, UNIVERSE_DIR, RUNS_DIR, CONFIG_DIR,
               RESEARCH_OUT_DIR):
         d.mkdir(parents=True, exist_ok=True)

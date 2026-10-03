@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
+import csv
 
 import pandas as pd
 
@@ -129,8 +130,19 @@ def load_roll_calendar(symbols: list[str], end, directory=None) -> dict[str, pd.
         path = root / f"{s}.csv"
         if not path.exists():
             continue
-        df = pd.read_csv(path, parse_dates=['trading_date'])
-        out[s] = df[df['trading_date'] <= end].reset_index(drop=True)
+        rows = []
+        with path.open() as source:
+            previous = None
+            for row in csv.DictReader(source):
+                date = pd.Timestamp(row['trading_date'])
+                if previous is not None and date < previous:
+                    raise ValueError(f'{path} 换月记录未按日期排序')
+                if date > end:
+                    break  # do not load later records into a dataframe
+                previous = date
+                rows.append(row)
+        out[s] = pd.DataFrame(rows, columns=['trading_date','new_contract','prev_contract'])
+        out[s]['trading_date'] = pd.to_datetime(out[s]['trading_date'])
     return out
 
 

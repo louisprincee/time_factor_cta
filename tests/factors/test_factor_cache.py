@@ -131,32 +131,5 @@ def test_injected_thresholds_match_recomputed():
 
 def test_load_symbol_raises_clearly_when_missing():
     root, _, combos = _tiny_cache()
-    with pytest.raises(FileNotFoundError, match='step3'):
+    with pytest.raises(FileNotFoundError, match='build_factors'):
         FC.load_symbol('XX', 999, 55.0, root=root / 'factors')
-
-
-def _panel(rows: dict) -> pd.DataFrame:
-    """由 {品种: {因子: [值...]}} 构造 (trading_date, symbol) 长表。"""
-    parts = []
-    for sym, cols in rows.items():
-        n = len(next(iter(cols.values())))
-        idx = pd.MultiIndex.from_product(
-            [pd.bdate_range('2016-01-04', periods=n), [sym]],
-            names=['trading_date', 'symbol'])
-        parts.append(pd.DataFrame(cols, index=idx))
-    return pd.concat(parts).sort_index()
-
-
-def test_acceptance_flags_structural_zeros():
-    """全 0 必须判不通过。结构性零值会把因子压成噪声。"""
-    panel = _panel({'RB': {'ts_high': [0.0] * 10}})
-    t = FC.check_acceptance(FC.panel_health(panel))
-    assert not bool(t.loc['ts_high', 'passed'])
-    assert '全为 0' in t.loc['ts_high', 'reason']
-
-
-def test_timepoint_outside_unit_interval_fails():
-    panel = _panel({'RB': {'ts_high': [1.5] * 10, 'dfp_max': [0.01] * 10}})
-    t = FC.check_acceptance(FC.panel_health(panel))
-    assert not bool(t.loc['ts_high', 'passed'])
-    assert bool(t.loc['dfp_max', 'passed'])

@@ -163,8 +163,8 @@ def _nw_se(x: np.ndarray, lag: int) -> float:
 def timeseries_t(ic_series: pd.Series, lag: int | None = None) -> dict:
     """IC 时序均值的显著性：``ic_ts`` / ``t`` / ``ic_ir`` / ``n_periods`` / ``nw_lag``。
 
-    ``ic_ts`` 是逐期 IC 的均值，与 ``ic``（逐品种全窗口 IC 的均值）算的是同一件事
-    但加权不同，两者差得多说明 IC 在年内极不均匀，值得在报告里说一句。
+    ``ic_ts`` 是逐月标准化预测乘积的均值，不是 Spearman 相关系数。
+    ``ic`` 是逐品种 Spearman 的均值；两者不能互换，持续性信号尤其可能符号不同。
     ``ic_ir`` = 均值 / 标准差，不做年化——月度与日度的年化因子不同，写成年化容易被
     误读成"信息比率"。
 
@@ -373,7 +373,7 @@ def performance(ret: pd.Series, periods: int = PERIODS) -> dict:
     ann_return = float(nav[-1] ** (periods / n) - 1.0)
     ann_vol = float(r.std(ddof=1) * np.sqrt(periods))
     ret_risk = ann_return / ann_vol if ann_vol > 0 else np.nan
-    peak = np.maximum.accumulate(nav)
+    peak = np.maximum.accumulate(np.r_[1.0, nav])[1:]
     dd = nav / peak - 1.0
     max_dd = float(dd.min())
     calmar = ann_return / abs(max_dd) if max_dd < 0 else np.nan

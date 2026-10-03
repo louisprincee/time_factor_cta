@@ -293,7 +293,7 @@ if existing_file:
     except Exception as e:
         print(f"合并历史总数据失败: {e}")
 
-data = convert_to_float32(data)
+# Keep price fields in float64; compression belongs in parquet, not quotes.
 # 最终文件路径
 file_name = f'future_all{time_type}data_{original_time_period}.txt'
 output_path = os.path.join(data_dir, file_name)

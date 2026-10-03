@@ -16,8 +16,8 @@
 * ``dfp_max`` / ``dfp_top3``：持续期前 N 大的分钟上的均衡价 FP 相对收盘价的偏离，依赖 (N, M)。
 * ``ts_high`` / ``ts_low``：全日最高价、最低价出现的归一化时点，不依赖参数。
 
-价格口径：持续期和极值时点只看同一交易日内的价差和先后，复权价与原始价结果相同
-（``close - closew`` 日内恒定）。``dfp`` 是比例，分子分母都用原始 ``close``——加法复权价离
+价格口径：持续期使用经过报价精度修复的原始 close。加法复权价的理论平移不变性
+不能消除 float32 在阈值边界的误差，因此不以 closew 计算持续期。``dfp`` 是比例，分子分母都用原始 ``close``——加法复权价离
 上市越远偏离越大，做分母会把量纲放大或缩小数倍，接近 0 时还会变号。
 
 落盘的是原始值，方向只在 ``factors.library`` 装配时乘上。
@@ -37,6 +37,8 @@ from ..data import sessions
 def intraday_abs_diff(values: np.ndarray, day_codes: np.ndarray) -> np.ndarray:
     """日内相邻 bar 的一阶差分绝对值；每日首根记为 NaN（不跨日）。"""
     v = np.asarray(values, dtype='float64')
+    if not len(v):
+        return v
     d = np.abs(np.diff(v, prepend=np.nan))
     same_day = np.empty(len(v), dtype=bool)
     same_day[0] = False
@@ -51,7 +53,7 @@ def rolling_threshold(abs_diff: np.ndarray,
                       pct: float) -> pd.Series:
     """过去 ``lookback`` 日全部分钟变化绝对值的第 ``pct`` 分位数，以日编码为 index。
 
-    只用 t-lookback..t-1，不含当日。"过去 N 日全部分钟观测的分位数"是把 N 天的分钟样本
+    只用 t-lookback..t-1，不含当日。"严格要求 N 日预热；过去 N 日全部分钟观测的分位数"是把 N 天的分钟样本
     **汇总成一个池子**再取分位数，不是"每日分位数再平均"。这是参照实现，
     :func:`rolling_threshold_grid` 与它逐元素一致（有测试钉住）。
     """
@@ -60,7 +62,7 @@ def rolling_threshold(abs_diff: np.ndarray,
     days = np.array(sorted(pd.unique(day_codes)))
 
     out = np.full(len(days), np.nan)
-    for k in range(1, len(days)):
+    for k in range(lookback, len(days)):
         pool = [a for a in per_day[max(0, k - lookback):k] if a.size]
         if not pool:
             continue
@@ -83,7 +85,7 @@ def rolling_threshold_grid(abs_diff: np.ndarray,
 
     out = {(lb, p): np.full(len(days), np.nan) for lb in lookbacks for p in qs}
     for lb in lookbacks:
-        for k in range(1, len(days)):
+        for k in range(lb, len(days)):
             pool = [a for a in per_day[max(0, k - lb):k] if a.size]
             if not pool:
                 continue
@@ -105,11 +107,12 @@ def duration_one_day(values: np.ndarray, threshold: float) -> np.ndarray:
     n = len(v)
     if n == 0:
         return np.zeros(0)
-    if not np.isfinite(threshold):
+    if not np.isfinite(threshold) or threshold <= 0:
         return np.full(n, np.nan)
 
     D = np.abs(v[:, None] - v[None, :])
-    ok = (D >= threshold) & (np.arange(n)[None, :] < np.arange(n)[:, None])
+    # Decimal quotes such as 400.2-400.1 must qualify at an exact 0.1 boundary.
+    ok = (D >= threshold - 1e-9) & (np.arange(n)[None, :] < np.arange(n)[:, None])
     has = ok.any(axis=1)
     last_j = np.where(has, n - 1 - ok[:, ::-1].argmax(axis=1), 0)
     dur = np.where(has, np.arange(n) - last_j, np.arange(n)).astype('float64')
@@ -183,21 +186,38 @@ def dfp_factors(dur: np.ndarray,
     return pd.DataFrame(cols, index=days)
 
 
+def raw_price_path(df: pd.DataFrame) -> np.ndarray:
+    """Recover the dataset's decimal raw quotes, never duration from adjusted float32.
+
+    Historical commodity shards store raw quotes with at most two decimal places
+    as float32. Round those to 0.01 price precision (NOT a presumed exchange tick).
+    Promoted float32 values are recognized too, so concatenating partitions
+    with different dtypes cannot change old history. Other float64 inputs are
+    kept intact. The cleaned path is used consistently for
+    thresholds, duration and FP; converting float32 to float64 alone cannot repair it.
+    """
+    values = df['close'].to_numpy()
+    clean = values.astype('float64')
+    is_stored_float32 = clean == clean.astype('float32').astype('float64')
+    clean = np.where(is_stored_float32, np.round(clean, 2), clean)
+    return clean
+
+
 def duration_factors(df: pd.DataFrame,
                      lookback: int,
                      pct: float,
                      thr_p: pd.Series | None = None) -> pd.DataFrame:
-    """一个 (lookback, pct) 下的 dfp_max 与 dfp_top3。持续期用 closew，FP 与分母用 close。"""
+    """一个 (lookback, pct) 下的 dfp_max 与 dfp_top3。阈值、持续期、FP 与分母都用原始报价路径。"""
     for col in ('trading_date', 'gamma_norm', 'session', 'closew', 'close'):
         if col not in df.columns:
             raise KeyError(f"缺少 {col} 列，请先调用 sessions.add_intraday_coords")
 
     codes, days = day_codes_of(df)
-    price = df['closew'].to_numpy(dtype='float64')
+    price = raw_price_path(df)
     if thr_p is None:
         thr_p = rolling_threshold(intraday_abs_diff(price, codes), codes, lookback, pct)
     dur = duration_series(price, codes, thr_p)
-    out = dfp_factors(dur, df['close'].to_numpy(dtype='float64'), codes, days)
+    out = dfp_factors(dur, price, codes, days)
     out.index.name = 'trading_date'
     return out
 
