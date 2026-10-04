@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 import pandas as pd
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 from tfcta import config as C
@@ -20,11 +21,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', choices=['ridge','hgb'], default='ridge')
     parser.add_argument('--features', choices=['time','price','all'], default='all')
+    parser.add_argument('--feature-columns',nargs='+',choices=list(features.FEATURES),
+        help='显式因子子集；指定后覆盖 --features 分组')
     parser.add_argument('--decision-minutes', type=int, default=30)
     parser.add_argument('--hold-minutes', type=int, default=30)
     parser.add_argument('--threshold-lookback', type=int, default=250)
     parser.add_argument('--threshold-pct', type=float, default=55.)
     parser.add_argument('--min-train', type=int, default=1000)
+    parser.add_argument('--training-years',type=int,default=None,help='省略为扩展窗口，否则为滚动年数')
+    parser.add_argument('--refit',choices=['annual','quarterly'],default='annual')
+    parser.add_argument('--target',choices=['raw','risk_scaled'],default='raw')
+    parser.add_argument('--scope',choices=['pooled','balanced','symbol'],default='pooled')
     parser.add_argument('--slippage-ticks', type=float, default=1.)
     parser.add_argument('--symbols', nargs='+', help='明确缩小研究品种池，现金分配按缩小后的年度池计算')
     args = parser.parse_args()
@@ -56,8 +63,11 @@ def main():
     samples = pd.concat(frames, ignore_index=True).sort_values(['decision_time','symbol']).reset_index(drop=True)
     fee = costs.intraday_costs(samples, costs.load_fees(), costs.load_ticks(), args.slippage_ticks)
     samples = samples.join(fee)
-    names = {'time':features.TIME_FEATURES, 'price':features.PRICE_FEATURES, 'all':features.FEATURES}[args.features]
-    predictions, folds = ml.walk_forward(samples, names, args.model, args.min_train)
+    samples['risk_scale']=(samples.realized_vol*np.sqrt(args.hold_minutes)).clip(lower=.0001)
+    names = tuple(args.feature_columns) if args.feature_columns else {
+        'time':features.TIME_FEATURES, 'price':features.PRICE_FEATURES, 'all':features.FEATURES}[args.features]
+    predictions, folds = ml.walk_forward(samples, names, args.model, args.min_train,
+        args.training_years,args.refit,args.target,args.scope)
     if folds.empty or not folds.fitted.any():
         parser.error('此前年份训练样本不足；没有拟合任何模型')
     trades, daily = ml.evaluate(predictions, universe, calendar)
@@ -68,7 +78,7 @@ def main():
         arguments=vars(args), feature_names=names, universe=universe,
         code_sha256={str(p.relative_to(C.PROJECT_ROOT)):hash_file(p) for p in code_paths},
         input_sha256={str(p):hash_file(p) for p in input_paths},
-        window='2016 train; 2017–2021 expanding annual research folds',
+        window='2016 initial train; 2017–2021 forward research folds; training/refit/scope explicitly in arguments',
         execution='bar-end timestamps; next minute open; scheduled wall-clock close; same-day commission',
         cost='historical commissions plus specified ticks PER SIDE; tick estimates from preceding years',
         validation_2022='not_run_this_experiment; historically used', oos_2023_2025='locked'))

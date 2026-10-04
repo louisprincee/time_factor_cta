@@ -66,3 +66,20 @@ python scripts/research.py --specs config/research_candidates.json
 ```bash
 python -m pytest
 ```
+
+## 2026-10-04 因子组合与训练比较
+
+新研究结果见 [研究记录](docs/IntradayResearch_2016_2021_20261004.md)，配置见 `config/intraday_candidates_20261004.json`。已完成的 102 个不同配置尚未找到符合早段资格的稳定盈利方案；配置是复查对照，不是验证冻结名单。
+
+```bash
+# 重复首轮固定的 72 个比较方案（只使用研究期）
+python scripts/compare_intraday.py
+
+# 单独比较训练窗、重训频率和品种范围
+python scripts/research_intraday_ml.py --training-years 2 --refit quarterly
+python scripts/research_intraday_ml.py --target risk_scaled
+python scripts/research_intraday_ml.py --scope balanced
+python scripts/research_intraday_ml.py --scope symbol --min-train 200
+```
+
+`--feature-columns` 可显式指定因子子集，覆盖 `--features`。例如价格＋极值时点是七项 PRICE_FEATURES 加 `prefix_high_time prefix_low_time`。品种等权指训练损失的累计权重等权；逐品种训练样本不足时保留现金。HGB 使用固定次数迭代，关闭随机早停。所有选择均属于研究探索，不自动运行验证或严格样本外。
