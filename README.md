@@ -83,3 +83,15 @@ python scripts/research_intraday_ml.py --scope symbol --min-train 200
 ```
 
 `--feature-columns` 可显式指定因子子集，覆盖 `--features`。例如价格＋极值时点是七项 PRICE_FEATURES 加 `prefix_high_time prefix_low_time`。品种等权指训练损失的累计权重等权；逐品种训练样本不足时保留现金。HGB 使用固定次数迭代，关闭随机早停。所有选择均属于研究探索，不自动运行验证或严格样本外。
+
+## 稳定区间与失败突破反转
+
+```bash
+python scripts/research_failed_breakout.py
+```
+
+首版以有成交支持的稳定日盘区间为参考，突破后返回才产生反转候选；Ridge 预测沿反转方向的毛收益，修复空间与预测均需超过预计开仓＋平今费及每边 1tick。负预测只能留现金，不能翻方向。每天每品种只执行首个通过过滤的候选，年度池按固定 1/N 分配。
+
+过去 20 日校准尺度与同钟点成交量，10 分钟形成稳定区间；区间、突破状态在休市或缺 bar 处重置。30/60 分钟持仓按预先指定的有效交易分钟表计算，可跨日内休市、不可跨日，成交分钟缺失时报错。三个逐层增加信息的特征组配规则/Ridge、两个持仓期，共 12 个事先固定配置。全部用于研究，不自动选择最优策略或运行 2022。具体定义见 [实施记录](docs/FailedBreakout_implementation.md)；完整候选、预测、折边界、成交及现金日收益写入独立 `runs/*_failed_breakout/`。
+
+首轮 41 品种执行与逐笔复核结果见 [失败突破研究记录](docs/FailedBreakoutResearch_20261004.md)。当前首版规则没有稳定正毛收益，Ridge 多数留现金，30 分钟完整模型仅 4 笔研究交易，不作为合格策略。

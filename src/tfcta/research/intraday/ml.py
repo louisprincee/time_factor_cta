@@ -14,11 +14,12 @@ from sklearn.preprocessing import StandardScaler
 
 from ... import config as C
 from .features import FEATURES
+from .failed_breakout import FEATURES as EVENT_FEATURES
 
 
 def walk_forward(samples, feature_names=FEATURES, model='ridge', min_train=1000,
-                 training_years=None, refit='annual', target='raw', scope='pooled'):
-    if not feature_names or set(feature_names)-set(FEATURES):
+                 training_years=None, refit='annual', target='raw', scope='pooled', label='gross_return'):
+    if not feature_names or set(feature_names)-set(FEATURES+EVENT_FEATURES):
         raise ValueError('只接受决策时已知的白名单特征')
     if len(set(feature_names)) != len(feature_names):
         raise ValueError('特征重复')
@@ -30,11 +31,13 @@ def walk_forward(samples, feature_names=FEATURES, model='ridge', min_train=1000,
         raise ValueError('无效重训周期或训练目标')
     if scope not in ('pooled','balanced','symbol'):
         raise ValueError('无效跨品种训练范围')
+    if label not in ('gross_return','oriented_return'):
+        raise ValueError('无效训练标签')
     if scope=='symbol':
         parts, records=[],[]
         ordered=samples.reset_index(drop=True).copy()
         for symbol,part in ordered.groupby('symbol',sort=False):
-            predicted,folds=walk_forward(part,feature_names,model,min_train,training_years,refit,target)
+            predicted,folds=walk_forward(part,feature_names,model,min_train,training_years,refit,target,label=label)
             predicted.index=part.index
             parts.append(predicted)
             records.append(folds.assign(symbol=symbol))
@@ -52,7 +55,7 @@ def walk_forward(samples, feature_names=FEATURES, model='ridge', min_train=1000,
     if (data.decision_time >= data.entry_time).any() or (data.entry_time > data.exit_time).any():
         raise ValueError('决策、入场、出场时间顺序错误')
     X = data[list(feature_names)].astype(float)
-    if np.isinf(X.to_numpy()).any() or not np.isfinite(data.gross_return).all():
+    if np.isinf(X.to_numpy()).any() or not np.isfinite(data[label]).all():
         raise ValueError('特征含无穷或训练标签无效')
     scale = pd.Series(1.,index=data.index)
     if target=='risk_scaled':
@@ -92,7 +95,7 @@ def walk_forward(samples, feature_names=FEATURES, model='ridge', min_train=1000,
             weights=data.loc[train,'symbol'].map(1/counts)
             weights=weights/weights.mean()
             kwargs={pipeline.steps[-1][0]+'__sample_weight':weights.to_numpy()}
-        pipeline.fit(X.loc[train], data.loc[train,'gross_return']/scale.loc[train], **kwargs)
+        pipeline.fit(X.loc[train], data.loc[train,label]/scale.loc[train], **kwargs)
         data.loc[test,'prediction'] = pipeline.predict(X.loc[test])*scale.loc[test]
     return data, pd.DataFrame(folds)
 
