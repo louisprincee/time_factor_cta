@@ -24,6 +24,7 @@ from ..data import sessions, shard_io
 from . import intraday
 
 TIMESTAMP_DIR_NAME = 'timestamp'
+REPORT_DIR_NAME = 'report'
 # v3: raw decimal-price durations, positive threshold, full lookback warm-up;
 # each individual file is versioned, so a partial rebuild cannot bless old files.
 CACHE_VERSION = 3
@@ -49,6 +50,10 @@ def combo_dir(lookback: int, pct: float, root: Path | None = None) -> Path:
 
 def timestamp_dir(root: Path | None = None) -> Path:
     return (root or C.FACTOR_DAILY_DIR) / TIMESTAMP_DIR_NAME
+
+
+def report_dir(root: Path | None = None) -> Path:
+    return (root or C.FACTOR_DAILY_DIR) / REPORT_DIR_NAME
 
 
 # --------------------------------------------------------------------------
@@ -85,16 +90,18 @@ def build_symbol(symbol: str,
         directories = [combo_dir(n,m,root) for n,m in combos]
         if timestamp:
             directories.append(timestamp_dir(root))
+        directories.append(report_dir(root))
         for directory in directories:
             path = shard_io.find_shard(directory,symbol)
             if path is not None:
                 check_version(path)
     need_ts = timestamp and (overwrite or shard_io.find_shard(timestamp_dir(root), symbol) is None)
+    need_report = overwrite or shard_io.find_shard(report_dir(root), symbol) is None
     todo = [(n, m) for n, m in combos
             if overwrite or shard_io.find_shard(combo_dir(n, m, root), symbol) is None]
-    if not need_ts and not todo:
+    if not need_ts and not todo and not need_report:
         return {'symbol': symbol, 'skipped': True, 'combos_written': 0,
-                'timestamp_written': False}
+                'timestamp_written': False, 'report_written': False}
 
     df = sessions.add_intraday_coords(shard_io.load_shard(symbol, columns=C.FACTOR_FIELDS))
     codes, days = intraday.day_codes_of(df)
@@ -120,6 +127,15 @@ def build_symbol(symbol: str,
             path.with_suffix(path.suffix + '.json').write_text(json.dumps({'version': CACHE_VERSION}))
             info['n_duration_cols'] = int(dur.shape[1])
     info['combos_written'] = len(todo)
+    info['report_written'] = False
+    if need_report:
+        # 与 DFP 使用同一组 (N, M)。多个组合时取调用方列出的第一组，避免同一目录被后一组覆盖。
+        n0, m0 = combos[0]
+        report = intraday.report_factors(df, lookback=n0, pct=m0)
+        path = shard_io.save_shard(report, report_dir(root), symbol, fmt)
+        path.with_suffix(path.suffix + '.json').write_text(json.dumps({'version': CACHE_VERSION}))
+        info['report_written'] = True
+        info['n_report_cols'] = int(report.shape[1])
     return info
 
 
@@ -157,3 +173,12 @@ def load_symbol(symbol: str, lookback: int, pct: float,
         # outer：两族交易日理论上一致，一旦不一致能看见 NaN 而不是被静默截断
         out = out.join(_read(q, TIMEPOINT_FACTORS), how='outer')
     return out.sort_index()
+
+
+def load_report(symbol: str, root: Path | None = None) -> pd.DataFrame:
+    """报告其余时序因子。与 (N, M) 无关的列和依赖参考阈值的列放在同一张表。"""
+    root = root or C.FACTOR_DAILY_DIR
+    path = shard_io.find_shard(report_dir(root), symbol)
+    if path is None:
+        raise FileNotFoundError(f"缺少 report/{symbol}，请先运行 build_factors.py")
+    return _read(path, list(intraday.REPORT_COLUMNS)).sort_index()

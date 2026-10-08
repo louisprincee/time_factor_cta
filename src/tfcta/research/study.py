@@ -10,8 +10,7 @@ import pandas as pd
 from .. import config as C
 from ..data import bars as B, universe as U, shard_io
 from ..factors import library, cache
-from .backtest import engine, costs
-from .analysis import stats
+from . import costs, engine, stats
 
 
 @dataclass
@@ -136,7 +135,8 @@ def provenance(specs,n_ticks):
     for p in [C.UNIVERSE_DIR/'universe_by_year.json',C.RESEARCH_OUT_DIR/'fee_history.csv',
               C.RESEARCH_OUT_DIR/'tick_size.csv']:
         source_hashes[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
-    for directory in (cache.timestamp_dir(),cache.combo_dir(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT),
+    for directory in (cache.timestamp_dir(),cache.report_dir(),
+                      cache.combo_dir(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT),
                       C.FACTOR_DAILY_DIR/'external'/'research'):
         for p in sorted(directory.glob('*.parquet')) + sorted(directory.glob('*.pkl')):
             source_hashes[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()

@@ -4,7 +4,7 @@ import pytest
 
 from tfcta import config as C
 from tfcta.factors import intraday, cache
-from tfcta.research.analysis import stats
+from tfcta.research import stats
 from tfcta.data import shard_io
 
 

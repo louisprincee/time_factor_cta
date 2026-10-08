@@ -77,16 +77,21 @@ def test_validation_reader_refuses_locked_source(shard_dir, monkeypatch):
         C.assert_validation_only(C.HOLDOUT_DIR / 'RB.pkl')
 
 
-def test_holdout_calendar_returns_only_strict_oos_dates(shard_dir, monkeypatch):
+def test_holdout_calendar_is_locked_before_any_file_read(shard_dir, monkeypatch):
     monkeypatch.setattr(C, 'HOLDOUT_DIR', shard_dir / 'holdout_locked')
     df = _frame(start='2022-12-28', days=8)
     shard_io.save_shard(df, C.HOLDOUT_DIR, 'RB', fmt='pickle')
 
-    dates = shard_io.load_holdout_trading_dates('RB')
+    monkeypatch.setattr(shard_io, 'read_frame', lambda *a, **k: pytest.fail('OOS file opened'))
+    with pytest.raises(C.HoldoutViolation, match='封存'):
+        shard_io.load_holdout_trading_dates('RB')
 
-    assert dates.min() >= pd.Timestamp(C.STRICT_OOS_START)
-    assert dates.is_monotonic_increasing
-    assert dates.name == 'trading_date'
+
+def test_elapsed_oos_window_does_not_unlock_research(shard_dir, monkeypatch):
+    monkeypatch.setattr(C, 'HOLDOUT_DIR', shard_dir / 'holdout_locked')
+    monkeypatch.setattr(shard_io, 'find_shard', lambda *a: pytest.fail('OOS file searched'))
+    with pytest.raises(C.HoldoutViolation, match='封存'):
+        shard_io.load_oos_shard('RB', end='2025-12-31', today='2026-10-05')
 
 
 def test_load_shard_rejects_holdout_dates_even_in_research_dir(shard_dir):

@@ -7,7 +7,7 @@ import math
 import pandas as pd
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from tfcta.research import study
-from tfcta.research.workflow import context
+from tfcta.research import context
 from tfcta import config as C
 
 

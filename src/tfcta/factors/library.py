@@ -8,7 +8,9 @@ from . import daily, cache, external
 
 Z_WINDOW, Z_MIN = 252, 120
 SIGNED_PRIORS = {**C.FACTOR_SIGNS, "time_spread":1., "tsmom":1.,
-                 "tsmom_20":1., "carry_ms":1., "cs_mom_ra_250":1., "neg_clv":1.}
+                 "tsmom_20":1., "tsmom_3":1., "ma_break_20":1.,
+                 "carry_ms":1., "cs_mom_ra_250":1., "cs_mom_3":1.,
+                 "vol_tail_20":1., "neg_clv":1.}
 TIME_FACTORS = frozenset([*C.FACTOR_SIGNS,"time_spread"])
 
 
@@ -91,6 +93,8 @@ def assemble(bars,time_raw,universe,external_partitions=("research",)):
     close, adjusted = bars["close"], bars["closew"]
     result.signed["tsmom"] = daily.tsmom(close,adjusted)
     result.signed["tsmom_20"] = daily.tsmom_sign(close,adjusted)
+    result.signed["tsmom_3"] = daily.tsmom_sign(close,adjusted,daily.REVIEW_MOM_WINDOW)
+    result.signed["ma_break_20"] = daily.ma_breakout(adjusted,daily.REVIEW_VOL_WINDOW)
     source = external.load_wide(list(close.columns),external_partitions,close.index)
     if "carry_main_sub_annualized" in source:
         result.signed["carry_ms"] = source["carry_main_sub_annualized"]
@@ -98,14 +102,32 @@ def assemble(bars,time_raw,universe,external_partitions=("research",)):
     mom = daily.momentum_components(close,adjusted,windows=(250,))["tsmom_ra_250"]
     result.signed["cs_mom_ra_250"] = daily.cross_sectional_rank(mom,universe)
     result.family["cs_mom_ra_250"] = "截面动量对照"
+    ret3 = daily.trailing_return(close,adjusted,daily.REVIEW_MOM_WINDOW)
+    result.signed["cs_mom_3"] = daily.cross_sectional_tails(ret3,universe,daily.REVIEW_TAIL)
+    vol20 = daily.realized_vol(close,adjusted,daily.REVIEW_VOL_WINDOW)
+    result.unsigned["vol_20"] = vol20
+    result.unsigned["vol_rise_20"] = daily.vol_change_sign(close,adjusted,daily.REVIEW_VOL_WINDOW)
+    result.signed["vol_tail_20"] = daily.cross_sectional_tails(vol20,universe,daily.REVIEW_TAIL)
     high, low = bars["highw"],bars["loww"]
     result.signed["neg_clv"] = -(2*adjusted-high-low)/(high-low).where(high>low)
-    result.family.update(tsmom="趋势对照",tsmom_20="趋势对照",neg_clv="价格位置对照")
+    result.family.update(
+        tsmom="趋势对照", tsmom_20="趋势对照", tsmom_3="时序动量",
+        ma_break_20="均价突破", cs_mom_3="截面动量", vol_tail_20="截面波动",
+        neg_clv="价格位置对照")
     result.vol = daily.daily_vol(close,adjusted)
     return result
 
 
 def load(symbols):
     panels = {s:cache.load_symbol(s,C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT) for s in symbols}
-    raw = {n:pd.DataFrame({s:f[n] for s,f in panels.items()}) for n in C.FACTOR_SIGNS}
+    for symbol, frame in panels.items():
+        extra = cache.load_report(symbol)
+        overlap = frame.index.intersection(extra.index)
+        panels[symbol] = frame.join(extra, how='outer')
+        if overlap.empty and len(frame) and len(extra):
+            raise ValueError(f"{symbol} 的持续期缓存与报告因子缓存没有共同交易日")
+    raw = {n:pd.DataFrame({s:f[n] for s,f in panels.items() if n in f.columns}) for n in C.FACTOR_SIGNS}
+    missing = [n for n, frame in raw.items() if frame.empty]
+    if missing:
+        raise KeyError(f"因子缓存缺少 {missing}")
     return assemble(B.load_daily_bars(symbols),raw,U.load_universe())

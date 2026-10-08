@@ -1,97 +1,29 @@
 # 商品期货时间因子研究
 
-研究价格停留时间、高低点出现的先后，能否为商品期货提供可交易的信息。保留日频因子对照与日内机器学习两条研究入口，共用分区数据、历史费用和统计口径。
+研究价格停留时间、高低点出现的先后，能否为商品期货提供可交易的信息。2016–2021 是研究期。2022 已经被用过，不能再当作从未看过的验证集。2023–2025 的分片已从本地样本外目录移除。
 
-2016–2021 用于研究；更早数据只做阈值、品种池等预热。日内 ML 从 2016 开始训练，以 2017–2021 为逐年向前研究测试折。2022 之后统一验证冻结候选，2023–2025 当前封存。**2022 曾被旧流程使用过**，删除结果不能使其恢复为从未观察的验证集，见 [研究记录](docs/ResearchNotes.md)。当前入口不会运行 2022 或读取真实样本外行情。
+研究读取接口对 2023–2025 保持硬锁，年份已经结束也不能解锁。最终测试需要另行建立冻结版本校验流程。正确性审查及修复记录见 [RepositoryAudit_20261005.md](docs/RepositoryAudit_20261005.md)。
 
-旧实验收益表、模型/候选缓存、审计成绩和运行目录已清空。行情、历史费用、品种池、正确的 v3 因子输入缓存及研报原文保留。当前示例是假设，不是筛选后的推荐策略。
-
-## 运行
+当前没有冻结策略。早盘规则的作图和比较在：
 
 ```bash
-python -m pip install -r requirements.txt
-python scripts/research_intraday_ml.py
+python scripts/plot_morning_rule.py
+python scripts/select_main_book.py
 ```
 
-已有分钟分片及年度品种池时，日内 ML 不依赖日频因子预计算。默认上午 09:30 完成决策，下一根分钟的原始开盘价成交，10:00 的原始收盘价平仓；一分钟记录的时间戳为该 bar 的结束标签。每个品种每个交易日最多一笔，允许多、空、现金。
-
-```bash
-# 线性组合；或固定参数的非线性梯度提升树
-python scripts/research_intraday_ml.py --model ridge --features all
-python scripts/research_intraday_ml.py --model hgb --features all
-
-# 时间信息 / 传统价格信息对照，改变事前指定的持仓长度
-python scripts/research_intraday_ml.py --features time --hold-minutes 15
-python scripts/research_intraday_ml.py --features price --hold-minutes 60
-
-# 小范围演练：会按缩小后的年度品种池重新分配等权现金份额
-python scripts/research_intraday_ml.py --symbols RB CU --min-train 100
-```
-
-`--decision-minutes` 是 09:00 后的分钟数，`--hold-minutes` 是从入场开始的墙钟分钟数，包含休市期间流逝的时间。入场或到期分钟缺失、落在休市时段时直接报错，不能用另一根未来 bar 偷换成交。决策 bar 不存在则留现金。当前是比较固定规则的基础研究框架，未替某种调仓频率或因子组合背书。
-
-输出到新的 `runs/*_intraday_ml/`：`definition.json` 记录参数、特征、年度池及代码/输入哈希；`folds.csv` 记录训练/测试数量及标签时间边界；`predictions.csv` 保留决策时刻、原始特征、标签、预测、费用、仓位；`daily.csv` 和 `performance.csv` 可复核组合表现。2016 为初始训练，不能作为前向测试成绩。
-
-日频对照入口：
+日频因子和对照回测：
 
 ```bash
 python scripts/build_factors.py
 python scripts/research.py --specs config/research_candidates.json
 ```
 
-该入口支持明确列举的因子权重、均值/同向/过滤组合及不同交易日调仓周期。全日因子收盘才知道，下一交易日开盘成交；多日调仓的全部相位分别输出，不自动选择最好相位。首次数据准备脚本为 `step1_shard_minutes.py`、`step2_universe.py`；完整时期原始单体含样本外，日常研究只读取已经隔离的研究分片。
+首次准备数据用 `scripts/step1_shard_minutes.py` 和 `scripts/step2_universe.py`。完整原始单体可能含更晚的年份，日常研究只读已经隔离的研究分片。
 
-## 因子与训练口径
+因子在收盘才知道的，下一交易日开盘成交。日内规则用历史开仓费和平今费，每边 1 个最小变动价位。这是连续名义仓位的研究模型，没有整数手、保证金、涨跌停和盘口冲击。
 
-持续期沿用研报思想：在同一交易日内寻找最近一次达到价格变化阈值的历史分钟，未找到时从开盘累计。阈值是严格过去 N 个交易日的全部日内相邻分钟绝对价差池的指定分位数，默认 250 日、55%，不含当日。阈值、持续期、均衡价均使用修复报价精度后的原始 close，避免加法复权分母和旧 float32 边界错误。
-
-日内 `duration_last`、`prefix_dfp_top3`、`prefix_high_time`、`prefix_low_time` **只使用决策前已发生的交易日分钟，包含此前夜盘**。DFP 比较持续期最长的三个分钟价格均值与决策时价格；极值时间按已经观察的分钟数归一化。它们是将报告时间信息改成可盘中使用的扩展，不是直接复制全日收盘因子。持续期相同时取最早分钟，阈值不足或为零时保留缺失。
-
-价格对照包括短期收益、区间、价格位置、已知分钟成交量加权收盘价偏离、实现波动及最近五分钟量占比。加权收盘价只是分钟代理，不能称为真实成交 VWAP。`--features time/price/all` 用于检验时间信息的增量。
-
-每年只用 2016 至上一年的样本拟合。标签必须在该测试折第一次决策之前结束；填补缺失和标准化只在训练集拟合。Ridge 固定 alpha=10；梯度提升树固定深度 3、100 次迭代、学习率 0.05。预测的是同一持有规则的毛收益。参数、模型及特征组必须作为研究假设事前指定，程序不会用测试收益翻方向、选模型或重新调参。
-
-品种池由前一年统计确定。预测绝对值超过**决策时估算的往返成本**才开仓，预测正负决定多空；每个品种占年度池固定 1/N 名义份额，无信号或缺费用时留现金，不提高其他品种权重。到预定分钟平仓，训练/测试不含跨日仓位。
-
-## 成本与边界
-
-日内按历史开仓费和**平今费**分别计费；比例手续费平仓部分按实际平仓价换算为入场名义本金的比例。日频多日持仓用隔夜平仓费，并在换月时计旧合约平仓和新合约开仓。现有历史费率含既定的经纪商加收假设。
-
-`--slippage-ticks` 的单位是**每次成交、每边**：默认 1，则一开一平合计 2；若你的假设是每笔往返合计 1tick，应设 `--slippage-ticks 0.5`。每边 2tick 不作为研究准入门槛。tick 为上一年报价的估计，缺历史不会从未来回填。实际平均滑点需用执行记录校准，分钟数据本身不能证明它的真实值。
-
-这是连续名义仓位、市场价与固定 tick 滑点的研究模型，没有整数手、保证金、涨跌停/排队成交和盘口冲击模拟。日频换月费率近似使用此前主力费率；tick 尚非完整的交易所历史生效日表。此处的正确性指因子、训练时间边界与明确成本假设一致，不代表保证实盘成交或收益。
-
-验证实现（测试使用合成数据）：
+四组预登记早盘候选的完整研究在 [RobustMorningResearch_20261005.md](docs/RobustMorningResearch_20261005.md)。本轮没有候选达到稳健性目标，没有冻结策略；复现入口为 `python scripts/research_robust_morning.py`。
 
 ```bash
 python -m pytest
 ```
-
-## 2026-10-04 因子组合与训练比较
-
-新研究结果见 [研究记录](docs/IntradayResearch_2016_2021_20261004.md)，配置见 `config/intraday_candidates_20261004.json`。已完成的 102 个不同配置尚未找到符合早段资格的稳定盈利方案；配置是复查对照，不是验证冻结名单。
-
-```bash
-# 重复首轮固定的 72 个比较方案（只使用研究期）
-python scripts/compare_intraday.py
-
-# 单独比较训练窗、重训频率和品种范围
-python scripts/research_intraday_ml.py --training-years 2 --refit quarterly
-python scripts/research_intraday_ml.py --target risk_scaled
-python scripts/research_intraday_ml.py --scope balanced
-python scripts/research_intraday_ml.py --scope symbol --min-train 200
-```
-
-`--feature-columns` 可显式指定因子子集，覆盖 `--features`。例如价格＋极值时点是七项 PRICE_FEATURES 加 `prefix_high_time prefix_low_time`。品种等权指训练损失的累计权重等权；逐品种训练样本不足时保留现金。HGB 使用固定次数迭代，关闭随机早停。所有选择均属于研究探索，不自动运行验证或严格样本外。
-
-## 稳定区间与失败突破反转
-
-```bash
-python scripts/research_failed_breakout.py
-```
-
-首版以有成交支持的稳定日盘区间为参考，突破后返回才产生反转候选；Ridge 预测沿反转方向的毛收益，修复空间与预测均需超过预计开仓＋平今费及每边 1tick。负预测只能留现金，不能翻方向。每天每品种只执行首个通过过滤的候选，年度池按固定 1/N 分配。
-
-过去 20 日校准尺度与同钟点成交量，10 分钟形成稳定区间；区间、突破状态在休市或缺 bar 处重置。30/60 分钟持仓按预先指定的有效交易分钟表计算，可跨日内休市、不可跨日，成交分钟缺失时报错。三个逐层增加信息的特征组配规则/Ridge、两个持仓期，共 12 个事先固定配置。全部用于研究，不自动选择最优策略或运行 2022。具体定义见 [实施记录](docs/FailedBreakout_implementation.md)；完整候选、预测、折边界、成交及现金日收益写入独立 `runs/*_failed_breakout/`。
-
-首轮 41 品种执行与逐笔复核结果见 [失败突破研究记录](docs/FailedBreakoutResearch_20261004.md)。当前首版规则没有稳定正毛收益，Ridge 多数留现金，30 分钟完整模型仅 4 笔研究交易，不作为合格策略。

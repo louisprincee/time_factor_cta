@@ -15,5 +15,5 @@ config/rqdata.env
 /data/
 /runs/
 
-# 研报原文
-docs/*.pdf
+# 研究记录与研报只留在本地，不进仓库
+/docs/

@@ -8,8 +8,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ... import config as C
-from ...factors.library import exante_z
+from .. import config as C
+from ..factors.library import exante_z
 
 
 def _pair(factor: pd.Series, fwd: pd.Series) -> pd.DataFrame:

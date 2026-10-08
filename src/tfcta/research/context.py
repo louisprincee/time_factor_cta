@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ... import config as C
+from .. import config as C
 
 
 def run_dir(step: str) -> Path:

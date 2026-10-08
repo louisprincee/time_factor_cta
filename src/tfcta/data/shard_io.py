@@ -136,10 +136,8 @@ def load_validation_shard(symbol: str,
 
 
 def load_holdout_trading_dates(symbol: str) -> pd.DatetimeIndex:
-    """只读锁定分片的日历列，供外部因子对齐。
-
-    不暴露价格、成交量或收益。返回的日期限于严格样本外，不得用来评估策略。
-    """
+    """保留日历读取接口；当前未冻结研究阶段连样本外日历也禁止读取。"""
+    C.assert_oos_research_locked()
     directory = C.HOLDOUT_DIR
     p = find_shard(directory, symbol)
     if p is None:
@@ -158,13 +156,14 @@ def load_oos_shard(symbol: str,
                    end,
                    columns: list[str] | None = None,
                    today=None) -> pd.DataFrame:
-    """读取已经结束的严格样本外窗口。窗口未结束时不打开文件。"""
+    """保留最终测试接口；日期已结束也不解除当前研究阶段的硬锁。"""
     end_day = C.to_date(end)
     if end_day < C.STRICT_OOS_START:
         raise C.HoldoutViolation(
             f"样本外窗口必须从 {C.STRICT_OOS_START} 起，收到的截止日期是 {end_day}"
         )
     C.assert_test_window_closed(end_day, today=today)
+    C.assert_oos_research_locked()
 
     directory = C.HOLDOUT_DIR
     p = find_shard(directory, symbol)

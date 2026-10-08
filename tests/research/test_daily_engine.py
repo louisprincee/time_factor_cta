@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta.research.backtest import engine as E
+from tfcta.research import engine as E
 from tfcta.factors import library as L
 
 

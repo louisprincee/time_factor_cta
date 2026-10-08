@@ -254,13 +254,108 @@ def timestamp_factors(df: pd.DataFrame) -> pd.DataFrame:
     return res
 
 
+# 报告里除 DFP 与全日高低点之外、并给出次日方向的因子。原始值，方向在 library 里乘。
+REPORT_COLUMNS = (
+    'pmt', 'vmt', 'vd_ratio',
+    'ts_volume', 'ts_turnover',
+    'ts_high_pm', 'ts_low_pm',
+    'spike_am', 'vol_pm',
+)
+
+
+def _window_clock(values: np.ndarray, mask: np.ndarray, mode: str) -> float:
+    """窗口内极值首次出现的位置，0 为窗口第一根，1 为最后一根。"""
+    pos = np.flatnonzero(mask)
+    if pos.size < 2:
+        return np.nan
+    chosen = values[pos].astype('float64', copy=False)
+    if not np.isfinite(chosen).any():
+        return np.nan
+    if mode == 'max':
+        ranked = np.where(np.isfinite(chosen), chosen, -np.inf)
+        rel = int(np.argmax(ranked))
+    else:
+        ranked = np.where(np.isfinite(chosen), chosen, np.inf)
+        rel = int(np.argmin(ranked))
+    return float(rel / (pos.size - 1))
+
+
+def _argmax_time(values: np.ndarray, gnorm: np.ndarray) -> float:
+    """有限值中最大值首次出现的全日归一化时点。"""
+    return _extreme_timepoint(values, gnorm, 'max')
+
+
+def report_factors(df: pd.DataFrame,
+                   lookback: int,
+                   pct: float,
+                   price_threshold: pd.Series | None = None,
+                   volume_threshold: pd.Series | None = None) -> pd.DataFrame:
+    """报告中其余时序因子。早盘/午后只用日盘 AM、PM，夜盘不混进这两个时段。
+
+    全日时点仍用含夜盘的 ``gamma_norm``。``vol_pm`` 仅在全日最大成交量落在
+    日盘时取 0/1；落在夜盘为缺失，因为报告的早晚对比没有夜盘这一档。
+    """
+    needed = ('trading_date', 'gamma_norm', 'session', 'close', 'volume',
+              'total_turnover', 'highw', 'loww')
+    for col in needed:
+        if col not in df.columns:
+            raise KeyError(f"缺少 {col} 列，请先调用 sessions.add_intraday_coords")
+    codes, days = day_codes_of(df)
+    price = raw_price_path(df)
+    volume = df['volume'].to_numpy(dtype='float64')
+    if price_threshold is None:
+        price_threshold = rolling_threshold(
+            intraday_abs_diff(price, codes), codes, lookback, pct)
+    if volume_threshold is None:
+        volume_threshold = rolling_threshold(
+            intraday_abs_diff(volume, codes), codes, lookback, pct)
+    price_dur = duration_series(price, codes, price_threshold)
+    volume_dur = duration_series(volume, codes, volume_threshold)
+    gnorm = df['gamma_norm'].to_numpy(dtype='float64')
+    session = df['session'].to_numpy()
+    high = df['highw'].to_numpy(dtype='float64')
+    low = df['loww'].to_numpy(dtype='float64')
+    turnover = df['total_turnover'].to_numpy(dtype='float64')
+    out = {name: np.full(len(days), np.nan) for name in REPORT_COLUMNS}
+    for k, (a, b) in enumerate(zip(*_day_spans(codes))):
+        am = session[a:b] == C.SESSION_AM
+        pm = session[a:b] == C.SESSION_PM
+        out['pmt'][k] = _argmax_time(price_dur[a:b], gnorm[a:b])
+        out['vmt'][k] = _argmax_time(volume_dur[a:b], gnorm[a:b])
+        am_dur = volume_dur[a:b][am]
+        pm_dur = volume_dur[a:b][pm]
+        am_dur = am_dur[np.isfinite(am_dur)]
+        pm_dur = pm_dur[np.isfinite(pm_dur)]
+        if am_dur.size and pm_dur.size and float(pm_dur.mean()) > 0:
+            out['vd_ratio'][k] = float(am_dur.mean() / pm_dur.mean())
+        out['ts_volume'][k] = _argmax_time(volume[a:b], gnorm[a:b])
+        out['ts_turnover'][k] = _argmax_time(turnover[a:b], gnorm[a:b])
+        out['ts_high_pm'][k] = _window_clock(high[a:b], pm, 'max')
+        out['ts_low_pm'][k] = _window_clock(low[a:b], pm, 'min')
+        day_high = high[a:b]
+        if np.isfinite(day_high).any():
+            peak = np.nanmax(day_high)
+            out['spike_am'][k] = float(np.sum(am & np.isfinite(day_high) & (day_high == peak)))
+        if np.isfinite(volume[a:b]).any():
+            where = int(np.argmax(np.where(np.isfinite(volume[a:b]), volume[a:b], -np.inf)))
+            label = session[a + where]
+            if label == C.SESSION_PM:
+                out['vol_pm'][k] = 1.0
+            elif label == C.SESSION_AM:
+                out['vol_pm'][k] = 0.0
+    res = pd.DataFrame(out, index=days)
+    res.index.name = 'trading_date'
+    return res
+
+
 def symbol_daily_factors(minute_df: pd.DataFrame,
                          lookback: int,
                          pct: float,
                          with_coords: bool = False) -> pd.DataFrame:
-    """单品种、单参数组合下的四个日频因子（原始值，未施加方向）。"""
+    """单品种、单参数组合下的日频时间因子（原始值，未施加方向）。"""
     df = minute_df if with_coords else sessions.add_intraday_coords(minute_df)
     out = pd.concat([duration_factors(df, lookback=lookback, pct=pct),
-                     timestamp_factors(df)], axis=1)
+                     timestamp_factors(df),
+                     report_factors(df, lookback=lookback, pct=pct)], axis=1)
     out.index.name = 'trading_date'
     return out

@@ -2,7 +2,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from ... import config as C
+from .. import config as C
 
 MULTIPLIER: dict[str, float] = {
     "A": 10, "B": 10, "C": 10, "CS": 10, "M": 10, "Y": 10, "P": 10, "JD": 10,

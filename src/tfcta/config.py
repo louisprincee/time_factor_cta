@@ -157,14 +157,28 @@ SIGN_T_MIN = 2.0
 # --------------------------------------------------------------------------
 # 因子方向。事前先验，不在 2016–2021 的分钟 IC 上重估或翻号。
 # +1 越大越看多，-1 越大越看空。
-# dfp：尾盘相对日内均衡价超跌则看多（设计文档 6.2）。
-# ts_high：高点越晚越看空；ts_low：低点越晚越看多（设计文档 6.5，与论文方向一致）。
+# dfp：尾盘相对日内均衡价超跌则看多。
+# ts_high：高点越晚越看空；ts_low：低点越晚越看多。
+# pmt / vmt：最长持续期越晚越看空。vd_ratio：早盘比午后更平稳则看多。
+# ts_volume / ts_turnover / vol_pm：放量越靠近午后越看多。
+# ts_high_pm：午后高点越晚越看空；ts_low_pm：午后低点越晚越看多。
+# spike_am：早盘触碰全日高点的次数越多越看多。
+# 方向是报告给出的次日含义，不在研究期收益上翻号。
 # --------------------------------------------------------------------------
 FACTOR_SIGNS = {
     'dfp_max': +1,
     'dfp_top3': +1,
+    'pmt': -1,
+    'vmt': -1,
+    'vd_ratio': +1,
     'ts_high': -1,
     'ts_low': +1,
+    'ts_volume': +1,
+    'ts_turnover': +1,
+    'ts_high_pm': -1,
+    'ts_low_pm': +1,
+    'spike_am': +1,
+    'vol_pm': +1,
 }
 DURATION_FACTORS = ['dfp_max', 'dfp_top3']
 TIMESTAMP_FACTORS = ['ts_high', 'ts_low']
@@ -176,6 +190,15 @@ PRIOR_FACTORS = list(FACTOR_SIGNS)
 # --------------------------------------------------------------------------
 class HoldoutViolation(RuntimeError):
     """研究代码试图接触 2022-01-01 及以后的数据。"""
+
+
+def assert_oos_research_locked() -> None:
+    """No date, environment variable or caller flag unlocks this research stage.
+
+    A future final-evaluation workflow must validate a frozen strategy first.
+    Calendar-only access is locked too; this project has no frozen strategy.
+    """
+    raise HoldoutViolation('2023–2025 严格样本外保持封存；尚未冻结策略，禁止读取')
 
 
 def assert_research_only(path) -> None:

@@ -15,7 +15,7 @@ from tfcta import config as C
 from tfcta.data import synth
 from tfcta.data import bars as returns
 from tfcta.factors import library
-from tfcta.research.analysis import stats as ic
+from tfcta.research import stats as ic
 
 
 
