@@ -1,0 +1,31 @@
+{
+  "status": "fresh_hypotheses_not_frozen",
+  "candidates": [
+    {
+      "id": "time_reference",
+      "factors": {
+        "dfp_top3": 1,
+        "ts_high": 1,
+        "ts_low": 1
+      },
+      "days": 1,
+      "hypothesis": "原报告时间信息的日频对照"
+    },
+    {
+      "id": "price_reference",
+      "factors": {
+        "neg_clv": 1
+      },
+      "days": 1,
+      "hypothesis": "检验时间信息相对价格位置是否有增量"
+    },
+    {
+      "id": "trend_reference",
+      "factors": {
+        "tsmom": 1
+      },
+      "days": 1,
+      "hypothesis": "传统趋势对照"
+    }
+  ]
+}
