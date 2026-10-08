@@ -1,1 +1,1 @@
-"""Time-factor research on commodity futures. See README.md."""
+"""商品期货时间因子研究。"""

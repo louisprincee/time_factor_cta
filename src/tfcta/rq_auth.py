@@ -1,4 +1,4 @@
-"""Load RiceQuant credentials from the environment or config/rqdata.env."""
+"""从环境变量或 config/rqdata.env 读取米筐凭证。"""
 from __future__ import annotations
 
 import os
@@ -10,11 +10,7 @@ ENV_PATH = C.CONFIG_DIR / "rqdata.env"
 
 
 def load_rqdata_env(path: Path | None = None) -> None:
-    """Fill unset RQData variables from a local env file.
-
-    Existing environment variables win, so a one-off export still overrides
-    the file. Blank values and comments are ignored.
-    """
+    """用本地 env 文件填补尚未设置的米筐变量。"""
     path = Path(path) if path is not None else ENV_PATH
     if not path.is_file():
         return
@@ -34,10 +30,7 @@ def load_rqdata_env(path: Path | None = None) -> None:
 
 
 def rqdata_credentials(path: Path | None = None) -> tuple[str, ...] | None:
-    """Return positional arguments for ``rqdatac.init``.
-
-    A license key is preferred. Username and password are the fallback.
-    """
+    """返回传给 rqdatac.init 的参数。"""
     load_rqdata_env(path)
     license_key = os.environ.get("RQDATAC_LICENSE", "").strip()
     if license_key:

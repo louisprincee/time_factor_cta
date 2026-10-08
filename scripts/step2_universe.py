@@ -1,5 +1,4 @@
-"""第 2 步：逐年品种池。只用到 2021，并标出成交额塌缩的品种供人工核对。
-"""
+"""第 2 步：逐年品种池。"""
 from __future__ import annotations
 
 import argparse

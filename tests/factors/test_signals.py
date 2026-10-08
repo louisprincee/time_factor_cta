@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta.data import bars as B
 from tfcta.factors import daily
 
 

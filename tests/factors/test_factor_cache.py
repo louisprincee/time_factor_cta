@@ -1,15 +1,4 @@
-"""日频因子缓存测试（设计文档第 10.2 节 + 第 11 节第 4 行验收）。
-
-这一层最值得钉住的三件事
-------------------------
-1. ``rolling_threshold_grid`` 与逐个调用 ``rolling_threshold`` **逐元素相同**。
-   它是纯优化（15 遍降到 3 遍），一旦结果有偏差，后面所有因子都会悄悄变，
-   而且不会有任何报错。
-2. 时间戳族**不随 (N, M) 变化**。如果哪天有人把它写进了按组合重算的分支，
-   数值不会变但会白算 15 遍；更糟的是若写错成依赖阈值，方向先验就失效了。
-3. 夜盘类因子在无夜盘品种上是 NaN 而**不是 0**，且验收口径要按有无夜盘分组，
-   否则一个正确结果会被判成不合格，诱导出 fillna(0) 这个致命修法。
-"""
+"""日频因子缓存测试（设计文档第 10.2 节 + 第 11 节第 4 行验收）。"""
 
 from __future__ import annotations
 
@@ -91,11 +80,7 @@ def test_build_symbol_is_resumable():
 
 
 def test_timestamp_factors_identical_across_combos():
-    """时间戳族不依赖 (N, M)：两个组合读出来的时间戳列必须逐元素相同。
-
-    时间戳列不用前缀猜（cnt_high_am / is_high_am 没有 ts_ 前缀），而是用
-    "含时间戳 - 不含时间戳" 的差集算出来，这样新增因子也不会漏检。
-    """
+    """时间戳族不依赖 (N, M)：两个组合读出来的时间戳列必须逐元素相同。"""
     root, _, combos = _tiny_cache()
     _build(root, combos)
     a = FC.load_symbol('XX', *combos[0], root=root / 'factors')
@@ -119,7 +104,7 @@ def test_duration_factors_differ_across_combos():
 def test_injected_thresholds_match_recomputed():
     """build_symbol 走的是注入阈值的快路径，结果必须与 duration_factors 自算一致。"""
     from tfcta.data import sessions
-    from tfcta.factors.intraday import duration_factors
+    from tfcta.factors import duration_factors
     root, df, combos = _tiny_cache()
     _build(root, combos)
     n, m = combos[0]

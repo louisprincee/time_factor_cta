@@ -14,3 +14,4 @@ config/rqdata.env
 # 原始分钟数据、分片和研究产物体积很大，不进仓库
 /data/
 /runs/
+.DS_Store

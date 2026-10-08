@@ -24,7 +24,7 @@ def test_report_day_matches_hand_calculation():
         (day1, [100, 100, 100, 102], [5, 5, 5, 20], [10, 12, 11, 12], [9, 8, 7, 6],
          [1, 2, 9, 3], ['AM', 'AM', 'PM', 'PM']),
     ):
-        start = pd.Timestamp(day) + pd.Timedelta(hours=9)
+        start = pd.Timestamp(day) + pd.Timedelta(9, unit='h')
         idx = pd.date_range(start, periods=4, freq='1min')
         rows.append(pd.DataFrame({
             'close': close, 'volume': volume, 'total_turnover': turnover,
@@ -52,7 +52,7 @@ def test_night_volume_does_not_enter_the_session_ratio_or_afternoon_flag():
         (day0, [10, 20, 10, 20, 10], ['NIGHT', 'AM', 'AM', 'PM', 'PM']),
         (day1, [100, 1, 1, 1, 1], ['NIGHT', 'AM', 'AM', 'PM', 'PM']),
     ):
-        start = pd.Timestamp(day) + pd.Timedelta(hours=21)
+        start = pd.Timestamp(day) + pd.Timedelta(21, unit='h')
         idx = pd.date_range(start, periods=5, freq='1h')
         frames.append(pd.DataFrame({
             'close': [100, 101, 100, 101, 100],

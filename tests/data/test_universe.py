@@ -1,9 +1,4 @@
-"""品种池测试（设计文档第 4 节）。
-
-最重要的一组是"时点有效性"：第 y 年的池子绝不能用第 y 年及以后的数据判定。
-这类前视偏差不会报错、不会影响任何单测之外的断言，只会让最终绩效虚高，
-所以必须用构造数据把它钉死。
-"""
+"""品种池测试（设计文档第 4 节）。"""
 
 from __future__ import annotations
 
@@ -63,8 +58,7 @@ PASS = [('RB', 2016, 100.0, 1.0, 240)]
 
 
 def test_daily_stats_all_nan_day_is_nan_not_zero():
-    """全 NaN 的一天必须得 NaN。若给 0，"没有数据"会伪装成"零成交"，
-    进而把一个尚未上市的品种误判为僵尸品种。"""
+    """全 NaN 的一天必须得 NaN。"""
     days = pd.bdate_range('2016-03-01', periods=3)
     df = _minute_df(days, turnover=2.0, nan_days=[days[1]])
     d = U.daily_stats(df)
@@ -74,8 +68,7 @@ def test_daily_stats_all_nan_day_is_nan_not_zero():
 
 
 def test_market_calendar_is_union_not_per_symbol_max():
-    """分母必须是全市场交易日的并集。用品种自己的天数当分母，
-    一个只交易了 100 天的品种会显示为 100% 完整。"""
+    """分母必须是全市场交易日的并集。"""
     a = U.daily_stats(_minute_df(pd.bdate_range('2016-01-04', periods=10)))
     b = U.daily_stats(_minute_df(pd.bdate_range('2016-01-11', periods=10)))
     cal = U.market_calendar({'A': a, 'B': b})
@@ -83,8 +76,7 @@ def test_market_calendar_is_union_not_per_symbol_max():
 
 
 def test_screen_never_uses_target_year_data():
-    """目标年数据再漂亮也不能用：2017 年爆量、2016 年不达标的品种
-    在 2017 年的池子里必须缺席。这就是前视偏差的样子。"""
+    """目标年数据再漂亮也不能用：2017 年爆量、2016 年不达标的品种 在 2017 年的池子里必须缺席。"""
     stats = _stats([('X', 2016, 1.0, 1.0, 240),      # 前一年不达标
                     ('X', 2017, 999.0, 1.0, 240)])   # 当年爆量
     d = U.screen_year(stats, 2017)
@@ -94,10 +86,7 @@ def test_screen_never_uses_target_year_data():
 
 
 def test_screen_uses_previous_year_even_if_symbol_later_collapses():
-    """反向的另一半：前一年活跃、当年塌缩的品种，当年**应当**在池子里。
-
-    事后我们知道它塌了，但在年初做决策时不知道。把它剔除同样是用未来信息。
-    """
+    """反向的另一半：前一年活跃、当年塌缩的品种，当年应当在池子里。"""
     stats = _stats([('ZC', 2017, 500.0, 1.0, 240),
                     ('ZC', 2018, 0.1, 1.0, 240)])
     assert bool(U.screen_year(stats, 2018).loc['ZC', 'passed'])
@@ -135,8 +124,7 @@ def test_load_universe_roundtrip_restores_int_years():
 
 
 def test_financial_symbols_are_excluded_by_construction():
-    """金融期货的剔除发生在 COMMODITY_SYMBOLS 层，不依赖流动性门槛——
-    T/TF 的成交额很高，靠门槛是筛不掉的。"""
+    """金融期货的剔除发生在 COMMODITY_SYMBOLS 层，不依赖流动性门槛—— T/TF 的成交额很高，靠门槛是筛不掉的。"""
     for s in C.FINANCIAL_SYMBOLS:
         assert s not in C.COMMODITY_SYMBOLS
     assert len(C.COMMODITY_SYMBOLS) == len(C.ALL_SYMBOLS) - len(C.FINANCIAL_SYMBOLS)

@@ -1,4 +1,4 @@
-"""Download futures curve, carry, positioning, warehouse and spot research data."""
+"""下载期限结构、持仓、仓单和现货等研究数据。"""
 from __future__ import annotations
 
 import argparse
@@ -39,7 +39,7 @@ def parse_day(value: str) -> date:
 
 
 def split_period(start: date, end: date) -> list[tuple[str, date, date]]:
-    """Split a requested interval into the repository's isolated time partitions."""
+    """把请求的时间段切到仓库里互相隔离的时间分区。"""
     result = []
     for name, partition_start, partition_end in PARTITIONS:
         left = max(start, partition_start)
@@ -51,7 +51,7 @@ def split_period(start: date, end: date) -> list[tuple[str, date, date]]:
 
 def missing_ranges(start: date, end: date,
                    covered: list[list[str]]) -> list[tuple[date, date]]:
-    """Return inclusive date ranges not present in previously fetched coverage."""
+    """返回已下载覆盖范围里还没有的日期区间。"""
     if start > end:
         return []
     intervals = sorted((parse_day(left), parse_day(right)) for left, right in covered)
@@ -95,7 +95,7 @@ def merge_frames(existing: pd.DataFrame | None,
 
 
 def remove_unavailable_cache(root: Path) -> int:
-    """Remove cache records for RQData services confirmed unavailable on this account."""
+    """删掉这个账号确认无法使用的米筐服务缓存。"""
     manifest_path = Path(root) / "coverage.json"
     if not manifest_path.exists():
         return 0

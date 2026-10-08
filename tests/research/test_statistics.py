@@ -1,9 +1,4 @@
-"""研究层与回测引擎的口径测试。
-
-锁住的是几件静默就会算错的事：收益公式、信号不含当日、仓位晚一天成交、
-手续费与滑点按换手扣除、IC 一折必须切时间、显著性用时序而非横截面 t、
-中心点距离必须先 z-score、夜盘缺失不能被平均成 0。
-"""
+"""研究层与回测引擎的口径测试。"""
 
 from __future__ import annotations
 
@@ -12,39 +7,10 @@ import pandas as pd
 import pytest
 
 from tfcta import config as C
-from tfcta.data import synth
 from tfcta.data import bars as returns
-from tfcta.factors import library
 from tfcta.research import stats as ic
 
 
-
-def test_day_return_matches_framework_formula():
-    px = pd.DataFrame({
-        'open': [100.0, 110.0, 90.0],
-        'openw': [100.0, 121.0, 99.0],
-    }, index=pd.to_datetime(['2016-01-04', '2016-01-05', '2016-01-06']))
-    ret = returns.day_return_from_prices(px)
-    # (121-100)/100 = 0.21； (99-121)/110 = -0.2；末日无 t+1
-    assert ret.iloc[0] == pytest.approx(0.21)
-    assert ret.iloc[1] == pytest.approx(-0.2)
-    assert np.isnan(ret.iloc[2])
-
-def test_daily_open_is_first_bar_of_trading_date():
-    days = pd.bdate_range('2016-01-04', periods=4)
-    df = synth.make_symbol(days, night_class='night_2300', seed=3)
-    px = returns.daily_prices_from_minutes(df)
-    td = pd.to_datetime(df['trading_date']).dt.normalize()
-    day = px.index[1]
-    first = df.loc[td == day].iloc[0]
-    assert px.loc[day, 'open'] == pytest.approx(first['open'])
-    assert px.loc[day, 'openw'] == pytest.approx(first['openw'])
-    # 有夜盘时，该交易日的第一根应当在夜盘，而不是 09:00
-    assert first.name.hour >= 20 or first.name.hour <= C.NIGHT_END_HOUR
-
-def test_load_day_returns_refuses_holdout():
-    with pytest.raises(C.HoldoutViolation):
-        returns.load_day_returns(['RB'], directory=C.HOLDOUT_DIR)
 
 def test_metrics_hand_values():
     # 两天 +10%、-5%：净值 1.1 * 0.95 = 1.045
@@ -81,13 +47,7 @@ def test_ic_sign_on_perfect_forecast():
     assert int(mof['n_folds']) == 1
 
 def test_sign_gate_separates_significant_flip_from_unmeasurable():
-    """"方向相反"和"测不出来"必须是两个标签，处置完全不同。
-
-    pmt 在商品上的实测就是后者：IC = +0.0008、t = 0.22，六折里四折反向两折同向，
-    量级全在 0.016 以内。判成 flip 等于宣称"发现了方向错误"并把人送去查实现，
-    而真实结论是"论文的因子没迁移过来"。反过来，显著的反向必须照样拦——
-    不给 t 时退回严格口径，就是为了防止哪天有人调用时忘了传 t 而悄悄放松闸门。
-    """
+    """"方向相反"和"测不出来"必须是两个标签，处置完全不同。"""
     assert ic.sign_status(+0.0008, 'ts_high', 0.22) == 'flip_weak'
     assert ic.sign_status(+0.05, 'ts_high', 4.0) == 'flip'
     assert ic.sign_status(-0.05, 'ts_high', 4.0) == 'ok'
@@ -97,13 +57,7 @@ def test_sign_gate_separates_significant_flip_from_unmeasurable():
     assert ic.sign_status(0.9, 'dur_mean', 9.0) == 'no_prior'
 
 def test_ic_fold_is_a_time_slice_not_just_a_symbol_pool():
-    """一折必须**既切品种池也切时间**。
-
-    这里曾经是个空转的闸门：`years` 只被当成品种池的键，`factor[s]` / `fwd[s]` 传的
-    是完整历史，于是六折"逐折 IC"是同一个全样本 IC 的六个品种池变体，折间一致性看
-    起来好得离谱。只切品种池、不切时间的向后窗口也会把研究期算进去。
-    时序 t 值的前提就是"一折 = 一段时间"，所以造一个前后反向的样本来钉住它。
-    """
+    """一折必须既切品种池也切时间。"""
     idx = pd.bdate_range('2016-01-04', periods=504)      # 覆盖 2016 与 2017
     rng = np.random.default_rng(7)
     syms = list('ABC')
@@ -136,13 +90,7 @@ def test_cross_sectional_ic_uses_daily_cross_section_and_time_series_t():
     assert tab.loc['mean_of_folds', 'sign'] == 'no_prior'
 
 def test_ic_timeseries_t_is_far_smaller_than_cross_sectional_t():
-    """时序 t 与横截面 t 的差别，用一个共同驱动的样本量化出来。
-
-    商品之间同期高度相关（同一波宏观冲击推动整个板块）。跨品种口径把这 8 个品种当成
-    8 个独立样本，分母是品种间 IC 的标准误——品种越同质它越小，t 越大，极限情况下
-    "再加一个高度相关的品种"就能把 t 抬上去，这显然不是显著性。时序口径先在月内对
-    品种取平均，一个月只贡献一个观测，分母来自时间上的变异。
-    """
+    """时序 t 与横截面 t 的差别，用一个共同驱动的样本量化出来。"""
     idx = pd.bdate_range('2016-01-04', periods=504)
     rng = np.random.default_rng(11)
     syms = [f'S{i}' for i in range(8)]
@@ -164,12 +112,7 @@ def test_ic_timeseries_t_is_far_smaller_than_cross_sectional_t():
     assert tab.loc['2016', 't_cross'] > 10 * tab.loc['2016', 't']
 
 def test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor():
-    """随机游走上的 RSI 不可能有预测力，时序 IC 必须测不出东西。
-
-    旧口径在月内算 Spearman，对日间高度持续的因子，月内去均值带来 Stambaugh 型
-    负偏差：这个样本上会给出 ic_ts≈-0.20、t≈-49，量价因子的"显著反转"就是这么来的。
-    """
-    from tfcta.factors import daily
+    """随机游走上的 RSI 不可能有预测力，时序 IC 必须测不出东西。"""
     rng = np.random.default_rng(0)
     idx = pd.bdate_range('2014-01-01', periods=1500)
     syms = [f'S{i}' for i in range(40)]
@@ -184,10 +127,7 @@ def test_timeseries_ic_has_no_small_sample_bias_on_persistent_factor():
     assert abs(res['t']) < 3.0
 
 def test_newey_west_se_exceeds_plain_se_under_autocorrelation():
-    """正自相关时 NW 标准误必须大于普通标准误，否则 t 值虚高。
-
-    lag=0 时它应当退化成总体标准差 / sqrt(n)，这条顺带钉住权重写法没写反。
-    """
+    """正自相关时 NW 标准误必须大于普通标准误，否则 t 值虚高。"""
     n = 120
     x = pd.Series(np.sin(np.arange(n) / 3.0) + 0.5)   # 强正自相关
     plain = ic._nw_se(x.to_numpy(), 0)

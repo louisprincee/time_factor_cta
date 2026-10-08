@@ -1,0 +1,58 @@
+{
+  "name": "开盘过度反应回归（opening overreaction reversal）",
+  "frozen_at": "2026-10-08",
+  "note": "规则与参数只依据 2016–2021 开发期确定；2022 此前已被旧流程看过，这里只跑一次、只作压力诊断。2023–2025 不读。 第二轮（跳空代隔夜、波动阈值）研究期未达标，已从代码中删除：2026-10-08 研究期：跳空代隔夜 夏普 1.24、下限 0.39（566 笔），波动阈值 1.06、0.19（469 笔），合并 0.83、0.01（601 笔），主策略 1.52、0.64（403 笔）。无候选满足 better_if，保留主策略；2022 未跑第二轮，2023–2024 未读取。",
+  "timing": {
+    "decision": "09:16 收盘",
+    "entry": "09:17 开盘",
+    "exit": "11:30 收盘"
+  },
+  "rule": {
+    "dev_threshold": 0.002,
+    "dev_window": 15,
+    "clock": 0.6667,
+    "relvol_max": 1.5,
+    "relvol_window": 20,
+    "max_est_cost": 0.0006
+  },
+  "sizing": {
+    "risk_per_trade": 0.01,
+    "sigma_window": 60,
+    "max_weight": 2.0,
+    "max_sector_gross": 3.0,
+    "max_gross": 4.0,
+    "note": "风险预算按开发期年化波动约 9% 标定（2026-10-08，跑 2022 之前）；单品种 2 倍名义、板块 3 倍、全组合 4 倍，日内持仓保证金占用不超过约一半"
+  },
+  "candidates": {
+    "原规则": {
+      "clock": "high",
+      "night_aligned": false,
+      "volume": false
+    },
+    "原规则+量能": {
+      "clock": "high",
+      "night_aligned": false,
+      "volume": true
+    },
+    "原规则+隔夜同向": {
+      "clock": "high",
+      "night_aligned": true,
+      "volume": false
+    },
+    "主策略": {
+      "clock": "extreme",
+      "night_aligned": true,
+      "volume": true
+    },
+    "主策略去时钟": {
+      "clock": "none",
+      "night_aligned": true,
+      "volume": true
+    }
+  },
+  "main": "主策略",
+  "breaker": {
+    "halt_drawdown": 0.08,
+    "note": "事后加入（2026-10-08，看过 2022 之后）：账面净值（不论是否停手都照算）距高点回撤超过 8%（约开发期一年波动）即停手，回到 8% 以内恢复。只控风险、不择时；它在 2022 的表现不能算检验。2026-10-08 用户确认熔断为策略的必要组成部分。"
+  }
+}

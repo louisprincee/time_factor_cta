@@ -1,8 +1,4 @@
-"""持续期计算测试。
-
-核心是拿暴力实现当参照系。持续期的定义有一个极易做错的分支（当日无满足阈值的
-历史观测时从开盘累计），上一轮小时频实现就错在这里，所以这里用随机化交叉验证。
-"""
+"""持续期计算测试。"""
 
 from __future__ import annotations
 
@@ -47,7 +43,7 @@ def test_no_qualifying_history_accumulates_from_open():
 
 
 def test_picks_most_recent_not_earliest():
-    """必须取最近的满足者。若错取最早者，这个用例会给出 3 而不是 1。"""
+    """必须取最近的满足者。"""
     v = np.array([100.0, 110.0, 120.0, 130.0])
     got = D.duration_one_day(v, threshold=5.0)
     assert got[3] == 1.0
@@ -78,7 +74,7 @@ def test_abs_diff_no_cross_day():
 
 
 def test_rolling_threshold_excludes_current_day():
-    """当日样本不得进入自身阈值，否则前视。第 0 日无历史，必须为 NaN。"""
+    """当日样本不得进入自身阈值，否则前视。"""
     rng = np.random.default_rng(1)
     days = np.repeat(np.arange(6), 20)
     v = 100 + np.cumsum(rng.normal(0, 1, len(days)))
@@ -90,13 +86,7 @@ def test_rolling_threshold_excludes_current_day():
 
 
 def test_rolling_threshold_pools_not_averages():
-    """必须把 N 日样本汇总成一个池子再取分位数，而非"每日分位数再平均"。
-
-    构造两日**样本量悬殊**的分布：样本多的一日应主导池化分位数。若实现错成按日
-    取分位数再平均，结果会是 50.5 而不是 1.0。
-    （注意样本量必须不等——各 99 个时池化中位数正好插值到 50.5，与均值巧合相同，
-    区分不出两种实现。）
-    """
+    """必须把 N 日样本汇总成一个池子再取分位数，而非"每日分位数再平均"。"""
     days = np.r_[np.zeros(60), np.ones(60), np.full(10, 2), np.full(5, 3)]
     d = np.concatenate([
         np.full(60, np.nan),                       # 第 0 日：无历史，不参与

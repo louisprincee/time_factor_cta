@@ -1,4 +1,4 @@
-"""Build research-only time factors and carry control. Never opens 2022/OOS."""
+"""只在研究期构建时间因子和期限结构对照。"""
 import argparse
 from pathlib import Path
 import sys

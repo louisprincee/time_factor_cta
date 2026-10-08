@@ -1,14 +1,4 @@
-"""第 1 步：分钟单体 pickle 按品种、按 2022-01-01 切成 parquet，落盘后验收。本脚本是唯一允许写 holdout 的地方。
-
-写 ``validation_2022/`` 分片有两种模式，验证分片已存在时都不覆盖：
-
-- ``--validation-from-monolith``：从切研究期用的同一个单体文件里按 ``trading_date`` 取 2022 年。
-  和切 holdout 一样只在本脚本里过滤，2023 年及以后的行不落盘、不参与任何计算。
-  同一份文件保证复权基准与研究期一致。
-- ``--validation-source <文件>``：独立的 2022-only 源文件，出现 2022 年以外的日期就整份拒收，不做过滤。
-
-    python scripts/step1_shard_minutes.py --validation-from-monolith
-"""
+"""第 1 步：分钟单体 pickle 按品种、按 2022-01-01 切成 parquet，落盘后验收。"""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +9,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -53,7 +42,7 @@ def extract_roll_dates(sub: pd.DataFrame) -> pd.DataFrame | None:
 
 
 def clean_symbol(sub: pd.DataFrame) -> tuple[pd.DataFrame | None, list[str], list[str]]:
-    """单品种只留分片字段，规整 trading_date，丢掉全空行。返回 (表, 缺的因子字段, 缺的价格字段)。"""
+    """单品种只留分片字段，规整 trading_date，丢掉全空行。"""
     # 因子字段是计算所必需的；开盘价是收益口径所必需的。后者缺失仍允许分片
     # （因子可以先算），但会在 info 里标明，第 4 步读到时会直接报错而不是用收盘价顶替。
     wanted = list(dict.fromkeys([*C.FACTOR_FIELDS, *C.PRICE_FIELDS]))
@@ -348,11 +337,7 @@ def only_2022(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
-    """写验证分片：检查全部通过才落盘，落盘后按验证 loader 读回验收。
-
-    ``slice_2022`` 为真时源文件是含全样本的单体文件，逐品种按 trading_date 取 2022；
-    否则源文件必须本身只含 2022，整份检查、不做过滤。
-    """
+    """写验证分片：检查全部通过才落盘，落盘后按验证 loader 读回验收。"""
     if not src.exists():
         print(f"找不到 2022 源文件: {src}")
         return 2

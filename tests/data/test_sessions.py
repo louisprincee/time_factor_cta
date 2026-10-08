@@ -1,7 +1,4 @@
-"""时段划分与日内坐标测试。
-
-这些测试守护的是整个项目最底层的假设。若其中任何一条失败，所有因子结果都无意义。
-"""
+"""时段划分与日内坐标测试。"""
 
 from __future__ import annotations
 
@@ -26,11 +23,7 @@ def sym(request):
 
 
 def _full_days(df: pd.DataFrame) -> pd.DatetimeIndex:
-    """去掉样本首个交易日。
-
-    首日的夜盘发生在样本区间开始之前，数据里必然缺失——真实分片的第一天同样如此。
-    结构同质性的断言只对其余交易日成立。
-    """
+    """去掉样本首个交易日。"""
     days = pd.DatetimeIndex(sorted(df['trading_date'].unique()))
     return days[1:]
 
@@ -44,14 +37,7 @@ def test_bar_grid_matches_expected(sym):
 
 
 def test_night_belongs_to_next_trading_date(sym):
-    """夜盘 bar 的墙钟时刻必须早于其 trading_date 的日盘——本项目最关键的一条语义。
-
-    若这条在真实数据上不成立，全部因子的"日"划分都是错的。
-
-    注意不要断言"00:00 之后的夜盘 bar 墙钟日期 == trading_date"。夜盘挂在**前一交易日**
-    的晚上，所以周一 trading_date 的凌晨段落在周六，与 trading_date 相差 2 天。
-    普遍成立的不变量只有两条：墙钟不晚于 trading_date，且严格早于当日日盘开盘。
-    """
+    """夜盘 bar 的墙钟时刻必须早于其 trading_date 的日盘——本项目最关键的一条语义。"""
     cls, df = sym
     night = df[df['session'] == C.SESSION_NIGHT]
     if cls == 'no_night':

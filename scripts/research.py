@@ -1,4 +1,4 @@
-"""Run one predeclared slate on 2016-2021; no automatic selection or validation."""
+"""在 2016–2021 上跑预先写好的组合，不自动挑选，也不做验证。"""
 import argparse
 import json
 from pathlib import Path
@@ -19,7 +19,7 @@ def main():
     args = parser.parse_args()
     if not math.isfinite(args.slippage_ticks) or args.slippage_ticks<0:
         parser.error('slippage must be non-negative')
-    specs = json.loads(Path(args.specs).read_text())['candidates']
+    specs = json.loads(Path(args.specs).read_text(encoding='utf-8'))['candidates']
     study.validate_specs(specs)
     run = context.run_dir('research_v3')
     context.dump_json(run/'definition.json',study.provenance(specs,args.slippage_ticks))

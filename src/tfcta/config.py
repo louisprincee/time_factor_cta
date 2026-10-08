@@ -1,4 +1,4 @@
-"""Paths, time partitions, data conventions and research priors. See README.md."""
+"""路径、时间分区和数据约定。"""
 from __future__ import annotations
 
 import datetime as _dt
@@ -49,9 +49,7 @@ RESEARCH_END = _dt.date(2021, 12, 31)
 STUDY_START = _dt.date(2016, 1, 1)        # 第一个计入绩效的信号日
 
 # 日频因子研究逐年诊断；ML 的训练/测试折由 intraday.ml 明确指定。
-WF_TEST_YEARS_LIST = [2016, 2017, 2018, 2019, 2020, 2021]
 # 2016/2017 两年的滚动阈值与标准化窗口落在夜盘未全面铺开的 2014-2016，报告中须标注
-WF_FOLDS_WITH_SPARSE_NIGHT = [2016, 2017]
 
 # --------------------------------------------------------------------------
 # 品种
@@ -131,9 +129,6 @@ EXPECTED_BARS_PER_DAY = {'no_night': 225, 'night_2300': 345, 'night_0100': 465, 
 THRESHOLD_LOOKBACKS = [250]
 THRESHOLD_PCTS = [55.0]
 FP_TOP_NS = [1, 3]
-SLIPPAGE_TICKS = 1.0
-VOL_TARGET = 0.20
-VOL_TARGET_CAP = 1.0
 
 IC_REFERENCE_LOOKBACK = 250
 IC_REFERENCE_PCT = 55.0
@@ -192,17 +187,86 @@ class HoldoutViolation(RuntimeError):
     """研究代码试图接触 2022-01-01 及以后的数据。"""
 
 
-def assert_oos_research_locked() -> None:
-    """No date, environment variable or caller flag unlocks this research stage.
+OOS_LEDGER = DATA_ROOT / "oos" / "ledger.jsonl"
+_final_evaluation: dict | None = None   # 只由 final_evaluation() 在 with 块内设置
 
-    A future final-evaluation workflow must validate a frozen strategy first.
-    Calendar-only access is locked too; this project has no frozen strategy.
+
+def assert_oos_research_locked(end=None) -> None:
+    """研究代码不能靠日期、环境变量或调用参数打开样本外；只有 final_evaluation() 的 with 块内放行，
+    且读取不得越过登记的截止日。"""
+    if _final_evaluation is None:
+        raise HoldoutViolation('2023–2025 严格样本外保持封存；尚未冻结策略，禁止读取')
+    if end is not None and to_date(end) > _final_evaluation["oos_end"]:
+        raise HoldoutViolation(f"样本外读取越过登记的截止日 {_final_evaluation['oos_end']}: {to_date(end)}")
+
+
+def final_evaluation_end() -> _dt.date:
+    assert_oos_research_locked()
+    return _final_evaluation["oos_end"]
+
+
+def _sha256(path) -> str:
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def append_ledger(entry: dict, ledger=None) -> None:
+    import json
+    path = Path(ledger or OOS_LEDGER)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+
+def read_ledger(ledger=None) -> list[dict]:
+    import json
+    path = Path(ledger or OOS_LEDGER)
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+class final_evaluation:
+    """唯一能打开 2023 年以后数据的入口。
+
+    条件：策略配置已写明 chosen 与 frozen_at；测试窗口已经结束；窗口不超过已分片的 DEFAULT_OOS_END。
+    进入时先把配置文件哈希、窗口和脚本写进台账，再放行读取；离开 with 块立即重新上锁。
     """
-    raise HoldoutViolation('2023–2025 严格样本外保持封存；尚未冻结策略，禁止读取')
+
+    def __init__(self, spec: dict, files, oos_end, strategy: str, note: str = "",
+                 today=None, ledger=None):
+        self.spec, self.files, self.strategy, self.note = spec, list(files), strategy, note
+        self.oos_end, self.today, self.ledger = to_date(oos_end), today, ledger
+
+    def __enter__(self) -> dict:
+        global _final_evaluation
+        if _final_evaluation is not None:
+            raise HoldoutViolation("已有一个打开的最终评估")
+        if not self.spec.get("chosen") or not self.spec.get("frozen_at"):
+            raise HoldoutViolation("配置没有冻结（缺 chosen 或 frozen_at），不能打开样本外")
+        if self.oos_end < STRICT_OOS_START or self.oos_end > DEFAULT_OOS_END:
+            raise HoldoutViolation(
+                f"样本外截止日须在 {STRICT_OOS_START}..{DEFAULT_OOS_END}（已分片范围），收到 {self.oos_end}")
+        assert_test_window_closed(self.oos_end, today=self.today)
+        hashes = {Path(p).name: _sha256(p) for p in self.files}
+        entry = {
+            "kind": "final_evaluation", "status": "opened",
+            "run_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "strategy": self.strategy, "chosen": self.spec["chosen"], "frozen_at": self.spec["frozen_at"],
+            "oos_start": str(STRICT_OOS_START), "oos_end": str(self.oos_end),
+            "sha256": hashes, "note": self.note,
+        }
+        append_ledger(entry, self.ledger)
+        _final_evaluation = {**entry, "oos_end": self.oos_end}
+        return entry
+
+    def __exit__(self, *exc) -> None:
+        global _final_evaluation
+        _final_evaluation = None
 
 
 def assert_research_only(path) -> None:
-    """拒绝任何指向 holdout_locked/ 的读取。在所有加载函数入口调用。"""
+    """拒绝任何指向 holdout_locked/ 的读取。"""
     p = Path(path).resolve()
     if any(root.resolve() in p.parents or p == root.resolve()
            for root in (HOLDOUT_DIR, VALIDATION_DIR)):
@@ -221,7 +285,7 @@ def assert_validation_only(path) -> None:
 
 
 def assert_holdout_only(path) -> None:
-    """Require a locked-file read to originate inside holdout_locked/."""
+    """锁定文件只能从 holdout_locked 目录读取。"""
     p = Path(path).resolve()
     root = HOLDOUT_DIR.resolve()
     if root not in p.parents and p != root:
@@ -243,7 +307,7 @@ def assert_validation_2022_dates(index_or_series, what: str = "data") -> None:
 
 
 def assert_strict_oos_dates(index_or_series, what: str = "data") -> None:
-    """Require all returned holdout calendar dates to be 2023 or later."""
+    """样本外日期必须在 2023 年及以后。"""
     import pandas as pd
 
     ts = pd.to_datetime(pd.Index(index_or_series))
@@ -264,7 +328,7 @@ def to_date(value) -> _dt.date:
 
 
 def assert_test_window_closed(end, today=None) -> None:
-    """测试期的最后一天必须已经过去。否则拒绝执行，调用方不得继续读数。"""
+    """测试期的最后一天必须已经过去。"""
     today = _dt.date.today() if today is None else to_date(today)
     end = to_date(end)
     if today <= end:
@@ -296,10 +360,7 @@ def ensure_dirs() -> None:
 
 def report_step(step: int, *, passed: bool, paths, next_step: int | None = None,
                 note: str = "") -> None:
-    """终端只报结论：是否通过、每个结果文件是什么、能不能进下一步。
-
-    ``paths`` 是 ``(路径, 说明)`` 列表。
-    """
+    """终端只报结论：是否通过、每个结果文件是什么、能不能进下一步。"""
     print(f"第 {step} 步{'通过' if passed else '未通过'}。")
     if note:
         print(note)

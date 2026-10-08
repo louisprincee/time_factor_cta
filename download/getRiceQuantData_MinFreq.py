@@ -46,8 +46,8 @@ def find_and_load_all(prefix, directory):
 
 
 # 通用函数：保存数据并清理旧文件
-def save_and_clean(data, file_path):
-    """保存数据并清理相同类型但日期范围不同的旧文件"""
+def save_and_clean(data, file_path, clean=True):
+    """保存数据。"""
     if data.empty:
         print("无数据可保存")
         return
@@ -61,6 +61,8 @@ def save_and_clean(data, file_path):
     with open(file_path, 'wb') as f:
         pickle.dump(data, f)
     print(f"已保存: {file_name}")
+    if not clean:
+        return
 
     # 查找并删除同前缀但不同日期范围的文件
     to_delete = []
@@ -115,6 +117,8 @@ parser.add_argument('-t', '--time-period', '--time_period', dest='time_period',
 # 添加数据路径参数
 parser.add_argument('--datapath', type=str, default='./data/data_min',
                     help='数据保存目录（默认: ./data/data_min）')
+parser.add_argument('--standalone', action='store_true',
+                    help='只保存本次时间范围，不与已有总表合并，也不删除已有文件')
 
 args = parser.parse_args()
 if not re.fullmatch(r'\d{8}-\d{8}', args.time_period):
@@ -147,13 +151,16 @@ os.makedirs(data_dir, exist_ok=True)
 file_prefix = 'future_all1mdata'  # 文件前缀（用于查找已有数据）
 file_extension = '.txt'  # 选择要读取的文件类型（.txt 或 .csv）
 existing_file = None
-for file in os.listdir(data_dir):
-    if file.startswith(file_prefix) and file.endswith(file_extension):
-        existing_file = os.path.join(data_dir, file)
-        break  # 只读取一个文件
+if not args.standalone:
+    for file in os.listdir(data_dir):
+        if file.startswith(file_prefix) and file.endswith(file_extension):
+            existing_file = os.path.join(data_dir, file)
+            break  # 只读取一个文件
 
 if existing_file:
     print(f"发现已有总数据文件: {os.path.basename(existing_file)}")
+elif args.standalone:
+    print(f"单独下载，不合并已有总表: {time_period}")
 
 # 读取已有数据，确定时间范围
 existing_start, existing_end = load_existing_date(existing_file) if existing_file else (None, None)
@@ -166,7 +173,6 @@ if existing_file is not None and target_end > existing_end:
 elif existing_file is not None and target_end <= existing_end:
     print(f"已有数据已覆盖 {time_period}，无需更新")
     sys.exit(0)
-
 
 
 # %%
@@ -186,7 +192,7 @@ for _type in typelst:
 
     print(f"{_type} 分钟行情下载完成")
 
-    if _type != '888' and data_dir:
+    if not args.standalone and _type != '888' and data_dir:
         # 文件前缀格式：future{time_type}{_type}_
         file_prefix = f'future{time_type}{_type}_'
 
@@ -213,7 +219,7 @@ for _type in typelst:
     output_path = os.path.join(data_dir, file_name)
 
     # 保存数据并清理旧文件
-    save_and_clean(data, output_path)
+    save_and_clean(data, output_path, clean=not args.standalone)
 
 # %%
 #################################################################
@@ -243,7 +249,7 @@ for name in tqdm(names):
 file_name = f'future{time_type}_agio_{original_time_period}.txt'
 output_path = os.path.join(data_dir, file_name)
 # 保存数据并清理旧文件（使用通用函数）
-save_and_clean(data, output_path)
+save_and_clean(data, output_path, clean=not args.standalone)
 
 # %%
 ####################################################################
@@ -267,11 +273,6 @@ for name in tqdm(names, desc="合并品种数据"):
         data = _data.copy()
     else:
         data = pd.concat([data, _data], axis=1)
-
-def convert_to_float32(df):
-    float64_cols = df.select_dtypes(include=['float64']).columns
-    df[float64_cols] = df[float64_cols].astype('float32')
-    return df
 
 
 # 加载并合并历史数据（如果存在增量更新）
@@ -299,6 +300,6 @@ file_name = f'future_all{time_type}data_{original_time_period}.txt'
 output_path = os.path.join(data_dir, file_name)
 
 # 保存最终数据并清理旧文件
-save_and_clean(data, output_path)
+save_and_clean(data, output_path, clean=not args.standalone)
 
 print(f"下载完成: {output_path}")

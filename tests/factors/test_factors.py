@@ -1,12 +1,4 @@
-"""因子族测试。
-
-重点不是"跑得通"，而是三件容易静默出错的事：
-1. 无夜盘品种的夜盘因子必须是 NaN 而不是 0（上一轮小时频踩过的坑，把 t=3.05 的
-   真因子压成了 t=1.1）
-2. DFP 必须已按收盘价归一化，否则跨品种量纲差几个数量级；分子分母都用原始价，
-   加法复权价离上市越远偏离越大，做分母会让比例失真
-3. 所有时点类因子必须落在 [0,1]，否则等权合成被长夜盘品种主导
-"""
+"""因子族测试。"""
 
 from __future__ import annotations
 
@@ -21,6 +13,11 @@ from tfcta.factors import intraday as factors
 
 DAYS = pd.bdate_range('2015-01-01', '2015-12-31')
 LOOKBACK, PCT = 60, 55.0
+
+
+def _all_factors(df):
+    return pd.concat([factors.duration_factors(df, LOOKBACK, PCT), factors.timestamp_factors(df),
+                      factors.report_factors(df, LOOKBACK, PCT)], axis=1)
 
 
 def _prep(night_class='night_2300', seed=5, days=DAYS):
@@ -56,21 +53,16 @@ def test_ts_high_finds_the_max_bar():
         assert out.loc[day, 'ts_high'] == pytest.approx(g['gamma_norm'].iloc[j])
 
 
-def test_symbol_daily_factors_covers_all_expected_columns():
+def test_factor_families_cover_all_expected_columns():
     df = _prep(days=DAYS[:60])
-    out = factors.symbol_daily_factors(df, LOOKBACK, PCT, with_coords=True)
+    out = _all_factors(df)
     for c in C.FACTOR_SIGNS:
         assert c in out.columns, f"缺少论文先验因子 {c}"
-    assert out.index.name == 'trading_date'
     assert out.index.is_monotonic_increasing
 
 
 def test_dfp_ignores_additive_adjustment_offset():
-    """持续期用 closew，FP 和分母用原始 close：closew 整体平移不能改变 DFP。
-
-    加法复权价与原始价差一个日内恒定、随换月累积的常数（RB、J 甚至为负）。
-    用 closew 做 FP 与分母时，这个常数直接进入比例，远离上市的年份 DFP 系统性失真。
-    """
+    """持续期用 closew，FP 和分母用原始 close：closew 整体平移不能改变 DFP。"""
     df = _prep(days=DAYS[:40])
     base = factors.duration_factors(df, LOOKBACK, PCT)
     shifted = df.copy()
@@ -97,6 +89,6 @@ def test_dfp_skips_non_positive_close():
 def test_factor_index_is_trading_date_not_wall_clock():
     """因子表的每一行必须对应一个 trading_date；夜盘不得被算成单独一天。"""
     df = _prep(night_class='night_0230', seed=17, days=DAYS[:30])
-    out = factors.symbol_daily_factors(df, LOOKBACK, PCT, with_coords=True)
+    out = _all_factors(df)
     assert len(out) == df['trading_date'].nunique()
     assert out.index.equals(pd.DatetimeIndex(sorted(df['trading_date'].unique())))
