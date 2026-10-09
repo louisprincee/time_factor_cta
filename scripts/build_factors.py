@@ -1,4 +1,5 @@
 """只在研究期构建时间因子和期限结构对照。"""
+
 import argparse
 from pathlib import Path
 import sys

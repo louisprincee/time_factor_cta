@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 STRATEGIES = {
     "morning-oor": ("research_morning_oor.py", "flag"),
     "morning-meta": ("research_morning_meta.py", "flag"),
-    "multi-leg": ("research_multi_leg.py", "flag"),
 }
 PHASES = ("research", "validation-2022", "oos")
 

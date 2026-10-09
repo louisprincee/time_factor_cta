@@ -1,4 +1,4 @@
-"""元策略账面和多腿缩放：方向和时点，不读行情。"""
+"""元策略账面：只用已平仓的历史单，不读行情。"""
 import importlib
 from pathlib import Path
 import sys
@@ -9,7 +9,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 meta = importlib.import_module('research_morning_meta')
-legs = importlib.import_module('research_multi_leg')
 
 
 def trades(days, nets, symbols=None):
@@ -38,11 +37,11 @@ def test_switch_modes():
     assert meta.switched(side, score, '原样').tolist() == [1., -1., 1.]
 
 
-def test_leg_multiplier_is_lagged_and_capped():
-    ret = pd.Series(np.r_[np.full(60, .01), np.full(5, .0)], index=pd.bdate_range('2021-01-04', periods=65))
-    m = legs.multiplier(ret, .1, 20, 10, 2, 4.)
-    assert (m.iloc[:11] == 0).all()                       # 前 min_periods + lag 天未知
-    assert (m <= 4.).all()
-    changed = ret.copy()
-    changed.iloc[-1] = 1.
-    assert legs.multiplier(changed, .1, 20, 10, 2, 4.).iloc[-1] == m.iloc[-1]  # 当天收益不影响当天乘数
+def test_trailing_days_mean_uses_only_previous_days():
+    grid = importlib.import_module('research_meta_grid')
+    t = trades(['2021-01-04', '2021-01-05', '2021-01-06', '2021-01-07'], [.01, .03, -.10, .0])
+    side = pd.Series(1., index=t.index)
+    score = grid.trailing_days_mean(t, side, 2)
+    assert np.isnan(score.iloc[0]) and np.isnan(score.iloc[1])
+    assert score.iloc[2] == pytest.approx(.02)
+    assert score.iloc[3] == pytest.approx(-.035)

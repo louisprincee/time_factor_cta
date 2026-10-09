@@ -511,6 +511,56 @@ def sharpe_ratio(returns: pd.Series, periods: int = PERIODS) -> float:
     return float(values.mean() / vol * np.sqrt(periods))
 
 
+def deflated_sharpe(returns: pd.Series, trial_sharpes, n_trials: int | None = None) -> dict:
+    """Bailey & López de Prado (2014) 的 DSR：扣掉“试了 n_trials 次取最好”带来的期望最大夏普后，
+    观测夏普仍大于 0 的概率。trial_sharpes 是各次尝试的年化夏普（用来估计尝试之间的离散程度）。"""
+    from scipy.stats import kurtosis, norm, skew
+    r = pd.Series(returns, dtype='float64').dropna()
+    trials = np.asarray([s for s in trial_sharpes if np.isfinite(s)], dtype='float64')
+    n = int(n_trials or len(trials))
+    if len(r) < 30 or len(trials) < 2 or n < 2:
+        return {'dsr': np.nan, 'sr0': np.nan, 'sr': np.nan, 'n_trials': n}
+    scale = np.sqrt(PERIODS)
+    sr = r.mean() / r.std(ddof=1)                      # 日频，不年化
+    spread = np.std(trials / scale, ddof=1)
+    gamma = 0.5772156649
+    sr0 = spread * ((1 - gamma) * norm.ppf(1 - 1 / n) + gamma * norm.ppf(1 - 1 / (n * np.e)))
+    g3, g4 = skew(r), kurtosis(r, fisher=False)
+    z = (sr - sr0) * np.sqrt(len(r) - 1) / np.sqrt(max(1 - g3 * sr + (g4 - 1) / 4 * sr ** 2, 1e-12))
+    return {'dsr': float(norm.cdf(z)), 'sr0': float(sr0 * scale), 'sr': float(sr * scale), 'n_trials': n}
+
+
+def pbo_cscv(matrix: pd.DataFrame, blocks: int = 16) -> dict:
+    """Bailey 等 (2017) 的组合对称交叉验证：把日收益按时间切成 blocks 段，每次取一半做样本内选夏普最高的方案，
+    看它在另一半里排在第几。PBO = 样本内最好的方案在样本外排到中位数以下的比例。"""
+    from itertools import combinations
+    m = pd.DataFrame(matrix).dropna(how='all').fillna(0.0)
+    if blocks % 2 or m.shape[1] < 2 or len(m) < blocks * 5:
+        raise ValueError("需要偶数段、至少两个方案、每段至少 5 天")
+    edges = np.linspace(0, len(m), blocks + 1).astype(int)
+    parts = [m.iloc[a:b].to_numpy() for a, b in zip(edges[:-1], edges[1:])]
+
+    def sharpe(rows):
+        sd = rows.std(axis=0, ddof=1)
+        return np.where(sd > 0, rows.mean(axis=0) / np.where(sd > 0, sd, 1.0), -np.inf)
+
+    logits, degradation = [], []
+    for train in combinations(range(blocks), blocks // 2):
+        test = [k for k in range(blocks) if k not in train]
+        inside = sharpe(np.vstack([parts[k] for k in train]))
+        outside = sharpe(np.vstack([parts[k] for k in test]))
+        best = int(np.argmax(inside))
+        rank = (outside < outside[best]).sum() + 0.5 * ((outside == outside[best]).sum() - 1) + 1
+        omega = rank / (m.shape[1] + 1)
+        logits.append(np.log(omega / (1 - omega)))
+        degradation.append((inside[best] * np.sqrt(PERIODS), outside[best] * np.sqrt(PERIODS)))
+    logits = np.asarray(logits)
+    pairs = np.asarray(degradation)
+    return {'pbo': float((logits <= 0).mean()), 'n_splits': int(len(logits)),
+            'is_best_sharpe': float(pairs[:, 0].mean()), 'oos_of_best_sharpe': float(pairs[:, 1].mean()),
+            'oos_of_best_below_zero': float((pairs[:, 1] < 0).mean())}
+
+
 @dataclass
 class StudyData:
     factors: library.SignalSet
@@ -689,5 +739,5 @@ def plot_performance(returns, out_dir, title="净值与最大回撤", series=Non
 context = types.SimpleNamespace(run_dir=run_dir, clean_json=clean_json, dump_json=dump_json, plot_performance=plot_performance)
 costs = types.SimpleNamespace(fee_path=fee_path, MULTIPLIER=MULTIPLIER, load_fees=load_fees, fee_tables=fee_tables, load_ticks=load_ticks, slippage_tables=slippage_tables)
 engine = types.SimpleNamespace(rebalance=rebalance, position=position, allocate=allocate, trade_legs=trade_legs, backtest=backtest)
-stats = types.SimpleNamespace(_pair=_pair, _by_period=_by_period, _period_mean=_period_mean, _corr=_corr, spearman_ic=spearman_ic, summarize_ics=summarize_ics, horizon_of=horizon_of, exante_scaled_return=exante_scaled_return, ic_period_series=ic_period_series, nw_lag=nw_lag, _nw_se=_nw_se, timeseries_t=timeseries_t, sign_status=sign_status, IC_COLUMNS=IC_COLUMNS, _slice_year=_slice_year, factor_ic_table=factor_ic_table, cross_sectional_ic_table=cross_sectional_ic_table, PERIODS=PERIODS, METRIC_KEYS=METRIC_KEYS, _empty=_empty, performance=performance, sharpe_ratio=sharpe_ratio)
+stats = types.SimpleNamespace(deflated_sharpe=deflated_sharpe, pbo_cscv=pbo_cscv, _pair=_pair, _by_period=_by_period, _period_mean=_period_mean, _corr=_corr, spearman_ic=spearman_ic, summarize_ics=summarize_ics, horizon_of=horizon_of, exante_scaled_return=exante_scaled_return, ic_period_series=ic_period_series, nw_lag=nw_lag, _nw_se=_nw_se, timeseries_t=timeseries_t, sign_status=sign_status, IC_COLUMNS=IC_COLUMNS, _slice_year=_slice_year, factor_ic_table=factor_ic_table, cross_sectional_ic_table=cross_sectional_ic_table, PERIODS=PERIODS, METRIC_KEYS=METRIC_KEYS, _empty=_empty, performance=performance, sharpe_ratio=sharpe_ratio)
 study = types.SimpleNamespace(StudyData=StudyData, load_research=load_research, validate_specs=validate_specs, combined=combined, signal_for=signal_for, run_spec=run_spec, performance_rows=performance_rows, factor_diagnostics=factor_diagnostics, provenance=provenance)

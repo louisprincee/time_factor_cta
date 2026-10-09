@@ -166,3 +166,29 @@ def test_holding_forward_return_sums_the_next_h_days_and_vol_uses_only_the_past(
     b = ic.exante_scaled_return(returns.holding_forward_return(bumped, 3), 3, 3)
     # t=6 的分子变了，分母不变 → 比值正好放大 100 倍
     assert b['A'].iloc[6] == pytest.approx(100.0 * a['A'].iloc[6])
+
+
+def test_pbo_separates_noise_from_a_real_edge():
+    from tfcta.research import stats as S
+    idx = pd.bdate_range('2016-01-01', periods=1200)
+    noise_pbo = []
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        noise = pd.DataFrame(rng.normal(0, .01, (1200, 20)), index=idx)
+        edge = noise.copy()
+        edge[0] += .002
+        assert S.pbo_cscv(edge, 8)['pbo'] < .05
+        noise_pbo.append(S.pbo_cscv(noise, 8)['pbo'])
+    assert .3 < np.mean(noise_pbo) < .7  # 纯噪声时样本内最好的方案在样本外大约一半时间排在中位数以下
+    with pytest.raises(ValueError):
+        S.pbo_cscv(noise, 7)
+
+
+def test_deflated_sharpe_falls_with_more_trials():
+    from tfcta.research import stats as S
+    rng = np.random.default_rng(1)
+    ret = pd.Series(rng.normal(.0006, .01, 1500))
+    trials = rng.normal(0, .5, 50)
+    few = S.deflated_sharpe(ret, trials, 5)['dsr']
+    many = S.deflated_sharpe(ret, trials, 500)['dsr']
+    assert 0 <= many < few <= 1
