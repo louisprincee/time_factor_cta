@@ -1,5 +1,6 @@
 """样本外脚本：年份解析、台账去重、预热年不计入、元策略在接续表上的切换。不读真实样本外数据。"""
 import importlib
+import json
 from pathlib import Path
 import sys
 
@@ -11,13 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 final = importlib.import_module('oos_final')
 
 
-def test_parse_years_only_allows_declared_years():
-    assert final.parse_years('2024-2025', [2024, 2025]) == [2024, 2025]
-    assert final.parse_years('2025，2024', [2024, 2025]) == [2024, 2025]
+def test_parse_years_allows_each_declared_oos_year():
+    allowed = json.loads(final.PROTOCOL.read_text(encoding='utf-8'))['years_allowed']
+    assert allowed == [2023, 2024, 2025]
+    assert final.parse_years('2023', allowed) == [2023]
+    assert final.parse_years('2023-2025', allowed) == [2023, 2024, 2025]
+    assert final.parse_years('2025，2024', allowed) == [2024, 2025]
     with pytest.raises(ValueError):
-        final.parse_years('2023', [2024, 2025])  # 2023 已被用过，只能当预热
+        final.parse_years('2026', allowed)
     with pytest.raises(ValueError):
-        final.parse_years('2025-2024', [2024, 2025])
+        final.parse_years('2025-2024', allowed)
 
 
 def test_label_and_fingerprint():

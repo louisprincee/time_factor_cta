@@ -1,6 +1,6 @@
 """重画已有结果的净值和回撤图（各策略脚本回测完已自动出图，这里用于挑序列重画）。
 
-    python scripts/plot_strategy.py multi-leg validation-2022 --series 四条日频腿
+    python scripts/plot_strategy.py morning-meta validation-2022 --series 主策略·亏损反手·30笔
     python scripts/plot_strategy.py oos 2024-2025
 """
 import argparse
@@ -16,7 +16,6 @@ from tfcta.research import context
 RESULTS = {
     "morning-oor": "runs/morning_oor",
     "morning-meta": "runs/morning_oor/meta",
-    "multi-leg": "runs/multi_leg",
     "oos": "runs/oos",
 }
 
