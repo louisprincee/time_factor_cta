@@ -170,7 +170,7 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
 
 
 def build(partition, end=None, names=None):
-    """样本外（partition="oos"）由 scripts/oos_portfolio.py 在打开的最终评估里调用，传入截止日和品种。"""
+    """样本外（partition="oos"）只能在打开的 C.final_evaluation(...) 里调用，传入截止日和品种。"""
     if partition == "oos":
         if end is None or names is None:
             raise ValueError("样本外特征需要截止日和品种池")
@@ -211,5 +211,5 @@ def build(partition, end=None, names=None):
 if __name__ == "__main__":
     for part in (sys.argv[1:] or ["research", "validation_2022"]):
         if part not in ("research", "validation_2022"):
-            raise SystemExit("样本外特征只能由 scripts/oos_portfolio.py 生成")
+            raise SystemExit("样本外特征只能在 C.final_evaluation(...) 里生成")
         build(part)

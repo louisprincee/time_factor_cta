@@ -94,24 +94,6 @@ def test_close_signal_is_executed_next_open_not_same_day():
     assert result.gross.tolist() == [0.,-.02,0.]
 
 
-def test_dfp_quantile_uses_the_prior_window_and_stays_flat_in_the_middle():
-    import importlib
-    from pathlib import Path
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-    book = importlib.import_module("research_dfp_quantile")
-    raw = pd.DataFrame({"A": np.arange(40, dtype=float)})
-    signal = book.quantile_signal(raw, 30, 0.2, 0.8)
-    assert signal["A"].iloc[:30].isna().all()
-    assert signal["A"].iloc[30] == 1.0
-    later = raw.copy()
-    later.iloc[31, 0] = -1000.0
-    assert book.quantile_signal(later, 30, 0.2, 0.8)["A"].iloc[30] == 1.0
-    middle = raw.copy()
-    middle.iloc[30, 0] = 14.5
-    assert book.quantile_signal(middle, 30, 0.2, 0.8)["A"].iloc[30] == 0.0
-
-
 def test_timing_and_carry_signals_do_not_use_future_values():
     raw = frame({'A':np.linspace(-.3,.3,300)})
     modified = raw.copy()

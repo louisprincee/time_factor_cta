@@ -547,24 +547,18 @@ def load_research(n_ticks=1.):
 
 def validate_specs(specs):
     seen = set()
-    allowed = {'id','factors','timing','combine','days','mode','phase','vol_target','cap','hypothesis','overlay'}
+    allowed = {'id','factors','timing','combine','days','mode','phase','vol_target','cap','hypothesis'}
     for spec in specs:
         if set(spec)-allowed:
             raise ValueError(f"未知候选字段 {set(spec)-allowed}")
         if spec['id'] in seen:
             raise ValueError('候选 id 重复')
         seen.add(spec['id'])
-        overlay = spec.get('overlay')
-        groups = [spec.get('factors')] + ([overlay.get('factors')] if overlay else [])
-        if overlay and (set(overlay)-{'factors','action','threshold'} or overlay.get('action') not in OVERLAY_KEEP
-                        or not 0 <= overlay.get('threshold',0.) < 1):
-            raise ValueError(f'无效叠加层: {overlay}')
-        for factors in groups:
-            if not factors:
-                raise ValueError('候选没有因子')
-            for name,weight in factors.items():
-                if name not in library.SIGNED_PRIORS or not np.isfinite(weight) or weight==0:
-                    raise ValueError(f'无效因子/权重: {name}:{weight}')
+        if not spec.get('factors'):
+            raise ValueError('候选没有因子')
+        for name,weight in spec['factors'].items():
+            if name not in library.SIGNED_PRIORS or not np.isfinite(weight) or weight==0:
+                raise ValueError(f'无效因子/权重: {name}:{weight}')
         if spec.get('timing','z') not in ('z','quantile') or spec.get('combine','mean') not in ('mean','agree','filter'):
             raise ValueError('无效信号/组合方法')
         days,phase = spec.get('days',1),spec.get('phase',0)
@@ -576,10 +570,6 @@ def validate_specs(specs):
             raise ValueError('错开持有已经平均全部相位，不接受额外相位选择')
         if not 0 < spec.get('cap',1.) <= 1. or not np.isfinite(spec.get('vol_target',.20)) or spec.get('vol_target',.20)<0:
             raise ValueError('本研究只支持最大一倍名义暴露，非负波动目标')
-
-
-# 叠加层：控制信号与主信号反向时，主信号保留的比例。
-OVERLAY_KEEP = {'veto':0.,'halve':.5}
 
 
 def combined(data,factors,timing='z',method='mean'):
@@ -594,14 +584,7 @@ def combined(data,factors,timing='z',method='mean'):
 
 def signal_for(data,spec):
     timing = spec.get('timing','z')
-    signal = combined(data,spec['factors'],timing,spec.get('combine','mean'))
-    overlay = spec.get('overlay')
-    if overlay:
-        # 在错开持有之前处理，等价于每批新仓进场时检查一次；控制信号缺失时不干预。
-        control = combined(data,overlay['factors'],timing).reindex_like(signal).fillna(0.)
-        against = (signal*control<0) & (control.abs()>=overlay.get('threshold',0.))
-        signal = signal.mask(against,signal*OVERLAY_KEEP[overlay['action']])
-    return signal
+    return combined(data,spec['factors'],timing,spec.get('combine','mean'))
 
 
 def run_spec(data,spec):
@@ -665,8 +648,46 @@ def provenance(specs,n_ticks):
         'missing_factor':'fixed weight left in cash','validation_2022':'not_run','oos_2023_2025':'locked'}
 
 
-context = types.SimpleNamespace(run_dir=run_dir, clean_json=clean_json, dump_json=dump_json)
+def plot_performance(returns, out_dir, title="净值与最大回撤", series=None) -> Path:
+    """日收益（列为策略）→ 净值和回撤同一张图，写到 out_dir/performance.png。"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    frame = pd.DataFrame(returns).apply(pd.to_numeric, errors="coerce")
+    if series:
+        missing = set(series) - set(frame.columns)
+        if missing:
+            raise KeyError(f"结果中没有这些序列: {sorted(missing)}")
+        frame = frame[list(series)]
+    frame = frame.dropna(axis=1, how="all").dropna(axis=0, how="all").fillna(0.0)
+    if frame.empty:
+        raise ValueError("没有可绘制的日收益数据")
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    nav = (1 + frame).cumprod()
+    drawdown = nav / nav.cummax().clip(lower=1.0) - 1
+    fig, (nav_axis, drawdown_axis) = plt.subplots(2, 1, figsize=(11, 7), sharex=True, height_ratios=[3, 1])
+    nav.plot(ax=nav_axis, lw=1.2)
+    nav_axis.set_title(title)
+    nav_axis.set_ylabel("净值")
+    nav_axis.grid(alpha=0.3)
+    nav_axis.legend(loc="upper left", fontsize=8)
+    drawdown.plot(ax=drawdown_axis, lw=1.0, legend=False)
+    drawdown_axis.fill_between(drawdown.index, drawdown.min(axis=1), 0, alpha=0.2)
+    drawdown_axis.set_ylabel("回撤")
+    drawdown_axis.grid(alpha=0.3)
+    fig.tight_layout()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "performance.png"
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return path
+
+
+context = types.SimpleNamespace(run_dir=run_dir, clean_json=clean_json, dump_json=dump_json, plot_performance=plot_performance)
 costs = types.SimpleNamespace(fee_path=fee_path, MULTIPLIER=MULTIPLIER, load_fees=load_fees, fee_tables=fee_tables, load_ticks=load_ticks, slippage_tables=slippage_tables)
 engine = types.SimpleNamespace(rebalance=rebalance, position=position, allocate=allocate, trade_legs=trade_legs, backtest=backtest)
 stats = types.SimpleNamespace(_pair=_pair, _by_period=_by_period, _period_mean=_period_mean, _corr=_corr, spearman_ic=spearman_ic, summarize_ics=summarize_ics, horizon_of=horizon_of, exante_scaled_return=exante_scaled_return, ic_period_series=ic_period_series, nw_lag=nw_lag, _nw_se=_nw_se, timeseries_t=timeseries_t, sign_status=sign_status, IC_COLUMNS=IC_COLUMNS, _slice_year=_slice_year, factor_ic_table=factor_ic_table, cross_sectional_ic_table=cross_sectional_ic_table, PERIODS=PERIODS, METRIC_KEYS=METRIC_KEYS, _empty=_empty, performance=performance, sharpe_ratio=sharpe_ratio)
-study = types.SimpleNamespace(StudyData=StudyData, load_research=load_research, validate_specs=validate_specs, OVERLAY_KEEP=OVERLAY_KEEP, combined=combined, signal_for=signal_for, run_spec=run_spec, performance_rows=performance_rows, factor_diagnostics=factor_diagnostics, provenance=provenance)
+study = types.SimpleNamespace(StudyData=StudyData, load_research=load_research, validate_specs=validate_specs, combined=combined, signal_for=signal_for, run_spec=run_spec, performance_rows=performance_rows, factor_diagnostics=factor_diagnostics, provenance=provenance)

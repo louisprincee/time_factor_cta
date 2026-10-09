@@ -4,7 +4,6 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -12,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from tfcta import config as C
 from tfcta.data import universe as U
-from tfcta.research import stats
+from tfcta.research import context, stats
 
 FEATURES = ROOT / "runs" / "morning_features"
 OUT = ROOT / "runs" / "morning_oor"
@@ -66,6 +65,28 @@ def prepare(partition, spec, years=None, pools=None):
         C.assert_validation_2022_dates(table.trading_date, "早盘 2022 诊断")
         names, _ = U.validation_universe()
         pools = {2022: list(names)}
+    table["member"] = [s in pools.get(d.year, ()) for s, d in zip(table.symbol, table.trading_date)]
+    return table
+
+
+def prepare_through_2022(spec, first_year):
+    """研究期特征表接 2022 验证表，滚动量跨年连续；给需要用研究期训练、在 2022 测试的诊断用。"""
+    research = pd.read_parquet(FEATURES / "research.parquet")
+    C.assert_no_holdout_dates(research.trading_date, "早盘研究期")
+    later = pd.read_parquet(FEATURES / "validation_2022.parquet")
+    later = later[pd.to_datetime(later.trading_date).dt.year == 2022]
+    C.assert_validation_2022_dates(later.trading_date, "早盘 2022")
+    table = pd.concat([research, later], ignore_index=True).sort_values(["symbol", "trading_date"])
+    table = table.reset_index(drop=True)
+    if table.duplicated(["symbol", "trading_date"]).any():
+        raise ValueError("特征表品种/日期重复")
+    table = add_history(table, spec["rule"]["relvol_window"], spec["sizing"]["sigma_window"])
+    unknown = set(table.symbol) - set(SECTOR_OF)
+    if unknown:
+        raise ValueError(f"未登记板块: {sorted(unknown)}")
+    table["sector"] = table.symbol.map(SECTOR_OF)
+    table = table[table.trading_date.dt.year.between(first_year, 2022)].copy()
+    pools = {**U.load_universe(), 2022: list(U.validation_universe()[0])}
     table["member"] = [s in pools.get(d.year, ()) for s, d in zip(table.symbol, table.trading_date)]
     return table
 
@@ -137,6 +158,45 @@ def daily(table, weight, scenario, calendar):
     return pnl.groupby(table.trading_date).sum().reindex(calendar, fill_value=0.0)
 
 
+def base_books(table, spec):
+    """新研究共用的两本反向单：偏离反向（只按偏离和成本）与主策略。"""
+    rule = spec["rule"]
+    sample = ((table.dev15.abs() > rule["dev_threshold"]) & (table.est_cost < rule["max_est_cost"]) & table.member
+              & table.sigma.notna() & table.gross_1130.notna() & table.cost_1130.notna())
+    return {"偏离反向": (-np.sign(table.dev15)).where(sample, 0.0).fillna(0.0),
+            "主策略": sides(table, rule, spec["candidates"][spec["main"]])}
+
+
+def pnl(table, weight, gross, cost, calendar):
+    """任意毛收益和成本口径下的日收益（现金日记 0）。"""
+    active = weight != 0
+    if not (np.isfinite(gross[active]).all() and np.isfinite(cost[active]).all()):
+        raise ValueError("持仓缺行情或成本")
+    out = (weight * gross - weight.abs() * cost).where(active, 0.0)
+    return out.groupby(table.trading_date).sum().reindex(calendar, fill_value=0.0)
+
+
+def book_row(table, side, sizing, calendar, gross=None, cost=None):
+    """一本单的主口径与 2 跳结果、逐年夏普，以及顺势 / 反向两条腿。"""
+    gross = table.gross_1130 if gross is None else gross
+    cost = table.cost_1130 if cost is None else cost
+    weight = weights(table, side, sizing)
+    ret = pnl(table, weight, gross, cost, calendar)
+    stressed = pnl(table, weight, gross, cost + 2 * table.tick_frac, calendar)
+    perf = stats.performance(ret)
+    active = weight != 0
+    net = (np.sign(weight) * gross - cost)[active]
+    follow = (np.sign(weight) == np.sign(table.dev15))[active]
+    row = {"夏普": stats.sharpe_ratio(ret), "夏普95%下限": bootstrap_sharpe(ret)[0], "滑点2跳夏普": stats.sharpe_ratio(stressed),
+           "年化收益": perf["ann_return"], "最大回撤": perf["max_drawdown"], "交易笔数": int(active.sum()),
+           "单笔净bp": net.mean() * 1e4 if active.any() else np.nan,
+           "顺势笔数": int(follow.sum()), "顺势净bp": net[follow].mean() * 1e4 if follow.any() else np.nan,
+           "反向笔数": int((~follow).sum()), "反向净bp": net[~follow].mean() * 1e4 if (~follow).any() else np.nan}
+    for year, part in ret.groupby(ret.index.year):
+        row[f"{year}夏普"] = stats.sharpe_ratio(part)
+    return row, ret
+
+
 def summary(ret, table, weight, scenario):
     gross, cost = SCENARIOS[scenario](table)
     active = weight != 0
@@ -197,25 +257,6 @@ def yearly(ret):
         rows[year] = {"夏普": stats.sharpe_ratio(r), "收益": float((1 + r).prod() - 1),
                       "最大回撤": perf["max_drawdown"], "持仓日": int((r != 0).sum())}
     return pd.DataFrame(rows).T
-
-
-def plot(curves, path, title):
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
-    fig, (top, bottom) = plt.subplots(2, 1, figsize=(11, 7), sharex=True, height_ratios=[3, 1])
-    for name, ret in curves.items():
-        nav = (1 + ret).cumprod()
-        top.plot(nav.index, nav, label=name, lw=1.6 if name.startswith("主策略") and "去" not in name else 0.9)
-        if name == "主策略":
-            bottom.fill_between(nav.index, nav / nav.cummax() - 1, 0, color="tab:red", alpha=0.5)
-    top.set_title(title)
-    top.legend(loc="upper left", fontsize=8)
-    top.grid(alpha=0.3)
-    bottom.set_ylabel("主策略回撤")
-    bottom.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(path, dpi=130)
-    plt.close(fig)
 
 
 def main():
@@ -279,10 +320,7 @@ def main():
                                              组合贡献=("pnl", "sum"))
     by_sector.to_csv(out / "by_sector.csv", encoding="utf-8-sig")
     pd.DataFrame(curves).to_csv(out / "daily.csv", encoding="utf-8-sig")
-    first, last = YEARS[partition]
-    span = str(first) if first == last else f"{first}–{last}"
-    plot(curves, out / "nav.png", f"开盘过度反应回归 {span}（含现金日，扣费后）")
-
+    print("图表：", context.plot_performance(curves, out / "plots" / ("research" if partition == "research" else "validation-2022"), f"开盘过度反应回归 {partition}（扣费后）"))
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", 20)
     print(result.round(4).to_string())
