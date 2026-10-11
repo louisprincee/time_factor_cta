@@ -3,5 +3,4 @@ pandas
 scipy
 matplotlib
 pyarrow
-scikit-learn
 pytest

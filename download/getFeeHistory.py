@@ -34,6 +34,9 @@ def one_symbol(rq, symbol, start, end):
     if not parts:
         return None
     out = pd.concat(parts).rename(columns={"order_book_id": "contract"})
+    out = out.dropna(subset=["commission_type", "open_commission", "close_commission"])
+    if out.empty:
+        return None
     out.insert(0, "symbol", symbol)
     return out.sort_values("trading_date")[["symbol", "trading_date", "contract", *FIELDS]]
 
@@ -41,8 +44,12 @@ def one_symbol(rq, symbol, start, end):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--partition", choices=list(WINDOWS), default="validation_2022")
+    parser.add_argument("--symbols", nargs="*", default=None,
+                        help="只下载这些品种。已有文件里，这次没下到的品种会保留")
     args = parser.parse_args()
-    if args.partition == "research":
+    if args.symbols:
+        names = sorted({s.strip().upper() for s in args.symbols if s.strip()})
+    elif args.partition == "research":
         names = sorted({n for group in U.load_universe().values() for n in group})
     elif args.partition == "validation_2022":
         names, _ = U.validation_universe()
@@ -50,7 +57,7 @@ def main():
         # 样本外品种池要读样本外行情才能定，这里不读：直接下载所有有合约乘数的品种（只是交易所费率）
         names = sorted(costs.MULTIPLIER)
     path = costs.fee_path(args.partition)
-    names = [n for n in names if n in costs.MULTIPLIER]
+    names = costs.require_multipliers(names)
     credentials = rqdata_credentials()
     if credentials is None:
         raise SystemExit("请在 config/rqdata.env 填写米筐账号")
@@ -63,7 +70,16 @@ def main():
         print(symbol, 0 if table is None else len(table), flush=True)
         if table is not None:
             parts.append(table)
+    if not parts:
+        print("窗口内没有主力合约，未改文件", path)
+        return
     table = pd.concat(parts, ignore_index=True)
+    if path.exists():
+        old = pd.read_csv(path, parse_dates=["trading_date"])
+        old = old[~old.symbol.isin(set(table.symbol))]
+        if not old.empty:
+            table = pd.concat([old, table], ignore_index=True)
+    table = table.sort_values(["symbol", "trading_date"])
     if args.partition == "oos":
         C.assert_strict_oos_dates(table.trading_date, "手续费下载")
         if table.trading_date.max() > pd.Timestamp(end):

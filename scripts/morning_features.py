@@ -12,10 +12,9 @@ from tfcta.data import shard_io, universe as U
 from tfcta.factors import day_codes_of, raw_price_path
 from tfcta.research import costs
 
-OUT = ROOT / "runs" / "morning_features"
-DECISION, ENTRY, LATE_ENTRY = (9, 16), (9, 17), (9, 18)
-EXITS = {"1015": (10, 15), "1130": (11, 30), "1500": (15, 0)}
-COLUMNS = ["open", "close", "closew", "openw", "highw", "loww", "volume", "trading_date"]
+OUT = ROOT / "runs" / "morning" / "features"
+DECISION, ENTRY, EXIT = (9, 16), (9, 17), (11, 30)
+COLUMNS = ["open", "close", "closew", "highw", "loww", "volume", "trading_date"]
 MINUTE = 60_000_000_000
 
 
@@ -24,14 +23,8 @@ def stamp(day, hm):
 
 
 def fee_rate(kind, value, price, base, symbol):
-    """单边手续费占名义金额比例：按金额 ×1.01，按手数加 0.01 元，零费率按 0.01 元。"""
-    if kind not in ("by_money", "by_volume") or not np.isfinite(price) or price <= 0:
-        return np.nan
-    if kind == "by_volume":
-        return (value + 0.01) / (base * costs.MULTIPLIER[symbol])
-    if value == 0:
-        return 0.01 / (base * costs.MULTIPLIER[symbol])
-    return value * 1.01 * price / base
+    """单边手续费占名义金额比例，公式在 costs.commission_rate。"""
+    return costs.commission_rate(kind, value, price, base, costs.MULTIPLIER[symbol])
 
 
 def clock(values, fn):
@@ -80,7 +73,7 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
     frame = load_minutes(symbol, partition, end)
     raw = raw_price_path(frame)
     raw_open = raw_price_path(pd.DataFrame({"close": frame.open.to_numpy()}, index=frame.index))
-    cw, ow = frame.closew.to_numpy(float), frame.openw.to_numpy(float)
+    cw = frame.closew.to_numpy(float)
     hw, lw = frame.highw.to_numpy(float), frame.loww.to_numpy(float)
     vol = frame.volume.to_numpy(float)
     idx = frame.index.asi8
@@ -96,19 +89,6 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
     for k, (s, e) in enumerate(zip(bounds[:-1], bounds[1:])):
         day = days[int(codes[s])]
         row = {"symbol": symbol, "trading_date": day}
-        # 全日特征：只用于次日及以后
-        if s > 0:
-            base = raw[s - 1]
-            row["day_ret"] = (cw[e - 1] - cw[s - 1]) / base
-        hi, lo = hw[s:e].max(), lw[s:e].min()
-        row["ts_high"] = clock(hw[s:e], np.argmax)
-        row["ts_low"] = clock(lw[s:e], np.argmin)
-        row["clv"] = (cw[e - 1] - lo) / (hi - lo) if hi > lo else np.nan
-        row["day_range"] = (hi - lo) / raw[e - 1]
-        row["day_volume"] = vol[s:e].sum()
-        pm = np.flatnonzero(hour[s:e] >= 13) + s
-        row["ts_high_pm"] = clock(hw[pm], np.argmax) if pm.size else np.nan
-        row["ts_low_pm"] = clock(lw[pm], np.argmin) if pm.size else np.nan
         d = pos.get(stamp(day, DECISION))
         day_bars = np.flatnonzero(~night[s:e]) + s
         if d is None or not s <= d < e or s == 0 or not day_bars.size or day_bars[0] > d:
@@ -116,30 +96,14 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
             continue
         f = int(day_bars[0])
         prev = raw[s - 1]
-        row["first_bar"] = pd.Timestamp(idx[f]).strftime("%H:%M")
-        row["ref"] = raw[d]
-        row["ret_on"] = (cw[d] - cw[s - 1]) / prev
         row["ret_night"] = (cw[f - 1] - cw[s - 1]) / prev if f > s else np.nan
-        row["night_volume"] = vol[s:f].sum() if f > s else np.nan
-        row["gap"] = (ow[f] - cw[f - 1]) / raw[f - 1]
-        row["ret_pre"] = (cw[d] - cw[f - 1]) / raw[f - 1]
-        row["rest_ret"] = (cw[e - 1] - cw[d]) / raw[d]
         window = raw[d - 15:d] if d >= 15 else np.array([])
         steps = np.diff(idx[d - 15:d + 1]) if d >= 15 else np.array([])
         if window.size == 15 and np.all(steps == MINUTE) and (window > 0).all():
             row["dev15"] = raw[d] / window.mean() - 1.0
-        v = vol[f:d + 1]
-        row["pre_volume"] = v.sum()
-        if v.sum() > 0:
-            row["vwap_dev"] = raw[d] / (np.dot(raw[f:d + 1], v) / v.sum()) - 1.0
-        path = np.abs(np.diff(cw[f - 1:d + 1])).sum()
-        row["eff_pre"] = abs(cw[d] - cw[f - 1]) / path if path > 0 else 0.0
-        row["range_pre"] = (hw[f:d + 1].max() - lw[f:d + 1].min()) / raw[d]
+        row["pre_volume"] = vol[f:d + 1].sum()
         row["hclock_td"] = clock(hw[s:d + 1], np.argmax)
         row["lclock_td"] = clock(lw[s:d + 1], np.argmin)
-        row["hclock_pre"] = clock(hw[f:d + 1], np.argmax)
-        row["lclock_pre"] = clock(lw[f:d + 1], np.argmin)
-        # 结果列：下一根开盘进场
         entry = pos.get(stamp(day, ENTRY))
         fee = fee_rows.iloc[k]
         tick = ticks.get(day.year, np.nan)
@@ -149,20 +113,12 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
                            + 2 * tick / raw[d])
         if entry is not None and d < entry < e and raw_open[entry] > 0:
             px = raw_open[entry]
-            row["entry_flat"] = bool(hw[entry] == lw[entry])
-            for name, hm in EXITS.items():
-                x = pos.get(stamp(day, hm))
-                if x is None or not entry <= x < e or not raw[x] > 0:
-                    continue
-                row[f"gross_{name}"] = raw[x] / px - 1.0
-                row[f"cost_{name}"] = (fee_rate(kind, fee.open_commission, px, px, symbol)
-                                       + fee_rate(kind, fee.close_commission_today, raw[x], px, symbol)
-                                       + 2 * tick / px)
-            # 延迟一分钟进场的压力测试
-            late = pos.get(stamp(day, LATE_ENTRY))
-            x = pos.get(stamp(day, EXITS["1130"]))
-            if late is not None and x is not None and entry < late < x < e and raw_open[late] > 0:
-                row["gross_late_1130"] = raw[x] / raw_open[late] - 1.0
+            x = pos.get(stamp(day, EXIT))
+            if x is not None and entry <= x < e and raw[x] > 0:
+                row["gross_1130"] = raw[x] / px - 1.0
+                row["cost_1130"] = (fee_rate(kind, fee.open_commission, px, px, symbol)
+                                    + fee_rate(kind, fee.close_commission_today, raw[x], px, symbol)
+                                    + 2 * tick / px)
             row["tick_frac"] = tick / px
         rows.append(row)
     out = pd.DataFrame(rows)
@@ -179,7 +135,7 @@ def build(partition, end=None, names=None):
         names = sorted({n for group in U.load_universe().values() for n in group})
     else:
         names, _ = U.validation_universe()
-    names = [n for n in names if n in costs.MULTIPLIER]
+    names = costs.require_multipliers(names)
     fees, ticks = fee_history(partition), costs.load_ticks()
     parts = []
     for symbol in names:

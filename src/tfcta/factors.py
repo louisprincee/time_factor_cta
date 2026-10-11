@@ -757,11 +757,8 @@ def load_report(symbol: str, root: Path | None = None) -> pd.DataFrame:
 
 
 Z_WINDOW, Z_MIN = 252, 120
-SIGNED_PRIORS = {**C.FACTOR_SIGNS, "time_spread":1., "tsmom":1.,
-                 "tsmom_20":1., "tsmom_3":1., "ma_break_20":1.,
-                 "carry_ms":1., "cs_mom_ra_250":1., "cs_mom_3":1.,
-                 "vol_tail_20":1., "neg_clv":1.}
-TIME_FACTORS = frozenset([*C.FACTOR_SIGNS,"time_spread"])
+SIGNED_PRIORS = {**C.FACTOR_SIGNS, "tsmom": 1., "carry_ms": 1., "neg_clv": 1.}
+TIME_FACTORS = frozenset(C.FACTOR_SIGNS)
 
 
 def exante_z(factor, window=None, min_periods=None):
@@ -792,8 +789,6 @@ def to_signal(name, raw, timing="z", direction=None):
     if name == "carry_ms":
         rms = (signed.shift(1)**2).rolling(Z_WINDOW,min_periods=Z_MIN).mean()**.5
         return (signed/rms.where(rms>0)).clip(-1,1)  # do not demean carry
-    if name == "cs_mom_ra_250":
-        return (2*signed).clip(-1,1)  # rank is already standardized across symbols
     return signed.clip(-1,1)  # bounded trend / CLV, preserves economic sign
 
 
@@ -822,7 +817,6 @@ class SignalSet:
     bars: dict
     signed: dict = field(default_factory=dict)
     unsigned: dict = field(default_factory=dict)
-    family: dict = field(default_factory=dict)
     vol: pd.DataFrame | None = None
 
     def raw(self,name):
@@ -833,37 +827,18 @@ class SignalSet:
         raise KeyError(f"未知因子 {name}，可用 {sorted(self.signed)}")
 
 
-def assemble(bars,time_raw,universe,external_partitions=("research",)):
+def assemble(bars,time_raw,_universe,external_partitions=("research",)):
+    """只装配当前候选用到的因子：时间因子、时序动量、期限结构和收盘位置。"""
     result = SignalSet(bars=bars)
     for name,sign in C.FACTOR_SIGNS.items():
         result.signed[name] = time_raw[name]*sign
-        result.family[name] = "时间戳" if name.startswith("ts_") else "持续期"
-    result.signed["time_spread"] = time_raw["ts_low"]-time_raw["ts_high"]
-    result.family["time_spread"] = "高低点时间差"
     close, adjusted = bars["close"], bars["closew"]
     result.signed["tsmom"] = daily.tsmom(close,adjusted)
-    result.signed["tsmom_20"] = daily.tsmom_sign(close,adjusted)
-    result.signed["tsmom_3"] = daily.tsmom_sign(close,adjusted,daily.REVIEW_MOM_WINDOW)
-    result.signed["ma_break_20"] = daily.ma_breakout(adjusted,daily.REVIEW_VOL_WINDOW)
     source = external.load_wide(list(close.columns),external_partitions,close.index)
     if "carry_main_sub_annualized" in source:
         result.signed["carry_ms"] = source["carry_main_sub_annualized"]
-        result.family["carry_ms"] = "期限结构对照"
-    mom = daily.momentum_components(close,adjusted,windows=(250,))["tsmom_ra_250"]
-    result.signed["cs_mom_ra_250"] = daily.cross_sectional_rank(mom,universe)
-    result.family["cs_mom_ra_250"] = "截面动量对照"
-    ret3 = daily.trailing_return(close,adjusted,daily.REVIEW_MOM_WINDOW)
-    result.signed["cs_mom_3"] = daily.cross_sectional_tails(ret3,universe,daily.REVIEW_TAIL)
-    vol20 = daily.realized_vol(close,adjusted,daily.REVIEW_VOL_WINDOW)
-    result.unsigned["vol_20"] = vol20
-    result.unsigned["vol_rise_20"] = daily.vol_change_sign(close,adjusted,daily.REVIEW_VOL_WINDOW)
-    result.signed["vol_tail_20"] = daily.cross_sectional_tails(vol20,universe,daily.REVIEW_TAIL)
     high, low = bars["highw"],bars["loww"]
     result.signed["neg_clv"] = -(2*adjusted-high-low)/(high-low).where(high>low)
-    result.family.update(
-        tsmom="趋势对照", tsmom_20="趋势对照", tsmom_3="时序动量",
-        ma_break_20="均价突破", cs_mom_3="截面动量", vol_tail_20="截面波动",
-        neg_clv="价格位置对照")
     result.vol = daily.daily_vol(close,adjusted)
     return result
 

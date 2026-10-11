@@ -46,14 +46,50 @@ def dump_json(path: Path, obj) -> None:
     path.write_text(json.dumps(clean_json(obj), ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+# 名义金额 = 行情价格 × 乘数。乘数是每手包含的报价单位数。
+# 多数品种报价是元/吨，乘数就是吨/手。例外：JD 报价元/500千克、每手 5 吨，所以是 10；
+# AU 克，AG 千克，SC 桶，FB、LG 立方米，BB 张，EC 指数点。
 MULTIPLIER: dict[str, float] = {
     "A": 10, "B": 10, "C": 10, "CS": 10, "M": 10, "Y": 10, "P": 10, "JD": 10,
-    "L": 5, "V": 5, "PP": 5, "EG": 10, "I": 100, "J": 100, "JM": 60,
+    "LH": 16, "RR": 10, "L": 5, "V": 5, "PP": 5, "EG": 10, "EB": 5, "PG": 20,
+    "I": 100, "J": 100, "JM": 60, "BB": 500, "FB": 10, "LG": 90,
     "CU": 5, "AL": 5, "ZN": 5, "PB": 5, "NI": 1, "SN": 1, "AU": 1000, "AG": 15,
-    "RB": 10, "HC": 10, "RU": 10, "BU": 10, "FU": 10, "SP": 10, "SC": 1000,
-    "AP": 10, "CF": 5, "SR": 10, "TA": 5, "RM": 10, "OI": 10, "FG": 20,
-    "SF": 5, "SM": 5, "MA": 10, "ZC": 100,
+    "BC": 5, "AO": 20, "AD": 10, "RB": 10, "HC": 10, "WR": 10, "SS": 5,
+    "RU": 10, "NR": 10, "BR": 5, "BU": 10, "FU": 10, "LU": 10, "SP": 10, "SC": 1000,
+    "EC": 50,
+    "AP": 10, "CF": 5, "CY": 5, "SR": 10, "TA": 5, "MA": 10, "OI": 10, "RM": 10,
+    "RS": 10, "FG": 20, "SA": 20, "UR": 20, "PF": 5, "PK": 5, "CJ": 5, "PX": 5,
+    "PR": 15, "SH": 30, "SF": 5, "SM": 5, "ZC": 100, "WH": 20, "PM": 50,
+    "RI": 20, "LR": 20, "JR": 20, "SI": 5, "LC": 1, "PS": 3,
 }
+
+
+def require_multipliers(symbols):
+    """点名的品种必须有乘数；缺了就停，不跳过。"""
+    missing = sorted({s for s in symbols if s not in MULTIPLIER})
+    if missing:
+        raise KeyError(f"缺少合约乘数: {missing}")
+    return list(symbols)
+
+
+def commission_rate(kind, value, price, base, multiplier):
+    """单边手续费占 base 对应名义金额的比例。按金额 ×1.01，按手数 +0.01 元，零费率按 0.01 元。"""
+    kind_a = np.atleast_1d(np.asarray(kind, dtype=object))
+    value_a = np.atleast_1d(np.asarray(value, dtype=float))
+    price_a = np.atleast_1d(np.asarray(price, dtype=float))
+    base_a = np.atleast_1d(np.asarray(base, dtype=float))
+    notional = base_a * float(multiplier)
+    money = kind_a == "by_money"
+    volume = kind_a == "by_volume"
+    valid = (money | volume) & np.isfinite(price_a) & np.isfinite(value_a) & (notional > 0)
+    rate = np.full(value_a.shape, np.nan)
+    rate = np.where(volume & valid, (value_a + 0.01) / notional, rate)
+    rate = np.where(money & valid & (value_a == 0), 0.01 / notional, rate)
+    rate = np.where(money & valid & (value_a != 0), value_a * 1.01 * price_a / base_a, rate)
+    if rate.size == 1 and np.ndim(kind) == 0 and not isinstance(kind, (pd.Series, np.ndarray)):
+        return float(rate[0])
+    index = getattr(price, "index", None)
+    return pd.Series(np.asarray(rate, dtype=float), index=index)
 
 
 def fee_path(partition):
@@ -92,20 +128,12 @@ def fee_tables(table, prices):
         if sub.index.has_duplicates:
             raise ValueError(f"手续费缓存 {symbol} 日期重复")
         q = sub.reindex(prices.index, method="ffill")  # never backfill
-        notional = prices[symbol] * MULTIPLIER[symbol]
-        def rate(source, field):
-            money = source.commission_type.eq("by_money")
-            valid = source.commission_type.isin(["by_money", "by_volume"])
-            values = source[field]
-            result = np.where(money, values*1.01, (values+.01)/notional)
-            # Even zero ad-valorem exchange fee has broker's .01 yuan fee.
-            result = np.where(money & values.eq(0), .01/notional, result)
-            return pd.Series(result, index=prices.index).where(valid)
-        opened[symbol] = rate(q, "open_commission")
-        closed[symbol] = rate(q, "close_commission")
+        mult = MULTIPLIER[symbol]
+        opened[symbol] = commission_rate(q.commission_type, q.open_commission, prices[symbol], prices[symbol], mult)
+        closed[symbol] = commission_rate(q.commission_type, q.close_commission, prices[symbol], prices[symbol], mult)
         # The previous dominant rate is only substituted when contract changes.
         old = q.shift(1).where(q.contract.ne(q.contract.shift(1)), q)
-        roll_closed[symbol] = rate(old, "close_commission")
+        roll_closed[symbol] = commission_rate(old.commission_type, old.close_commission, prices[symbol], prices[symbol], mult)
     return opened, closed, roll_closed
 
 
@@ -737,7 +765,7 @@ def plot_performance(returns, out_dir, title="净值与最大回撤", series=Non
 
 
 context = types.SimpleNamespace(run_dir=run_dir, clean_json=clean_json, dump_json=dump_json, plot_performance=plot_performance)
-costs = types.SimpleNamespace(fee_path=fee_path, MULTIPLIER=MULTIPLIER, load_fees=load_fees, fee_tables=fee_tables, load_ticks=load_ticks, slippage_tables=slippage_tables)
+costs = types.SimpleNamespace(fee_path=fee_path, MULTIPLIER=MULTIPLIER, require_multipliers=require_multipliers, commission_rate=commission_rate, load_fees=load_fees, fee_tables=fee_tables, load_ticks=load_ticks, slippage_tables=slippage_tables)
 engine = types.SimpleNamespace(rebalance=rebalance, position=position, allocate=allocate, trade_legs=trade_legs, backtest=backtest)
 stats = types.SimpleNamespace(deflated_sharpe=deflated_sharpe, pbo_cscv=pbo_cscv, _pair=_pair, _by_period=_by_period, _period_mean=_period_mean, _corr=_corr, spearman_ic=spearman_ic, summarize_ics=summarize_ics, horizon_of=horizon_of, exante_scaled_return=exante_scaled_return, ic_period_series=ic_period_series, nw_lag=nw_lag, _nw_se=_nw_se, timeseries_t=timeseries_t, sign_status=sign_status, IC_COLUMNS=IC_COLUMNS, _slice_year=_slice_year, factor_ic_table=factor_ic_table, cross_sectional_ic_table=cross_sectional_ic_table, PERIODS=PERIODS, METRIC_KEYS=METRIC_KEYS, _empty=_empty, performance=performance, sharpe_ratio=sharpe_ratio)
 study = types.SimpleNamespace(StudyData=StudyData, load_research=load_research, validate_specs=validate_specs, combined=combined, signal_for=signal_for, run_spec=run_spec, performance_rows=performance_rows, factor_diagnostics=factor_diagnostics, provenance=provenance)

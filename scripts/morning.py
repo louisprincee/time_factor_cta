@@ -1,0 +1,349 @@
+"""早盘策略：基础反向单，最近若干笔账面均值为负时改为顺势。
+
+    python scripts/morning.py
+    python scripts/morning.py --validation-2022
+    python scripts/morning.py --grid
+
+规则在 config/morning.json。回测输出在 runs/morning/meta/<分区>/，参数面在 runs/morning/meta_grid/。
+2022 的账面从研究期末接着算（2021 的单进入 2022 年初的窗口）。
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from tfcta import config as C
+from tfcta.data import universe as U
+from tfcta.research import context, stats
+
+CONFIG = ROOT / "config" / "morning.json"
+RUNS = ROOT / "runs" / "morning"
+FEATURES = RUNS / "features"
+OUT = RUNS / "meta"
+GRID_OUT = RUNS / "meta_grid"
+PROJECT_TRIALS = 300  # 整个项目在早盘上的粗略尝试次数
+SECTORS = {
+    "农产品": "A B C CS M Y P JD LH RR AP CF CY SR OI RM RS PK CJ WH PM RI LR JR".split(),
+    "黑色": "I J JM RB HC WR SS SF SM ZC".split(),
+    "有色": "CU AL ZN PB NI SN BC AO AD SI LC PS".split(),
+    "贵金属": "AU AG".split(),
+    "能源": "BU FU LU SC PG".split(),
+    "化工": "L V PP EG EB RU NR BR SP TA MA FG SA UR PF PX PR SH".split(),
+    "建材": "BB FB LG".split(),
+    "航运": "EC".split(),
+}
+SECTOR_OF = {s: name for name, members in SECTORS.items() for s in members}
+YEARS = {"research": (2016, 2021), "validation_2022": (2022, 2022)}
+SCENARIOS = {
+    "主口径": lambda t: (t.gross_1130, t.cost_1130),
+    "滑点2跳": lambda t: (t.gross_1130, t.cost_1130 + 2 * t.tick_frac),
+}
+
+
+def load():
+    return json.loads(CONFIG.read_text(encoding="utf-8"))
+
+
+def add_history(table, relvol_window, sigma_window):
+    """相对量能和仓位波动只用前一交易日及更早的值；表须按品种、日期排好。"""
+    by = table.groupby("symbol")
+    usual = by.pre_volume.transform(
+        lambda s: s.shift(1).rolling(relvol_window, min_periods=relvol_window * 3 // 4).median())
+    table["relvol"] = table.pre_volume / usual
+    table["sigma"] = by.gross_1130.transform(
+        lambda s: s.shift(1).rolling(sigma_window, min_periods=sigma_window * 3 // 4).std())
+    return table
+
+
+def annotate(table, spec, pools):
+    """补历史量能和波动，并标出板块与当年品种池。表须已经按品种、日期排好。"""
+    table = add_history(table, spec["rule"]["relvol_window"], spec["sizing"]["sigma_window"])
+    unknown = set(table.symbol) - set(SECTOR_OF)
+    if unknown:
+        raise ValueError(f"未登记板块: {sorted(unknown)}")
+    table["sector"] = table.symbol.map(SECTOR_OF)
+    table["member"] = [s in pools.get(d.year, ()) for s, d in zip(table.symbol, table.trading_date)]
+    return table
+
+
+def prepare(partition, spec, years=None, pools=None):
+    """读特征表，补上只用历史的派生量，并标出当年品种池成员。样本外须传入年份和各年品种池。"""
+    if partition == "oos":
+        C.assert_oos_research_locked()
+        if years is None or pools is None:
+            raise ValueError("样本外需要年份和品种池")
+    table = pd.read_parquet(FEATURES / f"{partition}.parquet")
+    table = table.sort_values(["symbol", "trading_date"]).reset_index(drop=True)
+    if table.duplicated(["symbol", "trading_date"]).any():
+        raise ValueError("特征表品种/日期重复")
+    if partition == "research":
+        pools = U.load_universe()
+    elif partition != "oos":
+        names, _ = U.validation_universe()
+        pools = {2022: list(names)}
+    table = annotate(table, spec, pools)
+    first, last = years or YEARS[partition]
+    table = table[table.trading_date.dt.year.between(first, last)].copy()
+    if partition == "research":
+        C.assert_no_holdout_dates(table.trading_date, "早盘研究")
+    elif partition == "oos":
+        C.assert_strict_oos_dates(table.trading_date, "早盘样本外")
+    else:
+        C.assert_validation_2022_dates(table.trading_date, "早盘 2022 诊断")
+    return table
+
+
+def prepare_through_2022(spec, first_year):
+    """研究期特征表接 2022 验证表，滚动量跨年连续；给需要用研究期训练、在 2022 测试的诊断用。"""
+    research = pd.read_parquet(FEATURES / "research.parquet")
+    C.assert_no_holdout_dates(research.trading_date, "早盘研究期")
+    later = pd.read_parquet(FEATURES / "validation_2022.parquet")
+    later = later[pd.to_datetime(later.trading_date).dt.year == 2022]
+    C.assert_validation_2022_dates(later.trading_date, "早盘 2022")
+    table = pd.concat([research, later], ignore_index=True).sort_values(["symbol", "trading_date"])
+    table = table.reset_index(drop=True)
+    if table.duplicated(["symbol", "trading_date"]).any():
+        raise ValueError("特征表品种/日期重复")
+    pools = {**U.load_universe(), 2022: list(U.validation_universe()[0])}
+    table = annotate(table, spec, pools)
+    return table[table.trading_date.dt.year.between(first_year, 2022)].copy()
+
+
+def sides(table, rule):
+    """上冲且高点出现得晚则做空，下杀且低点出现得晚则做多；还要求夜盘同向、量能不高。"""
+    dev = table.dev15
+    c = rule["clock"]
+    ok = ((dev.abs() > rule["dev_threshold"]) & (table.est_cost < rule["max_est_cost"]) & table.member
+          & (((dev > 0) & (table.hclock_td >= c)) | ((dev < 0) & (table.lclock_td >= c)))
+          & (np.sign(table.ret_night) == np.sign(dev))
+          & (table.relvol < rule["relvol_max"]))
+    return (-np.sign(dev)).where(ok, 0.0).fillna(0.0)
+
+
+def weights(table, side, sizing):
+    raw = side * np.minimum(sizing["max_weight"], sizing["risk_per_trade"] / table.sigma)
+    raw = raw.where(side != 0, 0.0)
+    if (side != 0).any() and not np.isfinite(raw[side != 0]).all():
+        raise ValueError("有信号但缺少波动估计")
+    frame = pd.DataFrame({"day": table.trading_date, "sector": table.sector, "w": raw})
+    sector_gross = frame.w.abs().groupby([frame.day, frame.sector]).transform("sum")
+    frame["w"] *= np.minimum(1.0, sizing["max_sector_gross"] / sector_gross.where(sector_gross > 0, 1.0))
+    gross = frame.w.abs().groupby(frame.day).transform("sum")
+    frame["w"] *= np.minimum(1.0, sizing["max_gross"] / gross.where(gross > 0, 1.0))
+    return frame.w
+
+
+def daily(table, weight, scenario, calendar):
+    gross, cost = SCENARIOS[scenario](table)
+    return position_pnl(table, weight, gross, cost, calendar)
+
+
+def base_books(table, spec):
+    """早盘策略的基础反向单。"""
+    return {"主策略": sides(table, spec["rule"])}
+
+
+def position_pnl(table, weight, gross, cost, calendar):
+    """任意毛收益和成本口径下的日收益（现金日记 0）。"""
+    active = weight != 0
+    if not (np.isfinite(gross[active]).all() and np.isfinite(cost[active]).all()):
+        raise ValueError("持仓缺行情或成本")
+    out = (weight * gross - weight.abs() * cost).where(active, 0.0)
+    return out.groupby(table.trading_date).sum().reindex(calendar, fill_value=0.0)
+
+
+def book_row(table, side, sizing, calendar, gross=None, cost=None):
+    """一本单的主口径与 2 跳结果、逐年夏普，以及顺势 / 反向两条腿。"""
+    gross = table.gross_1130 if gross is None else gross
+    cost = table.cost_1130 if cost is None else cost
+    weight = weights(table, side, sizing)
+    ret = position_pnl(table, weight, gross, cost, calendar)
+    stressed = position_pnl(table, weight, gross, cost + 2 * table.tick_frac, calendar)
+    perf = stats.performance(ret)
+    active = weight != 0
+    net = (np.sign(weight) * gross - cost)[active]
+    follow = (np.sign(weight) == np.sign(table.dev15))[active]
+    row = {"夏普": stats.sharpe_ratio(ret), "夏普95%下限": bootstrap_sharpe(ret)[0], "滑点2跳夏普": stats.sharpe_ratio(stressed),
+           "年化收益": perf["ann_return"], "最大回撤": perf["max_drawdown"], "交易笔数": int(active.sum()),
+           "单笔净bp": net.mean() * 1e4 if active.any() else np.nan,
+           "顺势笔数": int(follow.sum()), "顺势净bp": net[follow].mean() * 1e4 if follow.any() else np.nan,
+           "反向笔数": int((~follow).sum()), "反向净bp": net[~follow].mean() * 1e4 if (~follow).any() else np.nan}
+    for year, part in ret.groupby(ret.index.year):
+        row[f"{year}夏普"] = stats.sharpe_ratio(part)
+    return row, ret
+
+
+def bootstrap_sharpe(ret, draws=3000, block=20, seed=20261008):
+    rng = np.random.default_rng(seed)
+    values = ret.to_numpy()
+    n = len(values)
+    starts = rng.integers(0, n, size=(draws, int(np.ceil(n / block))))
+    index = ((starts[:, :, None] + np.arange(block)) % n).reshape(draws, -1)[:, :n]
+    sample = values[index]
+    sr = sample.mean(axis=1) / sample.std(axis=1, ddof=1) * np.sqrt(252)
+    return np.nanquantile(sr, [0.025, 0.975]).tolist()
+
+
+def trailing_mean(table, side, window):
+    """每个交易日可用的“最近 window 笔账面单笔均值”：只用前一交易日及以前的单，当天的单不算。"""
+    active = side != 0
+    trades = pd.DataFrame({"day": table.trading_date[active], "symbol": table.symbol[active],
+                           "net": (side * table.gross_1130 - table.cost_1130)[active]})
+    trades = trades.sort_values(["day", "symbol"], kind="mergesort")
+    rolling = trades.net.rolling(window, min_periods=window).mean()
+    at_close = rolling.groupby(trades.day).last()  # 当天收盘后已知
+    calendar = pd.DatetimeIndex(sorted(table.trading_date.unique()))
+    known = at_close.reindex(calendar).ffill().shift(1)  # 次日才用
+    return table.trading_date.map(known)
+
+
+def trailing_days_mean(table, side, days):
+    """最近 days 个交易日内已平仓单的单笔均值，只用前一交易日及以前；窗口内没有单时为空。"""
+    active = side != 0
+    net = (side * table.gross_1130 - table.cost_1130).where(active)
+    calendar = pd.DatetimeIndex(sorted(table.trading_date.unique()))
+    total = net.groupby(table.trading_date).sum().reindex(calendar, fill_value=0.0)
+    count = active.groupby(table.trading_date).sum().reindex(calendar, fill_value=0)
+    rolling = total.rolling(days, min_periods=days).sum() / count.rolling(days, min_periods=days).sum().replace(0, np.nan)
+    return table.trading_date.map(rolling.shift(1))
+
+
+def switched(side, score, mode):
+    """最近窗口账面均值为负时，把反向单改成顺势。其他模式已移除。"""
+    if mode != "亏损反手":
+        raise ValueError(f"只保留亏损反手，收到 {mode}")
+    return side.where(~(score < 0), -side)
+
+
+def run(partition):
+    spec = load()
+    if partition == "research":
+        table = prepare("research", spec)
+        C.assert_no_holdout_dates(table.trading_date, "早盘策略")
+    else:
+        table = prepare_through_2022(spec, 2016)
+    books = base_books(table, spec)
+    windows = [spec["window_trades"], *spec["neighborhood"]["window_trades"]]
+    keep = table.trading_date.dt.year.between(*((2016, 2021) if partition == "research" else (2022, 2022)))
+    view = table[keep].reset_index(drop=True)
+    if partition != "research":
+        C.assert_validation_2022_dates(view.trading_date, "早盘策略 2022")
+    calendar = pd.DatetimeIndex(sorted(view.trading_date.unique()))
+    if set(books) != {"主策略"} or set(spec["modes"]) != {"亏损反手"}:
+        raise ValueError("早盘策略只保留主策略的亏损反手")
+    side = books["主策略"]
+    rows, curves = [], {}
+    # 不切换的主策略只作对照，样本外核对要和已落盘的这一列逐日比较；它不是可选模式。
+    plain = side[keep].reset_index(drop=True)
+    row, ret = book_row(view, plain, spec["sizing"], calendar)
+    rows.append({"组合": "主策略·原样", "窗口": spec["window_trades"], "切换比例": 0.0,
+                 **row, "主设定": False})
+    curves["主策略·原样"] = ret
+    for window in windows:
+        score = trailing_mean(table, side, window)[keep].reset_index(drop=True)
+        base_side = side[keep].reset_index(drop=True)
+        new = switched(base_side, score, "亏损反手")
+        row, ret = book_row(view, new, spec["sizing"], calendar)
+        losing = (score < 0)[base_side != 0]
+        name = f"主策略·亏损反手·{window}笔"
+        rows.append({"组合": name, "窗口": window, "切换比例": float(losing.mean()),
+                     **row, "主设定": window == spec["window_trades"]})
+        curves[name] = ret
+    result = pd.DataFrame(rows).set_index("组合")
+    if partition == "research":
+        result["保留"] = result.主设定 & (result.夏普 > 0)  # 保留只看研究期
+    out = OUT / partition
+    out.mkdir(parents=True, exist_ok=True)
+    result.to_csv(out / "books.csv", encoding="utf-8-sig")
+    pd.DataFrame(curves).to_csv(out / "daily.csv", encoding="utf-8-sig")
+    main_names = [n for n in curves if result.loc[n, "主设定"]]
+    print("图表：", context.plot_performance(curves, out / "plots" / ("research" if partition == "research" else "validation-2022"), f"早盘策略 {partition}（30 笔主设定，扣费后）", main_names))
+    pd.set_option("display.width", 260)
+    pd.set_option("display.max_columns", 30)
+    print(result.round(3).to_string())
+    print("结果：", out)
+
+
+def window_grid(spec):
+    if spec["books"] != ["主策略"] or spec["modes"] != ["亏损反手"]:
+        raise ValueError("参数面只保留主策略的亏损反手，变化的是回看窗口")
+    for kind, sizes in spec["windows"].items():
+        for size in sizes:
+            yield "主策略", "亏损反手", kind, size
+
+
+def run_grid():
+    spec = load()
+    grid = spec["grid"]
+    first, _last = grid["evaluation"]["period"]
+    table = prepare_through_2022(spec, first)
+    C.assert_validation_2022_dates(table.trading_date[table.trading_date.dt.year == 2022], "早盘参数面 2022")
+    books = base_books(table, spec)
+    calendar = pd.DatetimeIndex(sorted(table.trading_date.unique()))
+    rows, curves = [], {}
+    for book, mode, kind, size in window_grid(grid):
+        side = books[book]
+        score = trailing_mean(table, side, size) if kind == "笔数" else trailing_days_mean(table, side, size)
+        side = switched(side, score, mode)
+        weight = weights(table, side, spec["sizing"])
+        ret = daily(table, weight, "主口径", calendar)
+        stressed = daily(table, weight, "滑点2跳", calendar)
+        unit = {"笔数": "笔", "交易日": "日"}[kind]
+        name = f"{book}·{mode}·{size}{unit}"
+        dev, later = ret[ret.index.year <= 2021], ret[ret.index.year == 2022]
+        rows.append({"组合": name, "基础单": book, "方式": mode, "口径": kind or "-", "窗口": size or 0,
+                     "2016-2022夏普": stats.sharpe_ratio(ret), "2016-2021夏普": stats.sharpe_ratio(dev),
+                     "2022夏普": stats.sharpe_ratio(later), "2跳夏普": stats.sharpe_ratio(stressed),
+                     "交易笔数": int((weight != 0).sum()),
+                     **{f"{y}夏普": stats.sharpe_ratio(p) for y, p in ret.groupby(ret.index.year)}})
+        curves[name] = ret
+    result = pd.DataFrame(rows).set_index("组合")
+    matrix = pd.DataFrame(curves)
+    pbo = stats.pbo_cscv(matrix, grid["evaluation"]["pbo_blocks"])
+    best = result["2016-2022夏普"].idxmax()
+    trial_sharpes = result["2016-2022夏普"].to_numpy()
+    dsr_grid = stats.deflated_sharpe(curves[best], trial_sharpes)
+    dsr_project = stats.deflated_sharpe(curves[best], trial_sharpes, PROJECT_TRIALS)
+    frozen = "主策略·亏损反手·30笔"
+    out = GRID_OUT
+    out.mkdir(parents=True, exist_ok=True)
+    result.to_csv(out / "grid.csv", encoding="utf-8-sig")
+    matrix.to_csv(out / "daily.csv", encoding="utf-8-sig")
+    summary = {"最好的组合": best, "PBO": pbo, "DSR（网格内）": dsr_grid, f"DSR（约 {PROJECT_TRIALS} 次尝试）": dsr_project,
+               "冻结组合": {"组合": frozen, **result.loc[frozen, ["2016-2021夏普", "2022夏普", "2016-2022夏普"]].to_dict()}}
+    (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
+    top = list(dict.fromkeys([*result["2016-2022夏普"].nlargest(5).index, frozen]))
+    print("图表：", context.plot_performance(matrix[top], out / "plots", "早盘参数面 2016–2022（前五与冻结组合）"))
+    pd.set_option("display.width", 260)
+    pd.set_option("display.max_columns", 30)
+    shown = ["交易笔数", "2016-2021夏普", "2022夏普", "2016-2022夏普", "2跳夏普"]
+    print(result[shown].sort_values("2016-2022夏普", ascending=False).round(2).to_string())
+    for book in grid["books"]:
+        for mode in grid["modes"]:
+            part = result[(result.基础单 == book) & (result.方式 == mode)]
+            print(f"\n{book}·{mode}：窗口 → 2016-2021 / 2022 夏普")
+            print(part.set_index(["口径", "窗口"])[["2016-2021夏普", "2022夏普"]].round(2).T.to_string())
+    print(json.dumps(summary, ensure_ascii=False, indent=2, default=lambda v: round(float(v), 3)))
+    print("结果：", out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--validation-2022", action="store_true")
+    parser.add_argument("--grid", action="store_true", help="跑回看窗口的参数面（2016–2022）")
+    args = parser.parse_args()
+    if args.grid and args.validation_2022:
+        parser.error("参数面固定看 2016–2022，不用再加 --validation-2022")
+    if args.grid:
+        run_grid()
+    else:
+        run("validation_2022" if args.validation_2022 else "research")
+
+
+if __name__ == "__main__":
+    main()

@@ -5,7 +5,7 @@
     python scripts/oos_final.py --years 2024
     python scripts/oos_final.py --years 2023-2025
 
-口径见 config/oos_protocol.json，策略冻结在 config/morning_meta.json。
+口径见 config/oos_protocol.json，策略冻结在 config/morning.json。
 读样本外之前先写台账 data/oos/ledger.jsonl；同一配置和年份已有结果时须加 --rerun。
 未选择计分的年份只用于连续历史上下文；明确包含在 --years 中的年份计入绩效。输出在 runs/oos/<年份>/。
 """
@@ -24,17 +24,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from tfcta import config as C
 from tfcta.data import universe as U
 from tfcta.research import context, costs, stats
-import morning_features
-import research_morning_meta as meta
-import research_morning_oor as oor
-
+import morning
+import morning_features as features
 PROTOCOL = ROOT / "config" / "oos_protocol.json"
 OUT = ROOT / "runs" / "oos"
-HASHED = ["config/oos_protocol.json", "config/morning_meta.json", "config/morning_oor.json",
-          "scripts/oos_final.py", "scripts/research_morning_meta.py", "scripts/research_morning_oor.py",
-          "scripts/morning_features.py"]
+HASHED = ["config/oos_protocol.json", "config/morning.json",
+          "scripts/oos_final.py", "scripts/morning.py", "scripts/morning_features.py"]
 TICKS = {"主口径": 1.0, "滑点2跳": 2.0}
-SAVED = {"早盘元策略": (meta.OUT, "主策略·亏损反手·30笔"), "主策略·原样": (meta.OUT, "主策略·原样")}
+SAVED = {"早盘元策略": (morning.OUT, "主策略·亏损反手·30笔"), "主策略·原样": (morning.OUT, "主策略·原样")}
 
 
 def parse_years(text, allowed):
@@ -89,17 +86,16 @@ def load_specs(protocol):
     spec = json.loads((ROOT / candidate["config"]).read_text(encoding="utf-8"))
     if spec.get("chosen") != "主策略·亏损反手·30笔" or not spec.get("frozen_at"):
         raise SystemExit(f"{candidate['config']} 没有冻结为 主策略·亏损反手·30笔")
-    base = json.loads((ROOT / spec["base_config"]).read_text(encoding="utf-8"))
-    return candidate, base
+    return candidate, spec
 
 
 # ---------------------------------------------------------------- 早盘元策略
 
 def morning_books(table, base, candidate):
     """元策略和参照（不切换的主策略）；table 是研究期接 2022（接样本外）的连续特征表。"""
-    side = oor.base_books(table, base)[candidate["book"]]
-    score = meta.trailing_mean(table, side, candidate["window_trades"])
-    return {"早盘元策略": meta.switched(side, score, candidate["mode"]), "主策略·原样": side}
+    side = morning.base_books(table, base)[candidate["book"]]
+    score = morning.trailing_mean(table, side, candidate["window_trades"])
+    return {"早盘元策略": morning.switched(side, score, candidate["mode"]), "主策略·原样": side}
 
 
 def morning_returns(table, books, base):
@@ -107,8 +103,8 @@ def morning_returns(table, books, base):
     out = {}
     for scenario in TICKS:
         for name, side in books.items():
-            weight = oor.weights(table, side, base["sizing"])
-            out[(scenario, name)] = oor.daily(table, weight, scenario, calendar)
+            weight = morning.weights(table, side, base["sizing"])
+            out[(scenario, name)] = morning.daily(table, weight, scenario, calendar)
     return out
 
 
@@ -164,7 +160,7 @@ def yearly(series, years, scored):
 
 def rebuild(base, candidate, oos_table=None):
     """研究期接 2022（再接样本外）的连续特征表上的元策略和参照。"""
-    table = oor.prepare_through_2022(base, 2016)
+    table = morning.prepare_through_2022(base, 2016)
     if oos_table is not None:
         table = pd.concat([table, oos_table], ignore_index=True)
     books = morning_books(table, base, candidate)
@@ -177,10 +173,10 @@ def preflight(protocol):
     missing = [str(folder / p / "daily.csv") for folder, _ in SAVED.values() for p in ("research", "validation_2022")
                if not (folder / p / "daily.csv").exists()]
     if missing:
-        raise SystemExit(f"先跑研究期和 2022：python scripts/research_morning_meta.py [--validation-2022]，缺 {missing}")
+        raise SystemExit(f"先跑研究期和 2022：python scripts/morning.py [--validation-2022]，缺 {missing}")
     if not costs.fee_path("oos").exists():
         raise SystemExit("先下载样本外手续费：python download/getFeeHistory.py --partition oos")
-    if not (oor.FEATURES / "validation_2022.parquet").exists():
+    if not (morning.FEATURES / "validation_2022.parquet").exists():
         raise SystemExit("先生成早盘特征：python scripts/morning_features.py")
 
 
@@ -209,13 +205,13 @@ def main():
     try:
         with C.final_evaluation(protocol, files, end, strategy, note=note) as ticket:
             oos_years = list(range(C.STRICT_OOS_START.year, end.year + 1))
-            universe, _ = U.oos_universe([s for s in C.COMMODITY_SYMBOLS if s in costs.MULTIPLIER], end)
-            universe = {y: [s for s in universe.get(y, []) if s in costs.MULTIPLIER] for y in oos_years}
+            universe, _ = U.oos_universe(costs.require_multipliers(C.COMMODITY_SYMBOLS), end)
+            universe = {y: list(universe.get(y, [])) for y in oos_years}
             if not all(universe.values()):
                 raise ValueError(f"样本外有年份品种池为空: {[y for y, v in universe.items() if not v]}")
             names = sorted({s for group in universe.values() for s in group})
-            morning_features.build("oos", end=end, names=names)
-            oos_table = oor.prepare("oos", base, years=(oos_years[0], oos_years[-1]), pools=universe)
+            features.build("oos", end=end, names=names)
+            oos_table = morning.prepare("oos", base, years=(oos_years[0], oos_years[-1]), pools=universe)
             table, books, series = rebuild(base, candidate, oos_table)
             notes = consistency(series["主口径"])
     except Exception as error:  # 中途失败也留痕：台账里 opened 之后跟一条 aborted

@@ -397,7 +397,7 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
                 if r['status'] == 'ok' and r['missing_price_fields']]
     notes = [boundary_note]
     if absent:
-        notes.append(f"研究期有、2022 源文件里没有的品种（2022 仍在池里的话第 6 步会报错）: {absent}")
+        notes.append(f"研究期有、2022 源文件里没有的品种（2022 仍在池里的话第 2 步会报错）: {absent}")
     if no_price:
         notes.append(f"缺 open/openw，2022 收益算不出来: {no_price}")
     if not frames or not ok_boundary:
@@ -448,7 +448,8 @@ def verify_validation(syms: list[str], run: Path, paths: list, notes: list[str])
         print(f"未通过: {failures}")
         C.report_step(1, passed=False, paths=paths, note=extra)
         return 1
-    C.report_step(1, passed=True, next_step=6, paths=paths, note=extra)
+    note = f"{extra} 2022 验证分片已写好。研究流程的下一步仍是第 2 步品种池。".strip()
+    C.report_step(1, passed=True, next_step=None, paths=paths, note=note)
     return 0
 
 

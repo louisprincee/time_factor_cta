@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # 分钟频原始单体 pickle（扩展名是 .txt，内容是 pickle），在 data/data_min/ 下。
 # 可用环境变量 TFCTA_MINUTE_DIR 指向别处；默认数据目录受 /data/ 忽略规则保护。
-# 原始数据跟着项目走，不依赖同级的 backtest_cta_pack 是否存在。
+# 原始数据跟着项目走。
 MINUTE_RAW_DIR = Path(_os.environ.get("TFCTA_MINUTE_DIR", PROJECT_ROOT / "data" / "data_min"))
 MINUTE_MONOLITH = MINUTE_RAW_DIR / "future_all1mdata_20100101-20251231.txt"
 
@@ -48,13 +48,10 @@ RESEARCH_END = _dt.date(2021, 12, 31)
 
 STUDY_START = _dt.date(2016, 1, 1)        # 第一个计入绩效的信号日
 
-# 日频因子研究逐年诊断；ML 的训练/测试折由 intraday.ml 明确指定。
-# 2016/2017 两年的滚动阈值与标准化窗口落在夜盘未全面铺开的 2014-2016，报告中须标注
-
 # --------------------------------------------------------------------------
 # 品种
 # --------------------------------------------------------------------------
-# 与 backtest_cta_pack/data/merge_minute_ranges.py 的 NAMES 完全一致（83 个，顺序保留）
+# 商品与金融期货代码。金融期货不进商品池。
 ALL_SYMBOLS = [
     'AG', 'AL', 'AU', 'BC', 'BU', 'CU', 'FU', 'HC', 'LU', 'NI', 'NR', 'PB', 'RB',
     'RU', 'SC', 'SN', 'SP', 'SS', 'WR', 'ZN', 'A', 'B', 'BB', 'C', 'CS', 'EB',

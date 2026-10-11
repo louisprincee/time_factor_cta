@@ -54,11 +54,11 @@ def test_morning_books_switch_on_trailing_loss_across_partitions():
     table = pd.DataFrame({'trading_date': days, 'symbol': 'A', 'dev15': .003, 'gross_1130': [.01, .01, .02],
                           'cost_1130': 0.})
     base_side = pd.Series([-1., -1., -1.])  # 主策略：上冲做空，前两笔都亏
-    original = final.oor.base_books
-    final.oor.base_books = lambda t, base: {'主策略': base_side}
+    original = final.morning.base_books
+    final.morning.base_books = lambda t, base: {'主策略': base_side}
     try:
         books = final.morning_books(table, {}, {'book': '主策略', 'mode': '亏损反手', 'window_trades': 2})
     finally:
-        final.oor.base_books = original
+        final.morning.base_books = original
     assert books['主策略·原样'].tolist() == [-1., -1., -1.]
     assert books['早盘元策略'].tolist() == [-1., -1., 1.]  # 第三天才看到前两笔亏损

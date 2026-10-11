@@ -2,7 +2,7 @@
 
 从米筐分钟数据出发，研究商品期货的日频因子和日内规则，并在严格隔离的样本外上做最终检验。起点是兴业证券《基于高频时间维度的国债期货择时因子及个股 CTA 研究》（`docs/` 下的 PDF）：价格停留时间、高低点出现的先后能否提供可交易的信息。
 
-当前结论（2026-10-10）：**没有可实盘的策略。** 唯一保留的策略是早盘元策略（主策略·亏损反手·30笔），2023–2025 严格样本外夏普 0.04（2023 +1.9%，2024 +1.5%，2025 −3.3%），2 跳滑点 −0.35。其他方案（日频核心 + 早盘卫星、四条日频腿、方向判别、时间因子、机器学习、持仓量、降成本等）都已放弃并删除，已提交过的可从 git 历史找回。2016–2025 的数据都已看过，台账见 `data/oos/ledger.jsonl`。早盘主策略见 [MorningOverreactionReversal.md](docs/MorningOverreactionReversal.md)。
+当前结论（2026-10-11）：**还没有做过 2023–2025 的最终测试。** 唯一保留的策略是早盘元策略（主策略·亏损反手·30笔）。研究期夏普 1.15，2022 诊断夏普 0.56；这两段都不能代替样本外。其他方案（日频核心 + 早盘卫星、四条日频腿、方向判别、时间因子、机器学习、持仓量、降成本等）都已放弃并删除，已提交过的可从 git 历史找回。早盘主策略见 [MorningOverreactionReversal.md](docs/MorningOverreactionReversal.md)。
 
 ## 目录
 
@@ -59,10 +59,7 @@ RQDATAC_PASSWORD=...
 - 研究接口读到 2022 年及以后的日期会抛 `HoldoutViolation`。2022 只能通过 `--validation-2022` 这类专门入口读取。
 - 样本外分片、样本外外部数据、样本外手续费的读取接口全部加锁，年份结束也不会自动解锁。只有 `C.final_evaluation(...)` 块内才放行，而且读取不能越过登记的截止日。
 - `final_evaluation` 的进入条件：配置里写明 `chosen` 和 `frozen_at`；测试窗口已结束；截止日在 2023-01-01..2025-12-31。进入时先往 `data/oos/ledger.jsonl` 追加一条 `opened` 记录（含配置文件 sha256），再读数据。台账只追加，不改不删。
-- 当前台账记录：
-  - 2026-09-30，`vwap_fade`（旧日内策略），样本外 2023–2025，夏普 −0.25。
-  - 2026-10-08，日频核心 + 早盘卫星，样本外 2023，夏普 −1.46；同日追加一条 `decision` 记录，标明该方案已放弃。
-- 样本外历史访问以台账为准：旧 `vwap_fade` 曾使用 2023–2025，旧“核心 + 卫星”方案曾使用 2023。当前早盘元策略的冻结协议允许将 2023 作为计分年份；历史访问记录保留，解释结果时应一并参考。
+- 当前早盘元策略还没有 2023–2025 的台账结果。这三年都可以计分。进入 `final_evaluation` 时才会往 `data/oos/ledger.jsonl` 追加记录。
 
 ## 全流程
 
@@ -155,9 +152,11 @@ python scripts/research.py --specs config/research_candidates.json
 
 `--slippage-ticks 2` 用 2 跳做压力测试，`--skip-ic` 跳过 IC 诊断。
 
-### 5. 策略研究（以早盘规则为例）
+### 5. 早盘策略
 
-先生成逐日特征表，决策时点是 09:16 收盘。不带参数时生成研究期和 2022 两份，写到 `runs/morning_features/`。样本外特征只能在 `C.final_evaluation(...)` 锁内生成：
+策略在 `scripts/morning.py`，配置在 `config/morning.json`，结果在 `runs/morning/`。基础反向单、亏损反手和回看窗口网格都在这一份里。
+
+先生成逐日特征表，决策时点是 09:16 收盘。不带参数时生成研究期和 2022 两份，写到 `runs/morning/features/`。样本外特征只能在 `C.final_evaluation(...)` 锁内生成：
 
 ```bash
 python scripts/morning_features.py
@@ -167,50 +166,40 @@ python scripts/morning_features.py
 python scripts/morning_features.py research
 ```
 
-规则、候选和参数写在 `config/morning_oor.json`，研究期上冻结后，2022 只跑一次：
+基础反向单最近若干笔已平仓单（只用前一交易日及以前）的账面均值为负时改为顺势。主设定是 30 笔，同时报告 15 笔和 60 笔。研究期 2016–2021 夏普 1.15，2022 夏普 0.56；设计受“2022 年反向变成延续”启发，2022 不算检验。亏损停手和偏离反向的对照结论留在配置的 `result`、`result_2022`，代码里不再跑。不切换的主策略只留一列，给样本外核对用。研究期和 2022 各跑一次：
 
 ```bash
-python scripts/research_morning_oor.py
+python scripts/morning.py
 ```
 
 ```bash
-python scripts/research_morning_oor.py --validation-2022
+python scripts/morning.py --validation-2022
 ```
 
-输出在 `runs/morning_oor/<分区>/`：candidates.csv、yearly.csv、stress.csv、neighborhood.csv、trades.csv、daily.csv。
+输出在 `runs/morning/meta/<分区>/`。
 
-早盘主策略是元策略的基础单，它自己在 2022 和 2023 都失败了，不单独作为策略。
-
-### 6. 早盘元策略
-
-配置 `config/morning_meta.json`（已冻结），脚本 `research_morning_meta.py`：主策略的反向单，最近 30 笔已平仓单（只用前一交易日及以前）的账面均值为负时改为顺势。研究期 2016–2021 夏普 1.15，2022 夏普 0.56；设计受“2022 年反向变成延续”启发，2022 不算检验。配置里还保留了停手、偏离反向等对照和结论（`result`、`result_2022`）。研究期和 2022 各跑一次：
+回看窗口的参数面（2026-10-10，样本外用完之后的探索）：亏损反手，10–90 笔或 20–120 个交易日，在 2016–2022 上算夏普、DSR（扣除尝试次数的夏普显著性，`stats.deflated_sharpe`）和 PBO（组合对称交叉验证的过拟合概率，`stats.pbo_cscv`）。网格写在同一份配置的 `grid` 里，输出在 `runs/morning/meta_grid/`：
 
 ```bash
-python scripts/research_morning_meta.py
+python scripts/morning.py --grid
 ```
 
-```bash
-python scripts/research_morning_meta.py --validation-2022
-```
-
-输出在 `runs/morning_oor/meta/<分区>/`。
-
-元策略参数面（2026-10-10，样本外用完之后的探索）：窗口 10–90 笔或 20–120 个交易日 × 反手 / 停手 × 主策略 / 偏离反向，在 2016–2022 上算夏普、DSR（扣除尝试次数的夏普显著性，`stats.deflated_sharpe`）和 PBO（组合对称交叉验证的过拟合概率，`stats.pbo_cscv`），网格写在 `config/meta_grid.json`，输出在 `runs/morning_oor/meta_grid/`：
+高低点出现位置和 09:17→11:30 收益的相关，只在 2016–2021 上算，并分板块做按日聚类的显著性检验。说明写在 `docs/高低点与上午收益.md`，输出在 `runs/morning/clock_return/`：
 
 ```bash
-python scripts/research_meta_grid.py
+python scripts/morning_clock_return.py
 ```
 
 ### 统一运行与绘图
 
 ```bash
-python scripts/run_strategy.py morning-meta research
+python scripts/run_strategy.py morning research
 ```
 
-可用策略名：`morning-oor`、`morning-meta`；阶段为 `research` 或 `validation-2022`。每个阶段回测完会自动出图（`tfcta.research.context.plot_performance`，净值和回撤在同一张图），写到结果目录的 `plots/<阶段>/performance.png`。早盘元策略的图只画 30 笔主设定。要挑几条序列重画，用：
+策略名是 `morning`，阶段为 `research` 或 `validation-2022`。每个阶段回测完会自动出图（`tfcta.research.context.plot_performance`，净值和回撤在同一张图），写到结果目录的 `plots/<阶段>/performance.png`。自动出图只画 30 笔主设定；15 笔、60 笔在 `daily.csv` 里。要挑几条序列重画，用：
 
 ```bash
-python scripts/plot_strategy.py morning-meta validation-2022 --series 主策略·亏损反手·30笔
+python scripts/plot_strategy.py morning validation-2022 --series 主策略·亏损反手·30笔
 ```
 
 ```bash
@@ -219,7 +208,7 @@ python scripts/plot_strategy.py oos 2023-2025
 
 ### 7. 样本外最终测试
 
-口径写在 `config/oos_protocol.json`：可计分年份为 2023、2024、2025（2026-10-09 已全部跑过，见台账），主口径 1 跳，参考 2 跳和不切换的主策略。`--years` 中明确指定的年份计入绩效；运行较晚年份时，之前的样本外历史仍用于连续信号和滚动状态。先检查，这一步只重算研究期和 2022 并与已落盘结果逐日核对，不读样本外：
+口径写在 `config/oos_protocol.json`：可计分年份为 2023、2024、2025，这三年尚未跑过。主口径 1 跳，参考 2 跳和不切换的主策略。`--years` 中明确指定的年份计入绩效；运行较晚年份时，之前的样本外历史仍用于连续信号和滚动状态。先检查，这一步只重算研究期和 2022 并与已落盘结果逐日核对，不读样本外：
 
 ```bash
 python scripts/oos_final.py --check
