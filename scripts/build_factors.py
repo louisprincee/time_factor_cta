@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from tfcta import config as C
-from tfcta.data import universe as U
-from tfcta.factors import cache, external
+from tfcta.data import load_universe
+from tfcta.factors import build_partition, build_symbol
 
 
 def main():
@@ -14,12 +14,12 @@ def main():
     parser.add_argument('--symbols',nargs='+')
     parser.add_argument('--overwrite',action='store_true')
     args = parser.parse_args()
-    universe = U.load_universe()
+    universe = load_universe()
     symbols = args.symbols or sorted({s for y,ss in universe.items() if 2016<=y<=2021 for s in ss})
     for i,symbol in enumerate(symbols,1):
-        result = cache.build_symbol(symbol,[(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT)],overwrite=args.overwrite)
+        result = build_symbol(symbol,[(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT)],overwrite=args.overwrite)
         print(f'[{i}/{len(symbols)}] {symbol}: {result}',flush=True)
-    result = external.build_partition('research',symbols)
+    result = build_partition('research',symbols)
     print(f'Research carry caches: {len(result)}',flush=True)
 
 

@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from tfcta import config as C
-from tfcta.data import universe as U
-from tfcta.research import context, costs, stats
+from tfcta.data import oos_universe
+from tfcta.research import fee_path, performance, plot_performance, require_multipliers, sharpe_ratio
 import morning
 import morning_features as features
 PROTOCOL = ROOT / "config" / "oos_protocol.json"
@@ -141,8 +141,8 @@ def consistency(series):
 
 
 def describe(ret, label, scenario):
-    perf = stats.performance(ret)
-    return {"候选": label, "口径": scenario, "夏普": stats.sharpe_ratio(ret), "累计收益": float((1 + ret).prod() - 1),
+    perf = performance(ret)
+    return {"候选": label, "口径": scenario, "夏普": sharpe_ratio(ret), "累计收益": float((1 + ret).prod() - 1),
             "年化收益": perf["ann_return"], "年化波动": perf["ann_vol"], "最大回撤": perf["max_drawdown"],
             "交易日": int(len(ret))}
 
@@ -152,7 +152,7 @@ def yearly(series, years, scored):
     for name, ret in series.items():
         for y in years:
             part = ret[ret.index.year == y]
-            rows.append({"候选": name, "年份": y, "计入绩效": y in scored, "夏普": stats.sharpe_ratio(part),
+            rows.append({"候选": name, "年份": y, "计入绩效": y in scored, "夏普": sharpe_ratio(part),
                          "收益": float((1 + part).prod() - 1),
                          "年内回撤": float(((1 + part).cumprod() / (1 + part).cumprod().cummax().clip(lower=1.0) - 1).min())})
     return pd.DataFrame(rows)
@@ -174,7 +174,7 @@ def preflight(protocol):
                if not (folder / p / "daily.csv").exists()]
     if missing:
         raise SystemExit(f"先跑研究期和 2022：python scripts/morning.py [--validation-2022]，缺 {missing}")
-    if not costs.fee_path("oos").exists():
+    if not fee_path("oos").exists():
         raise SystemExit("先下载样本外手续费：python download/getFeeHistory.py --partition oos")
     if not (morning.FEATURES / "validation_2022.parquet").exists():
         raise SystemExit("先生成早盘特征：python scripts/morning_features.py")
@@ -205,7 +205,7 @@ def main():
     try:
         with C.final_evaluation(protocol, files, end, strategy, note=note) as ticket:
             oos_years = list(range(C.STRICT_OOS_START.year, end.year + 1))
-            universe, _ = U.oos_universe(costs.require_multipliers(C.COMMODITY_SYMBOLS), end)
+            universe, _ = oos_universe(require_multipliers(C.COMMODITY_SYMBOLS), end)
             universe = {y: list(universe.get(y, [])) for y in oos_years}
             if not all(universe.values()):
                 raise ValueError(f"样本外有年份品种池为空: {[y for y, v in universe.items() if not v]}")
@@ -235,7 +235,7 @@ def write_outputs(ticket, years, oos_years, end, finger, changed, table, books, 
     trades = morning_trades(table, books, oos_years)
     trades.to_csv(out / "morning_trades.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(scored["主口径"]).to_csv(out / "daily.csv", encoding="utf-8-sig")
-    print("图表：", context.plot_performance(scored["主口径"], out / "plots" / label, f"样本外 {label}（主口径，扣费后）"))
+    print("图表：", plot_performance(scored["主口径"], out / "plots" / label, f"样本外 {label}（主口径，扣费后）"))
 
     def pick(name, scenario="主口径"):
         row = summary[(summary.候选 == name) & (summary.口径 == scenario)].iloc[0]

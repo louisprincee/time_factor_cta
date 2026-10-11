@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tfcta import config as C        # noqa: E402
-from tfcta.data import universe as U  # noqa: E402
+from tfcta.data import (  # noqa: E402
+    build_universe, collect_stats, entries_and_exits, universe_turnover_report,
+)
 
 
 def _run_dir() -> Path:
@@ -27,7 +29,7 @@ def main() -> int:
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
 
-    stats = U.collect_stats(args.symbols, verbose=False)
+    stats = collect_stats(args.symbols, verbose=False)
     if stats.empty:
         print(f"没有可用分片，请先运行 step1_shard_minutes.py\n路径: {C.RESEARCH_DIR}")
         return 2
@@ -38,11 +40,11 @@ def main() -> int:
         return 1
 
     years = [y for y in C.UNIVERSE_YEARS if y <= max_year + 1]
-    uni, detail = U.build_universe(stats, years=years,
+    uni, detail = build_universe(stats, years=years,
                                   lookback_years=args.lookback,
                                   min_turnover=args.min_turnover_yi * 1e8)
-    ee = U.entries_and_exits(uni)
-    traj = U.universe_turnover_report(stats)
+    ee = entries_and_exits(uni)
+    traj = universe_turnover_report(stats)
 
     C.ensure_dirs()
     run = _run_dir()

@@ -8,9 +8,12 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from tfcta import config as C
-from tfcta.data import shard_io, universe as U
+from tfcta.data import (
+    find_shard, load_oos_shard, load_shard, load_universe, load_validation_shard,
+    validation_universe,
+)
 from tfcta.factors import day_codes_of, raw_price_path
-from tfcta.research import costs
+from tfcta.research import MULTIPLIER, commission_rate, load_fees, load_ticks, require_multipliers
 
 OUT = ROOT / "runs" / "morning" / "features"
 DECISION, ENTRY, EXIT = (9, 16), (9, 17), (11, 30)
@@ -23,8 +26,8 @@ def stamp(day, hm):
 
 
 def fee_rate(kind, value, price, base, symbol):
-    """单边手续费占名义金额比例，公式在 costs.commission_rate。"""
-    return costs.commission_rate(kind, value, price, base, costs.MULTIPLIER[symbol])
+    """单边手续费占名义金额比例，公式在 commission_rate。"""
+    return commission_rate(kind, value, price, base, MULTIPLIER[symbol])
 
 
 def clock(values, fn):
@@ -36,16 +39,16 @@ def clock(values, fn):
 
 def load_minutes(symbol, partition, end=None):
     if partition == "research":
-        frame = shard_io.load_shard(symbol, directory=C.RESEARCH_DIR, columns=COLUMNS)
+        frame = load_shard(symbol, directory=C.RESEARCH_DIR, columns=COLUMNS)
     elif partition == "validation_2022":
-        tail = shard_io.load_shard(symbol, directory=C.RESEARCH_DIR, columns=COLUMNS)
+        tail = load_shard(symbol, directory=C.RESEARCH_DIR, columns=COLUMNS)
         tail = tail[pd.to_datetime(tail.trading_date) >= "2021-01-01"]
-        frame = pd.concat([tail, shard_io.load_validation_shard(symbol, columns=COLUMNS)])
+        frame = pd.concat([tail, load_validation_shard(symbol, columns=COLUMNS)])
     else:  # 样本外：2022 做预热，只能在 C.final_evaluation() 块内读
         parts = []
-        if shard_io.find_shard(C.VALIDATION_DIR, symbol) is not None:
-            parts.append(shard_io.load_validation_shard(symbol, columns=COLUMNS))
-        parts.append(shard_io.load_oos_shard(symbol, end=end, columns=COLUMNS))
+        if find_shard(C.VALIDATION_DIR, symbol) is not None:
+            parts.append(load_validation_shard(symbol, columns=COLUMNS))
+        parts.append(load_oos_shard(symbol, end=end, columns=COLUMNS))
         frame = pd.concat(parts)
     frame = frame.sort_index(kind="mergesort")
     frame["trading_date"] = pd.to_datetime(frame.trading_date).dt.normalize()
@@ -53,11 +56,11 @@ def load_minutes(symbol, partition, end=None):
 
 
 def fee_history(partition):
-    table = costs.load_fees("research")
+    table = load_fees("research")
     if partition != "research":
-        table = pd.concat([table, costs.load_fees("validation_2022")], ignore_index=True)
+        table = pd.concat([table, load_fees("validation_2022")], ignore_index=True)
     if partition == "oos":
-        table = pd.concat([table, costs.load_fees("oos")], ignore_index=True)
+        table = pd.concat([table, load_fees("oos")], ignore_index=True)
     table["trading_date"] = pd.to_datetime(table.trading_date)
     return table
 
@@ -132,11 +135,11 @@ def build(partition, end=None, names=None):
             raise ValueError("样本外特征需要截止日和品种池")
         end = C.to_date(end)
     elif partition == "research":
-        names = sorted({n for group in U.load_universe().values() for n in group})
+        names = sorted({n for group in load_universe().values() for n in group})
     else:
-        names, _ = U.validation_universe()
-    names = costs.require_multipliers(names)
-    fees, ticks = fee_history(partition), costs.load_ticks()
+        names, _ = validation_universe()
+    names = require_multipliers(names)
+    fees, ticks = fee_history(partition), load_ticks()
     parts = []
     for symbol in names:
         try:

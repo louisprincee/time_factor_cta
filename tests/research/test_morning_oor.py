@@ -40,20 +40,20 @@ def run_rows(monkeypatch, frame):
 
 def test_every_commodity_has_a_multiplier_and_a_sector():
     from tfcta import config as C
-    from tfcta.research import costs
-    missing = sorted(set(C.COMMODITY_SYMBOLS) - set(costs.MULTIPLIER))
+    from tfcta.research import MULTIPLIER, require_multipliers
+    missing = sorted(set(C.COMMODITY_SYMBOLS) - set(MULTIPLIER))
     assert missing == []
-    assert set(C.FINANCIAL_SYMBOLS).isdisjoint(costs.MULTIPLIER)
-    assert set(costs.MULTIPLIER) == set(oor.SECTOR_OF)
+    assert set(C.FINANCIAL_SYMBOLS).isdisjoint(MULTIPLIER)
+    assert set(MULTIPLIER) == set(oor.SECTOR_OF)
     # 鸡蛋报价是元/500千克，每手 5 吨，名义金额用 10 个报价单位。
-    assert costs.MULTIPLIER["JD"] == 10
-    assert costs.MULTIPLIER["EC"] == 50
-    assert costs.MULTIPLIER["BB"] == 500
-    assert costs.MULTIPLIER["LG"] == 90
-    assert costs.MULTIPLIER["LC"] == 1
-    assert costs.MULTIPLIER["SA"] == 20
+    assert MULTIPLIER["JD"] == 10
+    assert MULTIPLIER["EC"] == 50
+    assert MULTIPLIER["BB"] == 500
+    assert MULTIPLIER["LG"] == 90
+    assert MULTIPLIER["LC"] == 1
+    assert MULTIPLIER["SA"] == 20
     with pytest.raises(KeyError, match="IF"):
-        costs.require_multipliers(["RB", "IF"])
+        require_multipliers(["RB", "IF"])
 
 
 def test_decision_features_ignore_bars_after_0916(monkeypatch):

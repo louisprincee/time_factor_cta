@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import types
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,10 +11,11 @@ import numpy as np
 import pandas as pd
 
 from tfcta import config as C
-from tfcta.data import bars as B
-from tfcta.data import shard_io
-from tfcta.data import universe as U
-from tfcta.factors import library, cache, exante_z
+from tfcta.data import holding_forward_return, list_shards, load_roll_calendar, load_universe
+from tfcta.factors import (
+    CACHE_VERSION, SIGNED_PRIORS, SignalSet, combine, combo_dir, exante_z, load,
+    report_dir, timestamp_dir, to_signal,
+)
 
 
 def run_dir(step: str) -> Path:
@@ -591,7 +591,7 @@ def pbo_cscv(matrix: pd.DataFrame, blocks: int = 16) -> dict:
 
 @dataclass
 class StudyData:
-    factors: library.SignalSet
+    factors: SignalSet
     returns: pd.DataFrame
     universe: dict
     rolls: pd.DataFrame
@@ -602,12 +602,12 @@ class StudyData:
 
 
 def load_research(n_ticks=1.):
-    universe = {y:s for y,s in U.load_universe().items() if 2016<=y<=2021}
+    universe = {y:s for y,s in load_universe().items() if 2016<=y<=2021}
     symbols = sorted({s for ss in universe.values() for s in ss})
-    absent = set(symbols)-set(shard_io.list_shards(C.RESEARCH_DIR))
+    absent = set(symbols)-set(list_shards(C.RESEARCH_DIR))
     if absent:
         raise FileNotFoundError(f"研究期品种池缺分钟分片: {sorted(absent)}")
-    factors = library.load(symbols)
+    factors = load(symbols)
     prices = factors.bars['open']
     returns = (factors.bars['openw'].shift(-1)-factors.bars['openw'])/prices
     C.assert_no_holdout_dates(returns.index,'研究收益')
@@ -615,11 +615,11 @@ def load_research(n_ticks=1.):
     index = returns.index[(returns.index>=pd.Timestamp(C.STUDY_START)) & returns.notna().any(axis=1)]
     returns = returns.loc[index]
     rolls = pd.DataFrame(False,index=index,columns=symbols)
-    for symbol,frame in B.load_roll_calendar(symbols,C.RESEARCH_END).items():
+    for symbol,frame in load_roll_calendar(symbols,C.RESEARCH_END).items():
         days = index.intersection(frame.trading_date)
         rolls.loc[days,symbol] = True
-    o,c,r = costs.fee_tables(costs.load_fees(),prices)
-    slip = costs.slippage_tables(costs.load_ticks(),prices.loc[index],n_ticks)
+    o,c,r = fee_tables(load_fees(),prices)
+    slip = slippage_tables(load_ticks(),prices.loc[index],n_ticks)
     return StudyData(factors,returns,universe,rolls,o.loc[index],c.loc[index],r.loc[index],slip)
 
 
@@ -635,7 +635,7 @@ def validate_specs(specs):
         if not spec.get('factors'):
             raise ValueError('候选没有因子')
         for name,weight in spec['factors'].items():
-            if name not in library.SIGNED_PRIORS or not np.isfinite(weight) or weight==0:
+            if name not in SIGNED_PRIORS or not np.isfinite(weight) or weight==0:
                 raise ValueError(f'无效因子/权重: {name}:{weight}')
         if spec.get('timing','z') not in ('z','quantile') or spec.get('combine','mean') not in ('mean','agree','filter'):
             raise ValueError('无效信号/组合方法')
@@ -654,10 +654,10 @@ def combined(data,factors,timing='z',method='mean'):
     frames,weights = [],[]
     for name,weight in factors.items():
         # JSON weights multiply the already economically directed factor.
-        direction = library.SIGNED_PRIORS[name]*np.sign(weight)
-        frames.append(library.to_signal(name,data.factors.raw(name),timing,direction))
+        direction = SIGNED_PRIORS[name]*np.sign(weight)
+        frames.append(to_signal(name,data.factors.raw(name),timing,direction))
         weights.append(abs(weight))
-    return library.combine(frames,method,weights)
+    return combine(frames,method,weights)
 
 
 def signal_for(data,spec):
@@ -667,9 +667,9 @@ def signal_for(data,spec):
 
 def run_spec(data,spec):
     signal = signal_for(data,spec)
-    position = engine.position(signal,data.factors.vol,spec.get('vol_target',.20),
+    held = position(signal,data.factors.vol,spec.get('vol_target',.20),
         spec.get('cap',1.),spec.get('days',1),spec.get('mode','single'),spec.get('phase',0))
-    return engine.backtest(position.reindex_like(data.returns),data.returns,data.universe,
+    return backtest(held.reindex_like(data.returns),data.returns,data.universe,
         data.open_fee,data.close_fee,data.slippage,data.rolls,data.roll_close_fee)
 
 
@@ -680,8 +680,8 @@ def performance_rows(result,spec):
     for label,frame in periods:
         row = {'id':spec['id'],'period':label}
         for kind in ('gross','net'):
-            row.update({kind+'_'+k:v for k,v in stats.performance(frame[kind]).items()})
-            row[kind+'_sharpe'] = stats.sharpe_ratio(frame[kind])
+            row.update({kind+'_'+k:v for k,v in performance(frame[kind]).items()})
+            row[kind+'_sharpe'] = sharpe_ratio(frame[kind])
         row['annual_turnover'] = frame.turnover.sum()*252/len(frame) if len(frame) else np.nan
         row['annual_cost'] = frame.cost.sum()*252/len(frame) if len(frame) else np.nan
         rows.append(row)
@@ -695,8 +695,8 @@ def factor_diagnostics(data,horizons=(1,3,5,10)):
     for name in data.factors.signed:
         raw = data.factors.raw(name)
         for h in horizons:
-            forward = B.holding_forward_return(historical,h)
-            function = stats.cross_sectional_ic_table if name.startswith('cs_') else stats.factor_ic_table
+            forward = holding_forward_return(historical,h)
+            function = cross_sectional_ic_table if name.startswith('cs_') else factor_ic_table
             table = function(raw,forward,data.universe,name,list(range(2016,2022)))
             table = table.rename(columns={'ic':'spearman_ic','ic_ts':'predictive_score','t':'score_nw_t'})
             table.insert(0,'horizon',h)
@@ -712,13 +712,13 @@ def provenance(specs,n_ticks):
     for p in [C.UNIVERSE_DIR/'universe_by_year.json',C.RESEARCH_OUT_DIR/'fee_history.csv',
               C.RESEARCH_OUT_DIR/'tick_size.csv']:
         source_hashes[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
-    for directory in (cache.timestamp_dir(),cache.report_dir(),
-                      cache.combo_dir(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT),
+    for directory in (timestamp_dir(),report_dir(),
+                      combo_dir(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT),
                       C.FACTOR_DAILY_DIR/'external'/'research'):
         for p in sorted(directory.glob('*.parquet')) + sorted(directory.glob('*.pkl')):
             source_hashes[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
     return {'status':'research_only_unfrozen','candidates':specs,'slippage_ticks_per_side':n_ticks,
-        'cache_version':cache.CACHE_VERSION,'code_sha256':hashes,'input_sha256':source_hashes,
+        'cache_version':CACHE_VERSION,'code_sha256':hashes,'input_sha256':source_hashes,
         'window':'2016-2021','execution':'close signal, next trading-date open, open-to-open returns',
         'roll_fee':'old-contract close rate approximated by preceding dominant rate',
         'tick_source':'previous-year estimates, current raw open denominator',
@@ -762,10 +762,3 @@ def plot_performance(returns, out_dir, title="净值与最大回撤", series=Non
     fig.savefig(path, dpi=130)
     plt.close(fig)
     return path
-
-
-context = types.SimpleNamespace(run_dir=run_dir, clean_json=clean_json, dump_json=dump_json, plot_performance=plot_performance)
-costs = types.SimpleNamespace(fee_path=fee_path, MULTIPLIER=MULTIPLIER, require_multipliers=require_multipliers, commission_rate=commission_rate, load_fees=load_fees, fee_tables=fee_tables, load_ticks=load_ticks, slippage_tables=slippage_tables)
-engine = types.SimpleNamespace(rebalance=rebalance, position=position, allocate=allocate, trade_legs=trade_legs, backtest=backtest)
-stats = types.SimpleNamespace(deflated_sharpe=deflated_sharpe, pbo_cscv=pbo_cscv, _pair=_pair, _by_period=_by_period, _period_mean=_period_mean, _corr=_corr, spearman_ic=spearman_ic, summarize_ics=summarize_ics, horizon_of=horizon_of, exante_scaled_return=exante_scaled_return, ic_period_series=ic_period_series, nw_lag=nw_lag, _nw_se=_nw_se, timeseries_t=timeseries_t, sign_status=sign_status, IC_COLUMNS=IC_COLUMNS, _slice_year=_slice_year, factor_ic_table=factor_ic_table, cross_sectional_ic_table=cross_sectional_ic_table, PERIODS=PERIODS, METRIC_KEYS=METRIC_KEYS, _empty=_empty, performance=performance, sharpe_ratio=sharpe_ratio)
-study = types.SimpleNamespace(StudyData=StudyData, load_research=load_research, validate_specs=validate_specs, combined=combined, signal_for=signal_for, run_spec=run_spec, performance_rows=performance_rows, factor_diagnostics=factor_diagnostics, provenance=provenance)

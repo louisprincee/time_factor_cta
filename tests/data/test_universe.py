@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from tfcta import config as C
-from tfcta.data import universe as U
+from tfcta.data import build_universe, daily_stats, load_universe, market_calendar, screen_year
 
 
 def _minute_df(days, bars_per_day=10, night_bars=0, turnover=1.0,
@@ -61,7 +61,7 @@ def test_daily_stats_all_nan_day_is_nan_not_zero():
     """全 NaN 的一天必须得 NaN。"""
     days = pd.bdate_range('2016-03-01', periods=3)
     df = _minute_df(days, turnover=2.0, nan_days=[days[1]])
-    d = U.daily_stats(df)
+    d = daily_stats(df)
     assert np.isnan(d.loc[days[1], 'turnover'])
     assert d.loc[days[1], 'n_valid_close'] == 0
     assert d.loc[days[0], 'turnover'] == 20.0
@@ -69,9 +69,9 @@ def test_daily_stats_all_nan_day_is_nan_not_zero():
 
 def test_market_calendar_is_union_not_per_symbol_max():
     """分母必须是全市场交易日的并集。"""
-    a = U.daily_stats(_minute_df(pd.bdate_range('2016-01-04', periods=10)))
-    b = U.daily_stats(_minute_df(pd.bdate_range('2016-01-11', periods=10)))
-    cal = U.market_calendar({'A': a, 'B': b})
+    a = daily_stats(_minute_df(pd.bdate_range('2016-01-04', periods=10)))
+    b = daily_stats(_minute_df(pd.bdate_range('2016-01-11', periods=10)))
+    cal = market_calendar({'A': a, 'B': b})
     assert cal.loc[2016] == 15          # 两段各 10 天、重叠 5 天
 
 
@@ -79,7 +79,7 @@ def test_screen_never_uses_target_year_data():
     """目标年数据再漂亮也不能用：2017 年爆量、2016 年不达标的品种 在 2017 年的池子里必须缺席。"""
     stats = _stats([('X', 2016, 1.0, 1.0, 240),      # 前一年不达标
                     ('X', 2017, 999.0, 1.0, 240)])   # 当年爆量
-    d = U.screen_year(stats, 2017)
+    d = screen_year(stats, 2017)
     assert not bool(d.loc['X', 'passed'])
     assert d.loc['X', 'reason'] == '成交额'
     assert d.loc['X', 'screen_window'] == '2016-2016'
@@ -89,36 +89,36 @@ def test_screen_uses_previous_year_even_if_symbol_later_collapses():
     """反向的另一半：前一年活跃、当年塌缩的品种，当年应当在池子里。"""
     stats = _stats([('ZC', 2017, 500.0, 1.0, 240),
                     ('ZC', 2018, 0.1, 1.0, 240)])
-    assert bool(U.screen_year(stats, 2018).loc['ZC', 'passed'])
+    assert bool(screen_year(stats, 2018).loc['ZC', 'passed'])
     # 而塌缩之后的那一年就必须出池
-    assert not bool(U.screen_year(stats, 2019).loc['ZC', 'passed'])
+    assert not bool(screen_year(stats, 2019).loc['ZC', 'passed'])
 
 
 def test_screen_rejects_zero_lookback():
     with pytest.raises(ValueError, match='前视'):
-        U.screen_year(_stats(PASS), 2017, lookback_years=0)
+        screen_year(_stats(PASS), 2017, lookback_years=0)
 
 
 def test_build_universe_refuses_years_beyond_research_end():
     stats = _stats([('RB', y, 100.0, 1.0, 240) for y in (2020, 2021)])
     with pytest.raises(C.HoldoutViolation):
-        U.build_universe(stats, years=[C.RESEARCH_END.year + 2])
+        build_universe(stats, years=[C.RESEARCH_END.year + 2])
 
 
 def test_completeness_needs_both_ratio_and_absolute_days():
     """占比与绝对天数是两道独立的门槛：半日市密集的年份可能占比够但天数不够。"""
     low_ratio = _stats([('A', 2016, 100.0, C.MIN_VALID_DAY_RATIO - 0.01, 240)])
     low_days = _stats([('B', 2016, 100.0, 1.0, C.MIN_VALID_DAYS - 1)])
-    assert not bool(U.screen_year(low_ratio, 2017).loc['A', 'pass_complete'])
-    assert not bool(U.screen_year(low_days, 2017).loc['B', 'pass_complete'])
-    assert U.screen_year(low_ratio, 2017).loc['A', 'reason'] == '完整度'
+    assert not bool(screen_year(low_ratio, 2017).loc['A', 'pass_complete'])
+    assert not bool(screen_year(low_days, 2017).loc['B', 'pass_complete'])
+    assert screen_year(low_ratio, 2017).loc['A', 'reason'] == '完整度'
 
 
 def test_load_universe_roundtrip_restores_int_years():
     d = Path(tempfile.mkdtemp(prefix='tfcta_uni_'))
     p = d / 'universe_by_year.json'
     p.write_text(json.dumps({'2016': ['RB'], '2017': ['RB', 'CU']}), encoding='utf-8')
-    uni = U.load_universe(p)
+    uni = load_universe(p)
     assert set(uni) == {2016, 2017}
     assert uni[2017] == ['RB', 'CU']
 

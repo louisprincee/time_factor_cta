@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tfcta import config as C
-from tfcta.data import universe as U
-from tfcta.research import costs
+from tfcta.data import load_universe, validation_universe
+from tfcta.research import MULTIPLIER, fee_path, require_multipliers
 from getRiceQuantExternalData import rqdata_credentials
 
 FIELDS = ["commission_type", "open_commission", "close_commission", "close_commission_today"]
@@ -50,14 +50,14 @@ def main():
     if args.symbols:
         names = sorted({s.strip().upper() for s in args.symbols if s.strip()})
     elif args.partition == "research":
-        names = sorted({n for group in U.load_universe().values() for n in group})
+        names = sorted({n for group in load_universe().values() for n in group})
     elif args.partition == "validation_2022":
-        names, _ = U.validation_universe()
+        names, _ = validation_universe()
     else:
         # 样本外品种池要读样本外行情才能定，这里不读：直接下载所有有合约乘数的品种（只是交易所费率）
-        names = sorted(costs.MULTIPLIER)
-    path = costs.fee_path(args.partition)
-    names = costs.require_multipliers(names)
+        names = sorted(MULTIPLIER)
+    path = fee_path(args.partition)
+    names = require_multipliers(names)
     credentials = rqdata_credentials()
     if credentials is None:
         raise SystemExit("请在 config/rqdata.env 填写米筐账号")

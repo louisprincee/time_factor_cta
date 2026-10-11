@@ -10,8 +10,10 @@ import pandas as pd
 import pytest
 
 from tfcta import config as C
-from tfcta.data import shard_io
-from tfcta.data import validation_import as VI
+from tfcta.data import (
+    boundary_check, boundary_verdict, list_shards, load_validation_shard, save_shard,
+    source_window_problems,
+)
 
 
 def _bars(days: pd.DatetimeIndex, offset: float, start: float = 100.0) -> pd.DataFrame:
@@ -33,36 +35,36 @@ def _panel(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 def test_source_with_any_2023_row_is_refused_whole():
     days = pd.bdate_range('2022-12-26', '2023-01-03')
-    problems = VI.source_window_problems(_panel({'RB': _bars(days, 5.0)}))
+    problems = source_window_problems(_panel({'RB': _bars(days, 5.0)}))
     assert problems and any('2023' in p for p in problems)
 
 
 def test_source_with_2021_trading_date_is_refused():
     days = pd.bdate_range('2021-12-30', '2022-01-05')
-    assert VI.source_window_problems(_panel({'RB': _bars(days, 5.0)}))
+    assert source_window_problems(_panel({'RB': _bars(days, 5.0)}))
 
 
 def test_2022_only_source_is_accepted():
     days = pd.bdate_range('2022-01-04', '2022-12-30')
-    assert VI.source_window_problems(_panel({'RB': _bars(days, 5.0)})) == []
+    assert source_window_problems(_panel({'RB': _bars(days, 5.0)})) == []
 
 
 def test_boundary_offset_must_carry_over():
     research = _bars(pd.bdate_range('2021-12-27', '2021-12-31'), 5.0)
     same = _bars(pd.bdate_range('2022-01-04', '2022-01-07'), 5.0)
     shifted = _bars(pd.bdate_range('2022-01-04', '2022-01-07'), 50.0)
-    assert VI.boundary_check(research, same)[0] == 'ok'
-    assert VI.boundary_check(research, shifted)[0] == 'mismatch'
-    assert VI.boundary_check(None, same)[0] == 'skip'
-    assert VI.boundary_check(research, research)[0] == 'fail'
+    assert boundary_check(research, same)[0] == 'ok'
+    assert boundary_check(research, shifted)[0] == 'mismatch'
+    assert boundary_check(None, same)[0] == 'skip'
+    assert boundary_check(research, research)[0] == 'fail'
 
 
 def test_boundary_verdict_tolerates_a_few_rolls_but_not_a_new_base():
     few = {f"S{i}": 'ok' for i in range(9)} | {'X': 'mismatch'}
     many = {f"S{i}": 'ok' for i in range(5)} | {f"X{i}": 'mismatch' for i in range(5)}
-    assert VI.boundary_verdict(few)[0]
-    assert not VI.boundary_verdict(many)[0]
-    assert not VI.boundary_verdict({'A': 'ok', 'B': 'fail'})[0]
+    assert boundary_verdict(few)[0]
+    assert not boundary_verdict(many)[0]
+    assert not boundary_verdict({'A': 'ok', 'B': 'fail'})[0]
 
 
 @pytest.fixture
@@ -77,7 +79,7 @@ def step1(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "HOLDOUT_DIR", root / "holdout_locked")
     monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
     for sym in ('RB', 'CU'):
-        shard_io.save_shard(_bars(pd.bdate_range('2021-12-01', '2021-12-31'), 5.0),
+        save_shard(_bars(pd.bdate_range('2021-12-01', '2021-12-31'), 5.0),
                             C.RESEARCH_DIR, sym, fmt='pickle')
     return module
 
@@ -100,8 +102,8 @@ def test_step1_writes_validation_shards_once(step1, tmp_path):
     days = pd.bdate_range('2022-01-04', '2022-03-31')
     panel = _panel({s: _bars(days, 5.0, start=131.0) for s in ('RB', 'CU')})
     assert _run(step1, tmp_path, panel) == 0
-    assert shard_io.list_shards(C.VALIDATION_DIR) == ['CU', 'RB']
-    loaded = shard_io.load_validation_shard('RB')
+    assert list_shards(C.VALIDATION_DIR) == ['CU', 'RB']
+    loaded = load_validation_shard('RB')
     assert loaded['trading_date'].min() == pd.Timestamp('2022-01-04')
     # 第二次不覆盖
     assert _run(step1, tmp_path, panel) == 2
@@ -111,14 +113,14 @@ def test_step1_refuses_mixed_source_and_writes_nothing(step1, tmp_path):
     days = pd.bdate_range('2022-12-01', '2023-01-06')
     panel = _panel({s: _bars(days, 5.0) for s in ('RB', 'CU')})
     assert _run(step1, tmp_path, panel) == 1
-    assert shard_io.list_shards(C.VALIDATION_DIR) == []
+    assert list_shards(C.VALIDATION_DIR) == []
 
 
 def test_step1_refuses_rebased_adjustment(step1, tmp_path):
     days = pd.bdate_range('2022-01-04', '2022-03-31')
     panel = _panel({s: _bars(days, 80.0, start=131.0) for s in ('RB', 'CU')})
     assert _run(step1, tmp_path, panel) == 1
-    assert shard_io.list_shards(C.VALIDATION_DIR) == []
+    assert list_shards(C.VALIDATION_DIR) == []
 
 
 def test_step1_slices_2022_from_full_monolith(step1, tmp_path, monkeypatch):
@@ -133,7 +135,7 @@ def test_step1_slices_2022_from_full_monolith(step1, tmp_path, monkeypatch):
             "--symbols", "RB", "CU", "--format", "pickle"]
     monkeypatch.setattr(sys, "argv", argv)
     assert step1.main() == 0
-    loaded = shard_io.load_validation_shard('RB')
+    loaded = load_validation_shard('RB')
     assert loaded['trading_date'].min() == pd.Timestamp('2022-01-03')
     assert loaded['trading_date'].max() == pd.Timestamp('2022-12-30')
     assert loaded.index.max() < pd.Timestamp('2023-01-01')

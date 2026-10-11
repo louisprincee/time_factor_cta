@@ -3,14 +3,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta.factors import intraday as F
+from tfcta.factors import _window_clock, report_factors
 
 
 def test_window_clock_is_first_extreme_inside_the_window():
     values = np.array([1.0, 5.0, 5.0, 0.0])
     mask = np.array([False, True, True, True])
-    assert F._window_clock(values, mask, 'max') == pytest.approx(0.0)
-    assert F._window_clock(values, mask, 'min') == pytest.approx(1.0)
+    assert _window_clock(values, mask, 'max') == pytest.approx(0.0)
+    assert _window_clock(values, mask, 'min') == pytest.approx(1.0)
 
 
 def test_report_day_matches_hand_calculation():
@@ -31,7 +31,7 @@ def test_report_day_matches_hand_calculation():
             'highw': high, 'loww': low, 'session': session,
             'gamma_norm': np.arange(4) / 3, 'trading_date': day,
         }, index=idx))
-    out = F.report_factors(pd.concat(rows), lookback=1, pct=55)
+    out = report_factors(pd.concat(rows), lookback=1, pct=55)
     got = out.loc[day1]
     assert got['pmt'] == pytest.approx(2 / 3)
     assert got['vmt'] == pytest.approx(2 / 3)
@@ -64,7 +64,7 @@ def test_night_volume_does_not_enter_the_session_ratio_or_afternoon_flag():
             'gamma_norm': np.arange(5) / 4,
             'trading_date': day,
         }, index=idx))
-    out = F.report_factors(pd.concat(frames), lookback=1, pct=55).loc[day1]
+    out = report_factors(pd.concat(frames), lookback=1, pct=55).loc[day1]
     assert out['vol_pm'] != out['vol_pm']  # 最大量在夜盘，不是上午/下午
     assert np.isfinite(out['vd_ratio'])
     assert out['ts_volume'] == pytest.approx(0.0)

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
-import types
 from pathlib import Path
 
 import numpy as np
@@ -453,7 +452,7 @@ def load_daily_bars(symbols: list[str], directory=None) -> dict[str, pd.DataFram
     """研究期日线，每个字段一张 ``trading_date × 品种`` 宽表。"""
     per_symbol = {}
     for s in symbols:
-        df = shard_io.load_shard(s, directory=directory,
+        df = load_shard(s, directory=directory,
                                  columns=list(DAILY_FIELDS) + ['trading_date'])
         day = daily_bars(df)
         C.assert_no_holdout_dates(day.index, what=f"{s} 日频行情")
@@ -495,17 +494,17 @@ def load_minutes(symbol: str, *,
     """研究期 + （可选）2022 验证期 + （可选）已结束的样本外窗口，按时间拼成一张分钟表。"""
     columns = MINUTE_COLUMNS if columns is None else columns
     parts = []
-    if shard_io.find_shard(C.RESEARCH_DIR, symbol) is not None:
-        research = shard_io.load_shard(symbol, directory=C.RESEARCH_DIR, columns=columns)
+    if find_shard(C.RESEARCH_DIR, symbol) is not None:
+        research = load_shard(symbol, directory=C.RESEARCH_DIR, columns=columns)
         C.assert_no_holdout_dates(research['trading_date'], what=f"{symbol} 研究期")
         parts.append(research)
     if include_validation or oos_end is not None:
-        if shard_io.find_shard(C.VALIDATION_DIR, symbol) is not None:
-            parts.append(shard_io.load_validation_shard(symbol, columns=columns))
+        if find_shard(C.VALIDATION_DIR, symbol) is not None:
+            parts.append(load_validation_shard(symbol, columns=columns))
         elif oos_end is None:
             raise FileNotFoundError(f"找不到 {symbol} 的 2022 验证分片")
     if oos_end is not None:
-        parts.append(shard_io.load_oos_shard(symbol, end=oos_end, columns=columns))
+        parts.append(load_oos_shard(symbol, end=oos_end, columns=columns))
     if not parts:
         raise FileNotFoundError(f"找不到 {symbol} 的任何分片")
     minute = pd.concat(parts).sort_index(kind='mergesort')
@@ -525,7 +524,7 @@ def daily_stats(df: pd.DataFrame) -> pd.DataFrame:
     """单品种分钟表 -> 以 trading_date 为 index 的日度统计。"""
     td = pd.to_datetime(df['trading_date']).dt.normalize()
     is_night = pd.Series(
-        sessions.tag_session(df.index).to_numpy() == C.SESSION_NIGHT,
+        tag_session(df.index).to_numpy() == C.SESSION_NIGHT,
         index=df.index)
 
     g = df.groupby(td, sort=True)
@@ -569,7 +568,7 @@ def yearly_stats(daily: pd.DataFrame, calendar: pd.Series | None = None) -> pd.D
     else:
         out['calendar_days'] = out['n_days']
     out['valid_ratio'] = out['valid_days'] / out['calendar_days'].replace(0, np.nan)
-    out['night_class'] = [sessions.classify_night_bars(m) for m in out['night_bars_median']]
+    out['night_class'] = [classify_night_bars(m) for m in out['night_bars_median']]
     out['has_night'] = out['night_class'] != 'no_night'
     return out
 
@@ -579,7 +578,7 @@ def collect_stats(symbols: list[str] | None = None,
                   verbose: bool = False) -> pd.DataFrame:
     """扫描研究期分片，产出长表 ``(symbol, year, ...)``。"""
     directory = directory or C.RESEARCH_DIR
-    available = shard_io.list_shards(directory)
+    available = list_shards(directory)
     if symbols is None:
         symbols = [s for s in C.COMMODITY_SYMBOLS if s in available]
 
@@ -589,7 +588,7 @@ def collect_stats(symbols: list[str] | None = None,
             if verbose:
                 print(f"[{i}/{len(symbols)}] {sym:<4} 无分片，跳过")
             continue
-        df = shard_io.load_shard(sym, directory, columns=STAT_COLUMNS)
+        df = load_shard(sym, directory, columns=STAT_COLUMNS)
         daily_by_symbol[sym] = daily_stats(df)
         if verbose:
             d = daily_by_symbol[sym]
@@ -747,10 +746,10 @@ def oos_universe(symbols: list[str], end) -> tuple[dict[int, list[str]], pd.Data
     daily = {}
     for sym in symbols:
         parts = []
-        if shard_io.find_shard(C.VALIDATION_DIR, sym) is not None:
-            parts.append(shard_io.load_validation_shard(sym, columns=STAT_COLUMNS))
-        if shard_io.find_shard(C.HOLDOUT_DIR, sym) is not None:
-            parts.append(shard_io.load_oos_shard(sym, end=end, columns=STAT_COLUMNS))
+        if find_shard(C.VALIDATION_DIR, sym) is not None:
+            parts.append(load_validation_shard(sym, columns=STAT_COLUMNS))
+        if find_shard(C.HOLDOUT_DIR, sym) is not None:
+            parts.append(load_oos_shard(sym, end=end, columns=STAT_COLUMNS))
         if parts:
             daily[sym] = daily_stats(pd.concat(parts).sort_index(kind='mergesort'))
     stats = stats_from_daily(daily)
@@ -763,11 +762,3 @@ def oos_universe(symbols: list[str], end) -> tuple[dict[int, list[str]], pd.Data
         if len(d):
             details.append(d.reset_index().rename(columns={'index': 'symbol'}).assign(year=year))
     return universe, (pd.concat(details, ignore_index=True) if details else pd.DataFrame())
-
-
-sessions = types.SimpleNamespace(tag_session=tag_session, add_intraday_coords=add_intraday_coords, day_bar_counts=day_bar_counts, classify_night_bars=classify_night_bars, classify_night_length=classify_night_length)
-shard_io = types.SimpleNamespace(PARQUET_EXT=PARQUET_EXT, PICKLE_EXT=PICKLE_EXT, parquet_available=parquet_available, resolve_format=resolve_format, shard_path=shard_path, save_shard=save_shard, find_shard=find_shard, list_shards=list_shards, read_frame=read_frame, load_shard=load_shard, load_validation_shard=load_validation_shard, load_oos_shard=load_oos_shard)
-synth = types.SimpleNamespace(NIGHT_CLASS=NIGHT_CLASS, _session_minutes=_session_minutes, _day_timestamps=_day_timestamps, _vol_shape=_vol_shape, make_symbol=make_symbol)
-validation_import = types.SimpleNamespace(EARLIEST_WALL_CLOCK=EARLIEST_WALL_CLOCK, OFFSET_RTOL=OFFSET_RTOL, MAX_MISMATCH_SHARE=MAX_MISMATCH_SHARE, source_window_problems=source_window_problems, adjustment_offset=adjustment_offset, boundary_check=boundary_check, boundary_verdict=boundary_verdict)
-bars = types.SimpleNamespace(MINUTE_COLUMNS=MINUTE_COLUMNS, DAILY_AGG=DAILY_AGG, DAILY_FIELDS=DAILY_FIELDS, daily_bars=daily_bars, forward_return=forward_return, holding_forward_return=holding_forward_return, wide_by_field=wide_by_field, load_daily_bars=load_daily_bars, load_roll_calendar=load_roll_calendar, load_minutes=load_minutes)
-universe = types.SimpleNamespace(STAT_COLUMNS=STAT_COLUMNS, YEAR_STAT_COLS=YEAR_STAT_COLS, daily_stats=daily_stats, market_calendar=market_calendar, yearly_stats=yearly_stats, collect_stats=collect_stats, stats_from_daily=stats_from_daily, screen_year=screen_year, build_universe=build_universe, universe_turnover_report=universe_turnover_report, entries_and_exits=entries_and_exits, load_universe=load_universe, validation_universe=validation_universe, oos_years=oos_years, oos_universe=oos_universe)

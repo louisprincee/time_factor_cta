@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,9 +9,10 @@ import numpy as np
 import pandas as pd
 
 from tfcta import config as C
-from tfcta.data import bars as B
-from tfcta.data import sessions, shard_io
-from tfcta.data import universe as U
+from tfcta.data import (
+    add_intraday_coords, find_shard, list_shards, load_daily_bars, load_oos_shard,
+    load_shard, load_universe, load_validation_shard, read_frame, save_shard,
+)
 
 
 TSMOM_WINDOWS = (20, 60, 120, 250)
@@ -318,7 +318,7 @@ def duration_factors(df: pd.DataFrame,
     """一个 (lookback, pct) 下的 dfp_max 与 dfp_top3。"""
     for col in ('trading_date', 'gamma_norm', 'session', 'closew', 'close'):
         if col not in df.columns:
-            raise KeyError(f"缺少 {col} 列，请先调用 sessions.add_intraday_coords")
+            raise KeyError(f"缺少 {col} 列，请先调用 add_intraday_coords")
 
     codes, days = day_codes_of(df)
     price = raw_price_path(df)
@@ -344,7 +344,7 @@ def timestamp_factors(df: pd.DataFrame) -> pd.DataFrame:
     """ts_high、ts_low：全日最高价、最低价首次出现的归一化时点。"""
     for col in ('trading_date', 'gamma_norm', 'highw', 'loww'):
         if col not in df.columns:
-            raise KeyError(f"缺少 {col} 列，请先调用 sessions.add_intraday_coords")
+            raise KeyError(f"缺少 {col} 列，请先调用 add_intraday_coords")
 
     codes, days = day_codes_of(df)
     hi = df['highw'].to_numpy(dtype='float64')
@@ -403,7 +403,7 @@ def report_factors(df: pd.DataFrame,
               'total_turnover', 'highw', 'loww')
     for col in needed:
         if col not in df.columns:
-            raise KeyError(f"缺少 {col} 列，请先调用 sessions.add_intraday_coords")
+            raise KeyError(f"缺少 {col} 列，请先调用 add_intraday_coords")
     codes, days = day_codes_of(df)
     price = raw_price_path(df)
     volume = df['volume'].to_numpy(dtype='float64')
@@ -515,7 +515,7 @@ def build_partition(partition="research", symbols=None):
         end = pd.Timestamp(C.final_evaluation_end())
         roots.append((EXTERNAL_DATA_ROOT / "holdout_locked", "oos"))
     summary = {}
-    for symbol in symbols or shard_io.list_shards(C.RESEARCH_DIR):
+    for symbol in symbols or list_shards(C.RESEARCH_DIR):
         pieces = []
         for root, part in roots:
             manifest = root / "coverage.json"
@@ -535,12 +535,12 @@ def build_partition(partition="research", symbols=None):
         if not pieces:
             continue
         minutes = []
-        if shard_io.find_shard(C.RESEARCH_DIR, symbol) is not None:
-            minutes.append(shard_io.load_shard(symbol,columns=["trading_date"]))
-        if partition in ("validation_2022", "oos") and shard_io.find_shard(C.VALIDATION_DIR, symbol) is not None:
-            minutes.append(shard_io.load_validation_shard(symbol,columns=["trading_date"]))
-        if partition == "oos" and shard_io.find_shard(C.HOLDOUT_DIR, symbol) is not None:
-            minutes.append(shard_io.load_oos_shard(symbol, end=end.date(), columns=["trading_date"]))
+        if find_shard(C.RESEARCH_DIR, symbol) is not None:
+            minutes.append(load_shard(symbol,columns=["trading_date"]))
+        if partition in ("validation_2022", "oos") and find_shard(C.VALIDATION_DIR, symbol) is not None:
+            minutes.append(load_validation_shard(symbol,columns=["trading_date"]))
+        if partition == "oos" and find_shard(C.HOLDOUT_DIR, symbol) is not None:
+            minutes.append(load_oos_shard(symbol, end=end.date(), columns=["trading_date"]))
         if not minutes:
             continue
         minute = pd.concat(minutes)
@@ -556,7 +556,7 @@ def build_partition(partition="research", symbols=None):
         guard_dates(frame.index,partition)
         if frame.empty:
             continue
-        path = shard_io.save_shard(frame,EXTERNAL_FACTOR_ROOT/partition,symbol)
+        path = save_shard(frame,EXTERNAL_FACTOR_ROOT/partition,symbol)
         summary[symbol] = {"file":str(path),"lag_days":1,"fill_limit":5}
     return summary
 
@@ -568,13 +568,13 @@ def load_panel(symbols=None, partition="research", root=None):
         C.assert_oos_research_locked()
     directory = Path(root or EXTERNAL_FACTOR_ROOT)/partition
     values = {}
-    for symbol in symbols or shard_io.list_shards(directory):
-        path = shard_io.find_shard(directory,symbol)
+    for symbol in symbols or list_shards(directory):
+        path = find_shard(directory,symbol)
         if path is None:
             continue
         if partition == 'research':
             C.assert_research_only(path)
-        frame = shard_io.read_frame(path,["carry_main_sub_annualized"])
+        frame = read_frame(path,["carry_main_sub_annualized"])
         guard_dates(frame.index,partition)
         if frame.index.has_duplicates:
             raise ValueError(f"{path} carry日期重复")
@@ -596,15 +596,13 @@ def load_wide(symbols,partitions,index):
     return {"carry_main_sub_annualized":joined.reindex(index=index,columns=symbols)}
 
 
-intraday = types.SimpleNamespace(intraday_abs_diff=intraday_abs_diff, rolling_threshold=rolling_threshold, rolling_threshold_grid=rolling_threshold_grid, duration_one_day=duration_one_day, duration_series=duration_series, day_codes_of=day_codes_of, _day_spans=_day_spans, dfp_name=dfp_name, dfp_factors=dfp_factors, raw_price_path=raw_price_path, duration_factors=duration_factors, _extreme_timepoint=_extreme_timepoint, timestamp_factors=timestamp_factors, REPORT_COLUMNS=REPORT_COLUMNS, _window_clock=_window_clock, _argmax_time=_argmax_time, report_factors=report_factors)
-
 TIMESTAMP_DIR_NAME = 'timestamp'
 REPORT_DIR_NAME = 'report'
 # v3: raw decimal-price durations, positive threshold, full lookback warm-up;
 # each individual file is versioned, so a partial rebuild cannot bless old files.
 CACHE_VERSION = 3
 TIMEPOINT_FACTORS = list(C.TIMESTAMP_FACTORS)
-DURATION_FACTORS = [intraday.dfp_name(n) for n in C.FP_TOP_NS]
+DURATION_FACTORS = [dfp_name(n) for n in C.FP_TOP_NS]
 
 
 def combo_grid(lookbacks: list[int] | None = None,
@@ -664,38 +662,38 @@ def build_symbol(symbol: str,
             directories.append(timestamp_dir(root))
         directories.append(report_dir(root))
         for directory in directories:
-            path = shard_io.find_shard(directory,symbol)
+            path = find_shard(directory,symbol)
             if path is not None:
                 check_version(path)
-    need_ts = timestamp and (overwrite or shard_io.find_shard(timestamp_dir(root), symbol) is None)
-    need_report = overwrite or shard_io.find_shard(report_dir(root), symbol) is None
+    need_ts = timestamp and (overwrite or find_shard(timestamp_dir(root), symbol) is None)
+    need_report = overwrite or find_shard(report_dir(root), symbol) is None
     todo = [(n, m) for n, m in combos
-            if overwrite or shard_io.find_shard(combo_dir(n, m, root), symbol) is None]
+            if overwrite or find_shard(combo_dir(n, m, root), symbol) is None]
     if not need_ts and not todo and not need_report:
         return {'symbol': symbol, 'skipped': True, 'combos_written': 0,
                 'timestamp_written': False, 'report_written': False}
 
-    df = sessions.add_intraday_coords(shard_io.load_shard(symbol, columns=C.FACTOR_FIELDS))
-    codes, days = intraday.day_codes_of(df)
+    df = add_intraday_coords(load_shard(symbol, columns=C.FACTOR_FIELDS))
+    codes, days = day_codes_of(df)
     info: dict = {'symbol': symbol, 'skipped': False, 'n_days': int(len(days)),
                   'n_bars': int(len(df)),
                   'first_day': str(days[0].date()) if len(days) else '',
                   'last_day': str(days[-1].date()) if len(days) else ''}
 
     if need_ts:
-        ts = intraday.timestamp_factors(df)
-        path = shard_io.save_shard(ts, timestamp_dir(root), symbol, fmt)
+        ts = timestamp_factors(df)
+        path = save_shard(ts, timestamp_dir(root), symbol, fmt)
         path.with_suffix(path.suffix + '.json').write_text(json.dumps({'version': CACHE_VERSION}))
         info['n_timestamp_cols'] = int(ts.shape[1])
     info['timestamp_written'] = bool(need_ts)
 
     if todo:
-        price = intraday.raw_price_path(df)
-        grid = intraday.rolling_threshold_grid(
-            intraday.intraday_abs_diff(price, codes), codes, lookbacks, pcts)
+        price = raw_price_path(df)
+        grid = rolling_threshold_grid(
+            intraday_abs_diff(price, codes), codes, lookbacks, pcts)
         for n, m in todo:
-            dur = intraday.duration_factors(df, lookback=n, pct=m, thr_p=grid[(n, m)])
-            path = shard_io.save_shard(dur, combo_dir(n, m, root), symbol, fmt)
+            dur = duration_factors(df, lookback=n, pct=m, thr_p=grid[(n, m)])
+            path = save_shard(dur, combo_dir(n, m, root), symbol, fmt)
             path.with_suffix(path.suffix + '.json').write_text(json.dumps({'version': CACHE_VERSION}))
             info['n_duration_cols'] = int(dur.shape[1])
     info['combos_written'] = len(todo)
@@ -703,8 +701,8 @@ def build_symbol(symbol: str,
     if need_report:
         # 与 DFP 使用同一组 (N, M)。多个组合时取调用方列出的第一组，避免同一目录被后一组覆盖。
         n0, m0 = combos[0]
-        report = intraday.report_factors(df, lookback=n0, pct=m0)
-        path = shard_io.save_shard(report, report_dir(root), symbol, fmt)
+        report = report_factors(df, lookback=n0, pct=m0)
+        path = save_shard(report, report_dir(root), symbol, fmt)
         path.with_suffix(path.suffix + '.json').write_text(json.dumps({'version': CACHE_VERSION}))
         info['report_written'] = True
         info['n_report_cols'] = int(report.shape[1])
@@ -718,7 +716,7 @@ def _read(path: Path, columns: list[str]) -> pd.DataFrame:
     """只取当前定义的因子列。"""
     C.assert_research_only(path)
     check_version(path)
-    df = shard_io.read_frame(path)
+    df = read_frame(path)
     missing = [c for c in columns if c not in df.columns]
     if missing:
         raise KeyError(f"{path} 缺少因子列 {missing}，请用 build_factors.py --overwrite 重建")
@@ -733,13 +731,13 @@ def load_symbol(symbol: str, lookback: int, pct: float,
                 with_timestamp: bool = True) -> pd.DataFrame:
     """单品种在某个 (N, M) 下的日频因子表（持续期族 + 时间戳族 outer 对齐）。"""
     root = root or C.FACTOR_DAILY_DIR
-    p = shard_io.find_shard(combo_dir(lookback, pct, root), symbol)
+    p = find_shard(combo_dir(lookback, pct, root), symbol)
     if p is None:
         raise FileNotFoundError(
             f"缺少 {combo_name(lookback, pct)}/{symbol}，请先运行 build_factors.py")
     out = _read(p, DURATION_FACTORS)
     if with_timestamp:
-        q = shard_io.find_shard(timestamp_dir(root), symbol)
+        q = find_shard(timestamp_dir(root), symbol)
         if q is None:
             raise FileNotFoundError(f"缺少 timestamp/{symbol}")
         # outer：两族交易日理论上一致，一旦不一致能看见 NaN 而不是被静默截断
@@ -750,10 +748,10 @@ def load_symbol(symbol: str, lookback: int, pct: float,
 def load_report(symbol: str, root: Path | None = None) -> pd.DataFrame:
     """报告其余时序因子。"""
     root = root or C.FACTOR_DAILY_DIR
-    path = shard_io.find_shard(report_dir(root), symbol)
+    path = find_shard(report_dir(root), symbol)
     if path is None:
         raise FileNotFoundError(f"缺少 report/{symbol}，请先运行 build_factors.py")
-    return _read(path, list(intraday.REPORT_COLUMNS)).sort_index()
+    return _read(path, list(REPORT_COLUMNS)).sort_index()
 
 
 Z_WINDOW, Z_MIN = 252, 120
@@ -833,20 +831,20 @@ def assemble(bars,time_raw,_universe,external_partitions=("research",)):
     for name,sign in C.FACTOR_SIGNS.items():
         result.signed[name] = time_raw[name]*sign
     close, adjusted = bars["close"], bars["closew"]
-    result.signed["tsmom"] = daily.tsmom(close,adjusted)
-    source = external.load_wide(list(close.columns),external_partitions,close.index)
+    result.signed["tsmom"] = tsmom(close,adjusted)
+    source = load_wide(list(close.columns),external_partitions,close.index)
     if "carry_main_sub_annualized" in source:
         result.signed["carry_ms"] = source["carry_main_sub_annualized"]
     high, low = bars["highw"],bars["loww"]
     result.signed["neg_clv"] = -(2*adjusted-high-low)/(high-low).where(high>low)
-    result.vol = daily.daily_vol(close,adjusted)
+    result.vol = daily_vol(close,adjusted)
     return result
 
 
 def load(symbols):
-    panels = {s:cache.load_symbol(s,C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT) for s in symbols}
+    panels = {s:load_symbol(s,C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT) for s in symbols}
     for symbol, frame in panels.items():
-        extra = cache.load_report(symbol)
+        extra = load_report(symbol)
         overlap = frame.index.intersection(extra.index)
         panels[symbol] = frame.join(extra, how='outer')
         if overlap.empty and len(frame) and len(extra):
@@ -855,9 +853,4 @@ def load(symbols):
     missing = [n for n, frame in raw.items() if frame.empty]
     if missing:
         raise KeyError(f"因子缓存缺少 {missing}")
-    return assemble(B.load_daily_bars(symbols),raw,U.load_universe())
-
-daily = types.SimpleNamespace(TSMOM_WINDOWS=TSMOM_WINDOWS, VOL_WINDOW=VOL_WINDOW, CS_MIN_SYMBOLS=CS_MIN_SYMBOLS, REVIEW_MOM_WINDOW=REVIEW_MOM_WINDOW, REVIEW_VOL_WINDOW=REVIEW_VOL_WINDOW, REVIEW_TAIL=REVIEW_TAIL, daily_return=daily_return, daily_vol=daily_vol, tsmom_sign=tsmom_sign, tsmom=tsmom, momentum_components=momentum_components, trailing_return=trailing_return, realized_vol=realized_vol, vol_change_sign=vol_change_sign, ma_breakout=ma_breakout, cross_sectional_tails=cross_sectional_tails, cross_sectional_rank=cross_sectional_rank)
-external = types.SimpleNamespace(EXTERNAL_DATA_ROOT=EXTERNAL_DATA_ROOT, EXTERNAL_FACTOR_ROOT=EXTERNAL_FACTOR_ROOT, guard_dates=guard_dates, _date_index=_date_index, _series=_series, align_asof=align_asof, build_partition=build_partition, load_panel=load_panel, load_wide=load_wide)
-cache = types.SimpleNamespace(TIMESTAMP_DIR_NAME=TIMESTAMP_DIR_NAME, REPORT_DIR_NAME=REPORT_DIR_NAME, CACHE_VERSION=CACHE_VERSION, TIMEPOINT_FACTORS=TIMEPOINT_FACTORS, DURATION_FACTORS=DURATION_FACTORS, combo_grid=combo_grid, combo_name=combo_name, combo_dir=combo_dir, timestamp_dir=timestamp_dir, report_dir=report_dir, check_version=check_version, build_symbol=build_symbol, _read=_read, load_symbol=load_symbol, load_report=load_report)
-library = types.SimpleNamespace(Z_WINDOW=Z_WINDOW, Z_MIN=Z_MIN, SIGNED_PRIORS=SIGNED_PRIORS, TIME_FACTORS=TIME_FACTORS, exante_z=exante_z, trail_z=trail_z, to_signal=to_signal, combine=combine, SignalSet=SignalSet, assemble=assemble, load=load)
+    return assemble(load_daily_bars(symbols),raw,load_universe())

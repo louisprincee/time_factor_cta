@@ -13,9 +13,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tfcta import config as C        # noqa: E402
-from tfcta.data import sessions
-from tfcta.data import shard_io       # noqa: E402
-from tfcta.data import validation_import as VI   # noqa: E402
+from tfcta.data import (  # noqa: E402
+    add_intraday_coords, boundary_check, boundary_verdict, classify_night_length,
+    day_bar_counts, find_shard, list_shards, load_shard, load_validation_shard,
+    resolve_format, save_shard, source_window_problems,
+)
 
 
 def _run_dir() -> Path:
@@ -92,12 +94,12 @@ def shard_one(panel: pd.DataFrame, sym: str, write: bool = True,
     if write:
         C.ensure_dirs()
         if len(research):
-            p = shard_io.save_shard(research, C.RESEARCH_DIR, sym, fmt=fmt)
+            p = save_shard(research, C.RESEARCH_DIR, sym, fmt=fmt)
             info['research_mb'] = round(p.stat().st_size / 1e6, 1)
             info['format'] = p.suffix
         if len(holdout):
             # 唯一允许写 holdout 的地方；写完即锁，不读不看
-            shard_io.save_shard(holdout, C.HOLDOUT_DIR, sym, fmt=fmt)
+            save_shard(holdout, C.HOLDOUT_DIR, sym, fmt=fmt)
         if rolls is not None and len(rolls):
             rolls.to_csv(C.ROLL_DIR / f"{sym}.csv", index=False)
     return info
@@ -117,7 +119,7 @@ def main() -> int:
     ap.add_argument('--validation-from-monolith', action='store_true',
                     help='从 --monolith 按 trading_date 取 2022 年，只写 validation_2022/ 分片')
     args = ap.parse_args()
-    fmt = shard_io.resolve_format(args.format)
+    fmt = resolve_format(args.format)
     if args.validation_source and args.validation_from_monolith:
         print("--validation-source 与 --validation-from-monolith 只能选一个。")
         return 2
@@ -176,7 +178,7 @@ PASS, FAIL, WARN = '通过', '不通过', '注意'
 
 
 def load_research(sym: str) -> pd.DataFrame:
-    return shard_io.load_shard(sym, C.RESEARCH_DIR)
+    return load_shard(sym, C.RESEARCH_DIR)
 
 
 def check_1_time_bound(df: pd.DataFrame) -> tuple[str, str]:
@@ -190,7 +192,7 @@ def check_1_time_bound(df: pd.DataFrame) -> tuple[str, str]:
 
 
 def check_2_night_ownership(df: pd.DataFrame) -> tuple[str, str]:
-    d = sessions.add_intraday_coords(df)
+    d = add_intraday_coords(df)
     night = d[d['session'] == C.SESSION_NIGHT]
     if night.empty:
         return WARN, "该品种无夜盘，此项不适用"
@@ -216,9 +218,9 @@ def check_2_night_ownership(df: pd.DataFrame) -> tuple[str, str]:
 
 
 def check_3_bar_counts(df: pd.DataFrame) -> tuple[str, str]:
-    d = sessions.add_intraday_coords(df)
+    d = add_intraday_coords(df)
     counts = d.groupby('trading_date').size()
-    cls = sessions.classify_night_length(sessions.day_bar_counts(d))
+    cls = classify_night_length(day_bar_counts(d))
     expect = C.EXPECTED_BARS_PER_DAY[cls]
     med = float(counts.median())
     near = float(((counts - expect).abs() <= 15).mean())
@@ -250,7 +252,7 @@ def check_5_roll_dates(sym: str) -> tuple[str, str]:
 
 
 def check_6_inventory() -> tuple[str, str]:
-    names = shard_io.list_shards(C.RESEARCH_DIR)
+    names = list_shards(C.RESEARCH_DIR)
     total = sum(p.stat().st_size for p in Path(C.RESEARCH_DIR).iterdir()
                 if p.is_file()) / 1e9 if names else 0.0
     status = PASS if names else FAIL
@@ -268,7 +270,7 @@ def check_7_no_holdout_leak() -> tuple[str, str]:
 
 def run_verify(symbols=None, check_all: bool = False,
                run: Path | None = None, notes: list[str] | None = None) -> int:
-    available = shard_io.list_shards(C.RESEARCH_DIR)
+    available = list_shards(C.RESEARCH_DIR)
     if not available:
         print(f"research/ 下没有分片\n路径: {C.RESEARCH_DIR}")
         return 2
@@ -321,9 +323,9 @@ def run_verify(symbols=None, check_all: bool = False,
 
 def _research_boundary(sym: str) -> pd.DataFrame | None:
     """研究期分片的末尾几天（只要 close/closew），用来核对复权偏移的衔接。"""
-    if shard_io.find_shard(C.RESEARCH_DIR, sym) is None:
+    if find_shard(C.RESEARCH_DIR, sym) is None:
         return None
-    df = shard_io.load_shard(sym, C.RESEARCH_DIR, columns=['close', 'closew', 'trading_date'])
+    df = load_shard(sym, C.RESEARCH_DIR, columns=['close', 'closew', 'trading_date'])
     since = pd.Timestamp(df['trading_date'].max().date() - timedelta(days=10))
     return df[df['trading_date'] >= since]
 
@@ -341,7 +343,7 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
     if not src.exists():
         print(f"找不到 2022 源文件: {src}")
         return 2
-    existing = shard_io.list_shards(C.VALIDATION_DIR)
+    existing = list_shards(C.VALIDATION_DIR)
     if existing:
         print(f"{C.VALIDATION_DIR} 已有 {len(existing)} 个分片，不覆盖。"
               "验证数据只写一次；确需重建请先人工移走原目录并在研究笔记里记录原因。")
@@ -350,14 +352,14 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
     t0 = time.time()
     with open(src, 'rb') as f:
         panel = pickle.load(f)
-    problems = [] if slice_2022 else VI.source_window_problems(panel)
+    problems = [] if slice_2022 else source_window_problems(panel)
     if problems:
         print("源文件不是 2022-only，整份拒收（不做过滤）：\n  " + "\n  ".join(problems))
         return 1
 
     syms = args.symbols or (C.ALL_SYMBOLS if args.all else C.COMMODITY_SYMBOLS)
     have = set(panel.columns.get_level_values(0))
-    research_syms = set(shard_io.list_shards(C.RESEARCH_DIR))
+    research_syms = set(list_shards(C.RESEARCH_DIR))
     frames, results, boundary = {}, [], {}
     for sym in syms:
         if sym not in have:
@@ -371,7 +373,7 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
             results.append({'symbol': sym, 'status': 'empty', 'missing': missing,
                             'has_research': sym in research_syms})
             continue
-        status, detail = VI.boundary_check(_research_boundary(sym), df)
+        status, detail = boundary_check(_research_boundary(sym), df)
         boundary[sym] = status
         frames[sym] = df
         results.append({
@@ -382,7 +384,7 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
             'end': str(df['trading_date'].max().date()),
             'boundary': status, 'boundary_detail': detail,
         })
-    ok_boundary, boundary_note = VI.boundary_verdict(boundary)
+    ok_boundary, boundary_note = boundary_verdict(boundary)
 
     run = _run_dir()
     (run / 'manifest.json').write_text(json.dumps({
@@ -409,7 +411,7 @@ def shard_validation(src: Path, args, fmt: str, slice_2022: bool) -> int:
         return 0
 
     for sym, df in frames.items():
-        shard_io.save_shard(df, C.VALIDATION_DIR, sym, fmt=fmt)
+        save_shard(df, C.VALIDATION_DIR, sym, fmt=fmt)
     return verify_validation(list(frames), run, paths, notes)
 
 
@@ -426,7 +428,7 @@ def verify_validation(syms: list[str], run: Path, paths: list, notes: list[str])
                      'detail': 'assert_validation_only 拦截了 validation_2022/ 以外的路径'})
     for sym in syms:
         try:
-            df = shard_io.load_validation_shard(sym)
+            df = load_validation_shard(sym)
         except (C.HoldoutViolation, FileNotFoundError, KeyError) as exc:
             rows.append({'scope': sym, 'check': '读回', 'status': FAIL, 'detail': str(exc)})
             failures.append(f"{sym}/读回")

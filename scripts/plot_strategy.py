@@ -11,7 +11,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from tfcta.research import context
+from tfcta.research import plot_performance
 
 RESULTS = {
     "morning": "runs/morning/meta",
@@ -30,7 +30,7 @@ def main():
     phase_dir = ROOT / RESULTS[args.strategy] / (args.phase if args.strategy == "oos" else args.phase.replace("-", "_"))
     returns = pd.read_csv(phase_dir / "daily.csv", index_col=0, parse_dates=True, encoding="utf-8-sig")
     try:
-        path = context.plot_performance(returns, phase_dir / "plots" / args.phase, f"{args.strategy} {args.phase}",
+        path = plot_performance(returns, phase_dir / "plots" / args.phase, f"{args.strategy} {args.phase}",
                                         args.series)
     except KeyError as error:
         parser.error(str(error))

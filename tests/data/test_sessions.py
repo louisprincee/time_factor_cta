@@ -7,19 +7,19 @@ import pandas as pd
 import pytest
 
 from tfcta import config as C
-from tfcta.data import sessions, synth
+from tfcta.data import NIGHT_CLASS, add_intraday_coords, make_symbol
 
 
 DAYS = pd.bdate_range('2016-03-01', '2016-03-31')
 
 
-@pytest.fixture(params=list(synth.NIGHT_CLASS))
+@pytest.fixture(params=list(NIGHT_CLASS))
 
 
 def sym(request):
     cls = request.param
-    df = synth.make_symbol(DAYS, night_class=cls, seed=1)
-    return cls, sessions.add_intraday_coords(df)
+    df = make_symbol(DAYS, night_class=cls, seed=1)
+    return cls, add_intraday_coords(df)
 
 
 def _full_days(df: pd.DataFrame) -> pd.DatetimeIndex:
@@ -84,16 +84,16 @@ def test_night_leads_the_day(sym):
 
 def test_missing_trading_date_raises():
     """禁止用 index.date 冒充交易日——必须显式报错而不是静默算错。"""
-    df = synth.make_symbol(DAYS[:3], seed=2).drop(columns=['trading_date'])
+    df = make_symbol(DAYS[:3], seed=2).drop(columns=['trading_date'])
     with pytest.raises(KeyError, match='trading_date'):
-        sessions.add_intraday_coords(df)
+        add_intraday_coords(df)
 
 
 def test_unsorted_input_is_sorted_before_numbering():
     """乱序输入必须先排序再编号，否则 gamma 错乱且无任何报错。"""
-    df = synth.make_symbol(DAYS[:5], night_class='night_2300', seed=3)
+    df = make_symbol(DAYS[:5], night_class='night_2300', seed=3)
     shuffled = df.sample(frac=1.0, random_state=0)
-    out = sessions.add_intraday_coords(shuffled)
+    out = add_intraday_coords(shuffled)
     assert out.index.is_monotonic_increasing
-    ref = sessions.add_intraday_coords(df)
+    ref = add_intraday_coords(df)
     pd.testing.assert_series_equal(out['gamma'], ref['gamma'])

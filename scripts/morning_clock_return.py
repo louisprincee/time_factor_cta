@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from tfcta import config as C
-from tfcta.data import universe as U
+from tfcta.data import load_universe
 import morning
 
 OUT = morning.RUNS / "clock_return"
@@ -175,7 +175,7 @@ def load_research():
     table["trading_date"] = pd.to_datetime(table.trading_date)
     C.assert_no_holdout_dates(table.trading_date, "高低点与收益")
     table = table[table.trading_date.dt.year.between(2016, 2021)].copy()
-    pools = U.load_universe()
+    pools = load_universe()
     table["member"] = [symbol in pools.get(day.year, ()) for symbol, day in zip(table.symbol, table.trading_date)]
     unknown = set(table.symbol) - set(morning.SECTOR_OF)
     if unknown:

@@ -18,8 +18,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from tfcta import config as C
-from tfcta.data import universe as U
-from tfcta.research import context, stats
+from tfcta.data import load_universe, validation_universe
+from tfcta.research import deflated_sharpe, performance, pbo_cscv, plot_performance, sharpe_ratio
 
 CONFIG = ROOT / "config" / "morning.json"
 RUNS = ROOT / "runs" / "morning"
@@ -82,9 +82,9 @@ def prepare(partition, spec, years=None, pools=None):
     if table.duplicated(["symbol", "trading_date"]).any():
         raise ValueError("特征表品种/日期重复")
     if partition == "research":
-        pools = U.load_universe()
+        pools = load_universe()
     elif partition != "oos":
-        names, _ = U.validation_universe()
+        names, _ = validation_universe()
         pools = {2022: list(names)}
     table = annotate(table, spec, pools)
     first, last = years or YEARS[partition]
@@ -109,7 +109,7 @@ def prepare_through_2022(spec, first_year):
     table = table.reset_index(drop=True)
     if table.duplicated(["symbol", "trading_date"]).any():
         raise ValueError("特征表品种/日期重复")
-    pools = {**U.load_universe(), 2022: list(U.validation_universe()[0])}
+    pools = {**load_universe(), 2022: list(validation_universe()[0])}
     table = annotate(table, spec, pools)
     return table[table.trading_date.dt.year.between(first_year, 2022)].copy()
 
@@ -164,17 +164,17 @@ def book_row(table, side, sizing, calendar, gross=None, cost=None):
     weight = weights(table, side, sizing)
     ret = position_pnl(table, weight, gross, cost, calendar)
     stressed = position_pnl(table, weight, gross, cost + 2 * table.tick_frac, calendar)
-    perf = stats.performance(ret)
+    perf = performance(ret)
     active = weight != 0
     net = (np.sign(weight) * gross - cost)[active]
     follow = (np.sign(weight) == np.sign(table.dev15))[active]
-    row = {"夏普": stats.sharpe_ratio(ret), "夏普95%下限": bootstrap_sharpe(ret)[0], "滑点2跳夏普": stats.sharpe_ratio(stressed),
+    row = {"夏普": sharpe_ratio(ret), "夏普95%下限": bootstrap_sharpe(ret)[0], "滑点2跳夏普": sharpe_ratio(stressed),
            "年化收益": perf["ann_return"], "最大回撤": perf["max_drawdown"], "交易笔数": int(active.sum()),
            "单笔净bp": net.mean() * 1e4 if active.any() else np.nan,
            "顺势笔数": int(follow.sum()), "顺势净bp": net[follow].mean() * 1e4 if follow.any() else np.nan,
            "反向笔数": int((~follow).sum()), "反向净bp": net[~follow].mean() * 1e4 if (~follow).any() else np.nan}
     for year, part in ret.groupby(ret.index.year):
-        row[f"{year}夏普"] = stats.sharpe_ratio(part)
+        row[f"{year}夏普"] = sharpe_ratio(part)
     return row, ret
 
 
@@ -262,7 +262,7 @@ def run(partition):
     result.to_csv(out / "books.csv", encoding="utf-8-sig")
     pd.DataFrame(curves).to_csv(out / "daily.csv", encoding="utf-8-sig")
     main_names = [n for n in curves if result.loc[n, "主设定"]]
-    print("图表：", context.plot_performance(curves, out / "plots" / ("research" if partition == "research" else "validation-2022"), f"早盘策略 {partition}（30 笔主设定，扣费后）", main_names))
+    print("图表：", plot_performance(curves, out / "plots" / ("research" if partition == "research" else "validation-2022"), f"早盘策略 {partition}（30 笔主设定，扣费后）", main_names))
     pd.set_option("display.width", 260)
     pd.set_option("display.max_columns", 30)
     print(result.round(3).to_string())
@@ -297,18 +297,18 @@ def run_grid():
         name = f"{book}·{mode}·{size}{unit}"
         dev, later = ret[ret.index.year <= 2021], ret[ret.index.year == 2022]
         rows.append({"组合": name, "基础单": book, "方式": mode, "口径": kind or "-", "窗口": size or 0,
-                     "2016-2022夏普": stats.sharpe_ratio(ret), "2016-2021夏普": stats.sharpe_ratio(dev),
-                     "2022夏普": stats.sharpe_ratio(later), "2跳夏普": stats.sharpe_ratio(stressed),
+                     "2016-2022夏普": sharpe_ratio(ret), "2016-2021夏普": sharpe_ratio(dev),
+                     "2022夏普": sharpe_ratio(later), "2跳夏普": sharpe_ratio(stressed),
                      "交易笔数": int((weight != 0).sum()),
-                     **{f"{y}夏普": stats.sharpe_ratio(p) for y, p in ret.groupby(ret.index.year)}})
+                     **{f"{y}夏普": sharpe_ratio(p) for y, p in ret.groupby(ret.index.year)}})
         curves[name] = ret
     result = pd.DataFrame(rows).set_index("组合")
     matrix = pd.DataFrame(curves)
-    pbo = stats.pbo_cscv(matrix, grid["evaluation"]["pbo_blocks"])
+    pbo = pbo_cscv(matrix, grid["evaluation"]["pbo_blocks"])
     best = result["2016-2022夏普"].idxmax()
     trial_sharpes = result["2016-2022夏普"].to_numpy()
-    dsr_grid = stats.deflated_sharpe(curves[best], trial_sharpes)
-    dsr_project = stats.deflated_sharpe(curves[best], trial_sharpes, PROJECT_TRIALS)
+    dsr_grid = deflated_sharpe(curves[best], trial_sharpes)
+    dsr_project = deflated_sharpe(curves[best], trial_sharpes, PROJECT_TRIALS)
     frozen = "主策略·亏损反手·30笔"
     out = GRID_OUT
     out.mkdir(parents=True, exist_ok=True)
@@ -318,7 +318,7 @@ def run_grid():
                "冻结组合": {"组合": frozen, **result.loc[frozen, ["2016-2021夏普", "2022夏普", "2016-2022夏普"]].to_dict()}}
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
     top = list(dict.fromkeys([*result["2016-2022夏普"].nlargest(5).index, frozen]))
-    print("图表：", context.plot_performance(matrix[top], out / "plots", "早盘参数面 2016–2022（前五与冻结组合）"))
+    print("图表：", plot_performance(matrix[top], out / "plots", "早盘参数面 2016–2022（前五与冻结组合）"))
     pd.set_option("display.width", 260)
     pd.set_option("display.max_columns", 30)
     shown = ["交易笔数", "2016-2021夏普", "2022夏普", "2016-2022夏普", "2跳夏普"]
