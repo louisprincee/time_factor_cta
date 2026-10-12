@@ -46,6 +46,18 @@ def test_v2_uses_two_one_fifth_tails_and_retains_original_filters():
     assert side.tolist() == [1.0, -1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0]
 
 
+def test_loss_switch_flips_only_after_the_losing_window_is_known():
+    table = pd.DataFrame({
+        'trading_date': pd.to_datetime(['2021-01-04', '2021-01-05', '2021-01-06']),
+        'symbol': 'RB',
+        'gross_1130': [0.01, 0.01, 0.01],
+        'cost_1130': [0.0, 0.0, 0.0],
+    })
+    side = pd.Series([-1.0, -1.0, -1.0])
+
+    assert core.loss_switch(table, side, 2).tolist() == [-1.0, -1.0, 1.0]
+
+
 def test_pure_clock_benchmark_uses_clock_spread_and_shared_execution_filters():
     table = pd.DataFrame({
         'member': [True] * 7,

@@ -160,7 +160,7 @@ python scripts/research.py --specs config/research_candidates.json
 
 ### 5. 早盘策略
 
-早盘策略统一从 `scripts/morning.py` 运行，配置在 `config/morning.json`，结果在 `runs/morning/`。v1 是冻结原策略；v2 是双端 1/5 时钟规则并保留夜盘同向；benchmark 只用低点时钟减高点时钟，绝对差阈值为 0.8。`--compare` 一次运行三者并输出全板块/三板块对比图。
+早盘策略统一从 `scripts/morning.py` 运行，配置在 `config/morning.json`，结果在 `runs/morning/`。v1 是冻结原策略，版本对比里的亏损反手用 15 笔；v2 是双端 1/5 时钟规则并保留夜盘同向，再用自己最近 15 笔的亏损反手；benchmark 只用低点时钟减高点时钟，绝对差阈值为 0.8。不带版本参数时，冻结主策略仍是 30 笔。`--compare` 一次运行三者并输出全板块/三板块对比图。
 
 先生成逐日特征表，决策时点是 09:16 收盘。不带参数时生成研究期和 2022 两份，写到 `runs/morning/features/`。样本外特征只能在 `C.final_evaluation(...)` 锁内生成：
 
@@ -172,7 +172,7 @@ python scripts/morning_features.py
 python scripts/morning_features.py research
 ```
 
-v1 是冻结原策略（30 笔亏损反手）；v2 使用高/低点前后 1/5 时钟规则并保留夜盘同向过滤。benchmark 不用偏离或夜盘方向，采用 `low_clock-high_clock` 的正负方向，只在绝对值大于等于 0.8 时交易，并沿用成本/量能等可交易过滤。0.8 是研究期五等分的最晚一段：同样过滤下，|差|≥0.6 扣费后约 −1.4bp，|差|≥0.8 约 −0.8bp。运行研究期：
+v1 是冻结原策略，在 `--v1` 里用最近 15 笔亏损反手；v2 使用高/低点前后 1/5 时钟规则并保留夜盘同向过滤，最近 15 笔扣费收益均值为负时把 v2 信号取反。不带版本参数的冻结主策略仍是 30 笔。benchmark 不用偏离或夜盘方向，采用 `low_clock-high_clock` 的正负方向，只在绝对值大于等于 0.8 时交易，并沿用成本/量能等可交易过滤。0.8 是研究期五等分的最晚一段：同样过滤下，|差|≥0.6 扣费后约 −1.4bp，|差|≥0.8 约 −0.8bp。运行研究期：
 
 ```bash
 python scripts/morning.py --v1

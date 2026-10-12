@@ -89,6 +89,33 @@ def prior_ticks(tick_table, symbol, last_year=2022):
     return prior.reindex(range(2014, last_year + 1)).ffill()
 
 
+def holding_gross(symbol, partition, exit_hm, end=None):
+    """09:17 开盘到 exit_hm 收盘的多头收益。进场条件与 gross_1130 相同，没有对应 K 线时为空。"""
+    frame = load_minutes(symbol, partition, end)
+    raw = raw_price_path(frame)
+    raw_open = raw_price_path(pd.DataFrame({"close": frame.open.to_numpy()}, index=frame.index))
+    idx = frame.index.asi8
+    hour = frame.index.hour.to_numpy()
+    night = (hour >= 20) | (hour <= 4)
+    codes, days = day_codes_of(frame)
+    bounds = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1], True])
+    pos = {int(ts): i for i, ts in enumerate(idx)}
+    rows = []
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        day = days[int(codes[s])]
+        d = pos.get(stamp(day, DECISION))
+        day_bars = np.flatnonzero(~night[s:e]) + s
+        gross = np.nan
+        if d is not None and s <= d < e and day_bars.size and day_bars[0] <= d:
+            entry = pos.get(stamp(day, ENTRY))
+            x = pos.get(stamp(day, exit_hm))
+            if (entry is not None and x is not None and d < entry < e and entry <= x < e
+                    and raw_open[entry] > 0 and raw[x] > 0):
+                gross = raw[x] / raw_open[entry] - 1.0
+        rows.append({"symbol": symbol, "trading_date": day, "gross": gross})
+    return pd.DataFrame(rows)
+
+
 def symbol_rows(symbol, partition, fees, tick_table, end=None):
     frame = load_minutes(symbol, partition, end)
     raw = raw_price_path(frame)

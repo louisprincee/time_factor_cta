@@ -56,6 +56,20 @@ def test_every_commodity_has_a_multiplier_and_a_sector():
         require_multipliers(["RB", "IF"])
 
 
+def test_holding_gross_exits_at_the_requested_close(monkeypatch):
+    days = pd.DatetimeIndex(['2021-03-01'])
+    frame = minutes(days, lambda k, idx: 1000. + idx.hour * 100 + idx.minute)
+    monkeypatch.setattr(features, 'load_minutes', lambda *args, **kwargs: frame.copy())
+    day = pd.Timestamp(days[0])
+    entry = day + pd.Timedelta(hours=9, minutes=17)
+    morning = features.holding_gross('RB', 'research', (11, 30)).set_index('trading_date').gross
+    close = features.holding_gross('RB', 'research', (15, 0)).set_index('trading_date').gross
+    px = frame.loc[entry, 'open']
+    assert morning.loc[day] == pytest.approx(frame.loc[day + pd.Timedelta(hours=11, minutes=30), 'close'] / px - 1)
+    assert close.loc[day] == pytest.approx(frame.loc[day + pd.Timedelta(hours=15), 'close'] / px - 1)
+    assert morning.loc[days[0]] != close.loc[days[0]]
+
+
 def test_decision_features_ignore_bars_after_0916(monkeypatch):
     days = pd.DatetimeIndex(['2021-03-01', '2021-03-02'])
     base = lambda k, idx: 4000. + np.arange(len(idx)) * (1 + k)
