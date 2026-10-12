@@ -1,10 +1,15 @@
-"""早盘策略：基础反向单，最近若干笔账面均值为负时改为顺势。
+"""早盘策略。不带版本参数时跑冻结的主策略（亏损反手）；版本参数只跑对应的一本。
 
     python scripts/morning.py
+    python scripts/morning.py --v1
+    python scripts/morning.py --v2
+    python scripts/morning.py --benchmark
+    python scripts/morning.py --compare
     python scripts/morning.py --validation-2022
     python scripts/morning.py --grid
 
-规则在 config/morning.json。回测输出在 runs/morning/meta/<分区>/，参数面在 runs/morning/meta_grid/。
+规则在 config/morning.json。冻结主策略的输出在 runs/morning/meta/<分区>/，
+v1、v2、benchmark 在 runs/morning/morning_<版本>/<分区>/，三者并列在 runs/morning/comparison/。
 2022 的账面从研究期末接着算（2021 的单进入 2022 年初的窗口）。
 """
 import argparse
@@ -103,8 +108,11 @@ def prepare_through_2022(spec, first_year):
     research = pd.read_parquet(FEATURES / "research.parquet")
     C.assert_no_holdout_dates(research.trading_date, "早盘研究期")
     later = pd.read_parquet(FEATURES / "validation_2022.parquet")
-    later = later[pd.to_datetime(later.trading_date).dt.year == 2022]
-    C.assert_validation_2022_dates(later.trading_date, "早盘 2022")
+    year = pd.to_datetime(later.trading_date).dt.year
+    # 研究期特征表只含研究期品种池；2022 才入池的品种用 2022 表自带的 2021 预热，量能和波动才算得出
+    later = later[(year == 2022) | ((year == 2021) & ~later.symbol.isin(set(research.symbol)))]
+    C.assert_validation_2022_dates(later.trading_date[pd.to_datetime(later.trading_date).dt.year == 2022], "早盘 2022")
+    C.assert_no_holdout_dates(later.trading_date[pd.to_datetime(later.trading_date).dt.year < 2022], "早盘 2022 预热")
     table = pd.concat([research, later], ignore_index=True).sort_values(["symbol", "trading_date"])
     table = table.reset_index(drop=True)
     if table.duplicated(["symbol", "trading_date"]).any():
@@ -218,6 +226,137 @@ def switched(side, score, mode):
     if mode != "亏损反手":
         raise ValueError(f"只保留亏损反手，收到 {mode}")
     return side.where(~(score < 0), -side)
+
+
+def v2_sides(table, rule):
+    dev = table.dev15
+    up, down = dev > rule["dev_threshold"], dev < -rule["dev_threshold"]
+    side = pd.Series(0.0, index=table.index)
+    side.loc[up & table.hclock_td.le(0.2)] = 1.0
+    side.loc[up & table.hclock_td.ge(0.8)] = -1.0
+    side.loc[down & table.lclock_td.le(0.2)] = -1.0
+    side.loc[down & table.lclock_td.ge(0.8)] = 1.0
+    eligible = (table.member & table.ret_night.notna()
+                & table.est_cost.lt(rule["max_est_cost"])
+                & table.relvol.lt(rule["relvol_max"])
+                & table.hclock_td.notna() & table.lclock_td.notna()
+                & table.gross_1130.notna() & table.cost_1130.notna()
+                & np.isfinite(table.sigma) & table.sigma.gt(0)
+                & (np.sign(table.ret_night) == np.sign(dev)))
+    return side.where(eligible, 0.0)
+
+
+def benchmark_sides(table, rule, threshold):
+    """低点时钟减高点时钟。只在绝对差达到阈值时交易，方向跟着差的符号，不用偏离和夜盘方向。"""
+    spread = table.lclock_td - table.hclock_td
+    side = pd.Series(np.where(spread.ge(threshold), 1.0,
+                              np.where(spread.le(-threshold), -1.0, 0.0)), index=table.index)
+    eligible = (table.member & table.ret_night.notna()
+                & table.est_cost.lt(rule["max_est_cost"])
+                & table.relvol.lt(rule["relvol_max"])
+                & table.hclock_td.notna() & table.lclock_td.notna()
+                & table.gross_1130.notna() & table.cost_1130.notna()
+                & np.isfinite(table.sigma) & table.sigma.gt(0))
+    return side.where(eligible, 0.0)
+
+
+def cost_attribution(table, side, sizing, calendar, strategy):
+    position_weights = weights(table, side, sizing)
+    active = position_weights.ne(0)
+    direction = np.sign(position_weights)
+    gross_per_signal = direction * table.gross_1130
+    net_per_signal = gross_per_signal - table.cost_1130
+    rows = []
+    groups = [("全部信号", active), ("多头信号", active & direction.gt(0)),
+              ("空头信号", active & direction.lt(0))]
+    for sector in sorted(set(SECTOR_OF.values())):
+        in_sector = table.sector.eq(sector)
+        groups.extend([(f"{sector}·多头", active & in_sector & direction.gt(0)),
+                       (f"{sector}·空头", active & in_sector & direction.lt(0))])
+    for label, mask in groups:
+        if mask.any():
+            rows.append({"策略": strategy, "范围": label, "信号数": int(mask.sum()),
+                         "方向毛收益bp": float(gross_per_signal[mask].mean() * 1e4),
+                         "实际成本bp": float(table.cost_1130[mask].mean() * 1e4),
+                         "方向净收益bp": float(net_per_signal[mask].mean() * 1e4)})
+
+    zero_cost = pd.Series(0.0, index=table.index)
+    gross_daily = position_pnl(table, position_weights, table.gross_1130, zero_cost, calendar)
+    net_daily = position_pnl(table, position_weights, table.gross_1130, table.cost_1130, calendar)
+    stressed = position_pnl(table, position_weights, table.gross_1130,
+                            table.cost_1130 + 2 * table.tick_frac, calendar)
+    rows.append({"策略": strategy, "范围": "风险加权组合", "信号数": int(active.sum()),
+                 "扣费前Sharpe": sharpe_ratio(gross_daily), "扣费后Sharpe": sharpe_ratio(net_daily),
+                 "加2跳Sharpe": sharpe_ratio(stressed),
+                 "毛年化收益": performance(gross_daily)["ann_return"],
+                 "净年化收益": performance(net_daily)["ann_return"],
+                 "净最大回撤": performance(net_daily)["max_drawdown"],
+                 "平均日成本bp": float((gross_daily - net_daily).mean() * 1e4),
+                 "平均日额外2跳bp": float((net_daily - stressed).mean() * 1e4)})
+    return pd.DataFrame(rows)
+
+
+def run_versions(version, partition="research"):
+    spec = load()
+    table = (prepare_through_2022(spec, 2016) if partition == "validation_2022"
+             else prepare("research", spec))
+    keep = table.trading_date.dt.year.eq(2022) if partition == "validation_2022" else table.trading_date.dt.year.between(2016, 2021)
+    if partition == "validation_2022":
+        C.assert_validation_2022_dates(table.loc[keep, "trading_date"], "morning strategy validation")
+    view = table.loc[keep].reset_index(drop=True)
+    calendar = pd.DatetimeIndex(sorted(view.trading_date.unique()))
+
+    v1_base = base_books(table, spec)["主策略"]
+    v1_score = trailing_mean(table, v1_base, spec["window_trades"])
+    v1 = switched(v1_base, v1_score, "亏损反手")
+    threshold = spec["benchmark"]["threshold"]
+    signals = {"v1": v1, "v2": v2_sides(table, spec["rule"]),
+               "benchmark": benchmark_sides(table, spec["rule"], threshold)}
+    chosen = tuple(signals) if version == "compare" else (version,)
+    if any(name not in signals for name in chosen):
+        raise ValueError(f"未知策略版本: {version}")
+
+    rows, curves, attribution = [], {}, []
+    scopes = [("全板块", pd.Series(True, index=view.index)),
+              ("农产品有色化工", view.sector.isin(("农产品", "有色", "化工")))]
+    for name in chosen:
+        signal = signals[name].loc[keep].reset_index(drop=True)
+        for scope_name, scope_mask in scopes:
+            scoped = view.loc[scope_mask].reset_index(drop=True)
+            side = signal.loc[scope_mask].reset_index(drop=True)
+            label = f"morning_{name}·{scope_name}"
+            row, returns = book_row(scoped, side, spec["sizing"], calendar)
+            active = side.ne(0)
+            row.update({"组合": label, "信号品种日": int(active.sum()),
+                        "信号交易日": int(scoped.loc[active, "trading_date"].nunique()),
+                        "涉及品种": int(scoped.loc[active, "symbol"].nunique())})
+            rows.append(row)
+            curves[label] = returns
+            attribution.append(cost_attribution(scoped, side, spec["sizing"], calendar, label))
+
+    output_name = "comparison" if version == "compare" else f"morning_{version}"
+    output = RUNS / output_name / partition
+    output.mkdir(parents=True, exist_ok=True)
+    result = pd.DataFrame(rows).set_index("组合")
+    result.to_csv(output / "books.csv", encoding="utf-8-sig")
+    pd.DataFrame(curves).to_csv(output / "daily.csv", encoding="utf-8-sig")
+    pd.concat(attribution, ignore_index=True).to_csv(
+        output / "cost_attribution.csv", index=False, encoding="utf-8-sig")
+    (output / "spec.json").write_text(json.dumps({
+        "version": version, "partition": partition,
+        "benchmark_threshold": threshold,
+        "benchmark_signal": spec["benchmark"]["signal"],
+        "benchmark_uses_dev15": False, "benchmark_uses_night_direction": False,
+        "benchmark_threshold_basis": spec["benchmark"]["note"],
+        "oos_accessed": False,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    shown = "v1 / v2 / benchmark" if version == "compare" else f"morning_{version}"
+    for scope_name in ("全板块", "农产品有色化工"):
+        plot_series = {name: curves[f"morning_{name}·{scope_name}"] for name in chosen}
+        plot_performance(plot_series, output / "plots" / scope_name,
+                         f"{scope_name}：{shown}（{partition}）")
+    print(result.round(3).to_string())
+    print("结果：", output)
 
 
 def run(partition):
@@ -334,13 +473,24 @@ def run_grid():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    versions = parser.add_mutually_exclusive_group()
+    versions.add_argument("--v1", action="store_true", help="运行原始主策略")
+    versions.add_argument("--v2", action="store_true", help="运行双端1/5时钟策略")
+    versions.add_argument("--benchmark", action="store_true", help="运行纯时间戳差 benchmark")
+    versions.add_argument("--compare", action="store_true", help="运行 v1/v2/benchmark 并输出对比图")
     parser.add_argument("--validation-2022", action="store_true")
     parser.add_argument("--grid", action="store_true", help="跑回看窗口的参数面（2016–2022）")
     args = parser.parse_args()
     if args.grid and args.validation_2022:
         parser.error("参数面固定看 2016–2022，不用再加 --validation-2022")
+    if args.grid and any((args.v1, args.v2, args.benchmark, args.compare)):
+        parser.error("--grid 不能与策略版本参数一起使用")
     if args.grid:
         run_grid()
+    elif any((args.v1, args.v2, args.benchmark, args.compare)):
+        version = ("compare" if args.compare else "benchmark" if args.benchmark
+                   else "v2" if args.v2 else "v1")
+        run_versions(version, "validation_2022" if args.validation_2022 else "research")
     else:
         run("validation_2022" if args.validation_2022 else "research")
 

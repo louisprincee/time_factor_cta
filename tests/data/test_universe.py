@@ -128,3 +128,13 @@ def test_financial_symbols_are_excluded_by_construction():
     for s in C.FINANCIAL_SYMBOLS:
         assert s not in C.COMMODITY_SYMBOLS
     assert len(C.COMMODITY_SYMBOLS) == len(C.ALL_SYMBOLS) - len(C.FINANCIAL_SYMBOLS)
+
+
+def test_roll_calendar_past_2022_needs_the_final_evaluation(tmp_path):
+    from tfcta import config as C
+    from tfcta.data import load_roll_calendar
+    (tmp_path / "RB.csv").write_text("trading_date,new_contract,prev_contract\n2021-05-10,RB2110,RB2105\n"
+                                     "2023-05-10,RB2310,RB2305\n", encoding="utf-8")
+    assert len(load_roll_calendar(["RB"], "2022-12-31", directory=tmp_path)["RB"]) == 1
+    with pytest.raises(C.HoldoutViolation):
+        load_roll_calendar(["RB"], "2023-12-31", directory=tmp_path)

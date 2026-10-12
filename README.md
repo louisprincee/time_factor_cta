@@ -101,7 +101,13 @@ python download/getFeeHistory.py --partition validation_2022
 python download/getFeeHistory.py --partition oos
 ```
 
-最小变动价位表 `data/research/tick_size.csv`（品种 × 年）是早先生成的现成文件，仓库里没有生成它的脚本。样本外沿用 2021 年的值。
+最小变动价位表按年从分钟原始收盘价估计（非零价格变动里占比至少 1% 的最小步长，一年不到 100 次变动的留空），第 y 年的值用于第 y+1 年。分片之后生成研究期和 2022 两张表（`data/research/tick_size.csv`、`data/validation_2022/tick_size.csv`），2023 年以后的在最终评估里现算：
+
+```bash
+python scripts/build_ticks.py
+```
+
+早盘特征构建时，池内品种在池内年份算不出成本（缺手续费或 tick）会直接报错。郑商所 2017-06-22 以前米筐没有平今费，按平仓费和之后第一次出现的平今费中较高的一个补。
 
 ### 1. 分片
 
@@ -154,7 +160,7 @@ python scripts/research.py --specs config/research_candidates.json
 
 ### 5. 早盘策略
 
-策略在 `scripts/morning.py`，配置在 `config/morning.json`，结果在 `runs/morning/`。基础反向单、亏损反手和回看窗口网格都在这一份里。
+早盘策略统一从 `scripts/morning.py` 运行，配置在 `config/morning.json`，结果在 `runs/morning/`。v1 是冻结原策略；v2 是双端 1/5 时钟规则并保留夜盘同向；benchmark 只用低点时钟减高点时钟，绝对差阈值为 0.8。`--compare` 一次运行三者并输出全板块/三板块对比图。
 
 先生成逐日特征表，决策时点是 09:16 收盘。不带参数时生成研究期和 2022 两份，写到 `runs/morning/features/`。样本外特征只能在 `C.final_evaluation(...)` 锁内生成：
 
@@ -166,17 +172,24 @@ python scripts/morning_features.py
 python scripts/morning_features.py research
 ```
 
-基础反向单最近若干笔已平仓单（只用前一交易日及以前）的账面均值为负时改为顺势。主设定是 30 笔，同时报告 15 笔和 60 笔。研究期 2016–2021 夏普 1.15，2022 夏普 0.56；设计受“2022 年反向变成延续”启发，2022 不算检验。亏损停手和偏离反向的对照结论留在配置的 `result`、`result_2022`，代码里不再跑。不切换的主策略只留一列，给样本外核对用。研究期和 2022 各跑一次：
+v1 是冻结原策略（30 笔亏损反手）；v2 使用高/低点前后 1/5 时钟规则并保留夜盘同向过滤。benchmark 不用偏离或夜盘方向，采用 `low_clock-high_clock` 的正负方向，只在绝对值大于等于 0.8 时交易，并沿用成本/量能等可交易过滤。0.8 是研究期五等分的最晚一段：同样过滤下，|差|≥0.6 扣费后约 −1.4bp，|差|≥0.8 约 −0.8bp。运行研究期：
 
 ```bash
-python scripts/morning.py
+python scripts/morning.py --v1
+python scripts/morning.py --v2
+python scripts/morning.py --benchmark
+python scripts/morning.py --compare
 ```
 
+验证期可分别运行：
 ```bash
-python scripts/morning.py --validation-2022
+python scripts/morning.py --v1 --validation-2022
+python scripts/morning.py --v2 --validation-2022
+python scripts/morning.py --benchmark --validation-2022
+python scripts/morning.py --compare --validation-2022
 ```
 
-输出在 `runs/morning/meta/<分区>/`。
+输出在 `runs/morning/morning_v1/`、`morning_v2/`、`morning_benchmark/`；三策略并列结果和图在 `runs/morning/comparison/`。`morning.py` 同时保留 OOS 所需兼容函数。
 
 回看窗口的参数面（2026-10-10，样本外用完之后的探索）：亏损反手，10–90 笔或 20–120 个交易日，在 2016–2022 上算夏普、DSR（扣除尝试次数的夏普显著性，`stats.deflated_sharpe`）和 PBO（组合对称交叉验证的过拟合概率，`stats.pbo_cscv`）。网格写在同一份配置的 `grid` 里，输出在 `runs/morning/meta_grid/`：
 
@@ -193,13 +206,25 @@ python scripts/morning_clock_return.py
 ### 统一运行与绘图
 
 ```bash
-python scripts/run_strategy.py morning research
+python scripts/run_strategy.py morning_v1 research
+python scripts/run_strategy.py morning_v2 research
+python scripts/run_strategy.py morning_benchmark research
+python scripts/run_strategy.py morning_compare research
 ```
 
-策略名是 `morning`，阶段为 `research` 或 `validation-2022`。每个阶段回测完会自动出图（`tfcta.research.context.plot_performance`，净值和回撤在同一张图），写到结果目录的 `plots/<阶段>/performance.png`。自动出图只画 30 笔主设定；15 笔、60 笔在 `daily.csv` 里。要挑几条序列重画，用：
+统一入口也可直接使用：
 
 ```bash
-python scripts/plot_strategy.py morning validation-2022 --series 主策略·亏损反手·30笔
+python scripts/morning.py --v1
+python scripts/morning.py --v2
+python scripts/morning.py --benchmark
+python scripts/morning.py --compare
+```
+
+`--compare` 输出全板块和三板块两张净值/回撤图；单版本命令输出各自结果目录。验证期加 `--validation-2022`。图表均写到对应结果目录的 `plots/` 下。要按已有结果挑序列重画，用：
+
+```bash
+python scripts/plot_strategy.py morning_v1 research --series morning_v1
 ```
 
 ```bash

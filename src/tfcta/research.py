@@ -137,10 +137,47 @@ def fee_tables(table, prices):
     return opened, closed, roll_closed
 
 
-def load_ticks():
-    table = pd.read_csv(C.RESEARCH_OUT_DIR / "tick_size.csv")
+TICK_MIN_SHARE = 0.01  # 价格变动里占比不到 1% 的更小步长视为噪声（个别错价、float32 残差）
+TICK_MIN_DIFFS = 100   # 一年非零变动不到这么多次（几乎不成交）就不估，留空，用时沿用更早的年份
+
+
+def tick_path(partition):
+    paths = {"research": C.RESEARCH_OUT_DIR / "tick_size.csv",
+             "validation_2022": C.DATA_ROOT / "validation_2022" / "tick_size.csv"}
+    if partition not in paths:
+        raise C.HoldoutViolation(f"tick 表只落盘研究期和 2022，样本外在最终评估里现算: {partition}")
+    return paths[partition]
+
+
+def estimate_ticks(close, trading_date, min_share=TICK_MIN_SHARE, min_diffs=TICK_MIN_DIFFS):
+    """按年估计最小变动价位：相邻分钟原始收盘价的非零变动里，占比至少 min_share 的最小步长。
+    close 应是 factors.raw_price_path 之后的原始价。非零变动少于 min_diffs 次的年份 tick 留空。
+    返回 year、tick、tick_mode、n_diff、median_close。"""
+    price = pd.Series(np.asarray(close, dtype="float64"))
+    year = pd.Series(pd.to_datetime(np.asarray(trading_date)).year)
+    rows = []
+    for y, p in price.groupby(year.to_numpy()):
+        step = p.diff().abs().round(4)
+        step = step[step > 0]
+        if step.empty:
+            continue
+        share = step.value_counts(normalize=True).sort_index()
+        tick = float(share[share >= min_share].index.min()) if len(step) >= min_diffs else np.nan
+        rows.append({"year": int(y), "tick": tick,
+                     "tick_mode": float(step.mode().iloc[0]), "n_diff": int(len(step)),
+                     "median_close": float(p.median())})
+    return pd.DataFrame(rows, columns=["year", "tick", "tick_mode", "n_diff", "median_close"])
+
+
+def load_ticks(partition="research"):
+    """研究期的 tick 表；partition="validation_2022" 时再接上 2022 年那一行（供 2023 交易用）。"""
+    table = pd.read_csv(tick_path("research"))
     C.assert_no_holdout_dates(pd.to_datetime(table.year.astype(str)+"-01-01"), "tick 缓存")
-    return table
+    if partition == "research":
+        return table
+    later = pd.read_csv(tick_path("validation_2022"))
+    C.assert_validation_2022_dates(pd.to_datetime(later.year.astype(str)+"-01-01"), "2022 tick 缓存")
+    return pd.concat([table, later], ignore_index=True)
 
 
 def slippage_tables(ticks, prices, n_ticks=1.):

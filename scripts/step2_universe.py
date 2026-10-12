@@ -57,6 +57,11 @@ def main() -> int:
         traj.to_csv(d / 'turnover_trajectory.csv', encoding='utf-8-sig')
         ee.to_csv(d / 'entries_exits.csv', index=False, encoding='utf-8-sig')
 
+    # 2022 和样本外的池子在运行时按同一门槛再算，门槛要落盘给它们读
+    (C.UNIVERSE_DIR / 'screen_params.json').write_text(json.dumps({
+        'lookback_years': args.lookback, 'min_turnover': args.min_turnover_yi * 1e8,
+        'min_valid_ratio': C.MIN_VALID_DAY_RATIO, 'min_valid_days': C.MIN_VALID_DAYS,
+    }, ensure_ascii=False, indent=2), encoding='utf-8')
     fixed = uni.get(max(uni), [])
     (C.UNIVERSE_DIR / 'universe_fixed.txt').write_text('\n'.join(fixed) + '\n',
                                                        encoding='utf-8')

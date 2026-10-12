@@ -466,6 +466,9 @@ def load_roll_calendar(symbols: list[str], end, directory=None) -> dict[str, pd.
     """各品种换月日与新旧合约代码，只保留 ``end`` 及以前的行。"""
     root = Path(directory) if directory is not None else Path(C.ROLL_DIR)
     end = pd.Timestamp(end)
+    # 换月文件里存有 2022 年以后的日期：读到 2022 以内照常，越过 2022 只能在打开的最终评估里，且不越过登记的截止日
+    if end >= pd.Timestamp(C.STRICT_OOS_START):
+        C.assert_oos_research_locked(end.date())
     out = {}
     for s in symbols:
         path = root / f"{s}.csv"
@@ -723,6 +726,15 @@ def load_universe(path=None) -> dict[int, list[str]]:
 # --------------------------------------------------------------------------
 # 2022 验证与样本外：同一口径，第 y 年只用第 y-1 年
 # --------------------------------------------------------------------------
+def screen_params() -> dict:
+    """第 2 步实际用的门槛；没有落盘时用 config 默认值。2022 和样本外的池子必须和研究期同一门槛。"""
+    path = C.UNIVERSE_DIR / 'screen_params.json'
+    if not path.exists():
+        return {}
+    import json
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
 def validation_universe() -> tuple[list[str], pd.DataFrame]:
     """2022 的池子，用第 2 步落盘的研究期逐年统计（即 2021 年）判定。"""
     path = C.UNIVERSE_DIR / 'yearly_stats.csv'
@@ -731,7 +743,7 @@ def validation_universe() -> tuple[list[str], pd.DataFrame]:
     stats = pd.read_csv(path)
     C.assert_no_holdout_dates(
         pd.to_datetime(stats['year'].astype(str) + '-01-01'), what='2022 品种池统计')
-    detail = screen_year(stats, C.VALIDATION_YEAR)
+    detail = screen_year(stats, C.VALIDATION_YEAR, **screen_params())
     return sorted(detail.index[detail['passed']]), detail
 
 
@@ -757,7 +769,7 @@ def oos_universe(symbols: list[str], end) -> tuple[dict[int, list[str]], pd.Data
         return {}, pd.DataFrame()
     universe, details = {}, []
     for year in oos_years(end):
-        d = screen_year(stats, year)
+        d = screen_year(stats, year, **screen_params())
         universe[year] = sorted(d.index[d['passed']]) if len(d) else []
         if len(d):
             details.append(d.reset_index().rename(columns={'index': 'symbol'}).assign(year=year))

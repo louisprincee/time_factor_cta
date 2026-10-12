@@ -29,7 +29,10 @@ import morning_features as features
 PROTOCOL = ROOT / "config" / "oos_protocol.json"
 OUT = ROOT / "runs" / "oos"
 HASHED = ["config/oos_protocol.json", "config/morning.json",
-          "scripts/oos_final.py", "scripts/morning.py", "scripts/morning_features.py"]
+          "scripts/oos_final.py", "scripts/morning.py", "scripts/morning_features.py",
+          "src/tfcta/config.py", "src/tfcta/data.py", "src/tfcta/factors.py", "src/tfcta/research.py",
+          "data/research/fee_history.csv", "data/validation_2022/fee_history.csv", "data/oos/fee_history.csv",
+          "data/research/tick_size.csv", "data/validation_2022/tick_size.csv"]
 TICKS = {"主口径": 1.0, "滑点2跳": 2.0}
 SAVED = {"早盘元策略": (morning.OUT, "主策略·亏损反手·30笔"), "主策略·原样": (morning.OUT, "主策略·原样")}
 
@@ -68,17 +71,20 @@ def fingerprint(hashes, years):
 
 
 def check_ledger(ledger, strategy, finger, hashes, rerun, previous=()):
-    """同一指纹已有结果：须显式 --rerun；此前用别的配置跑过：返回改动过的配置，记入台账。
-    previous 是这一系列测试在台账里用过的旧名字。"""
+    """同一口径（含 previous 里的旧名字）在台账里已有结果时，任何新运行都须 --rerun，不论年份和文件是否改过；
+    返回与最近一次结果相比改动过、新增或不再参与哈希的文件，记入台账。"""
     names = {strategy, *previous}
-    rows = [r for r in ledger if r.get("kind") == "final_evaluation" and r.get("strategy") in names]
-    done = [r for r in rows if r.get("status") == "result" and r.get("fingerprint") == finger]
+    done = [r for r in ledger if r.get("kind") == "final_evaluation" and r.get("strategy") in names
+            and r.get("status") == "result"]
     if done and not rerun:
-        raise SystemExit(f"这组配置和年份已在 {done[-1]['run_at']} 跑过，结果在 {done[-1].get('out')}；"
-                         "确需重跑加 --rerun")
-    return sorted({k for r in rows if r.get("status") == "result"
-                   for k, v in r.get("sha256", {}).items()
-                   if k.endswith(".json") and hashes.get(k) not in (None, v)})
+        last = done[-1]
+        same = "同一组配置和年份" if last.get("fingerprint") == finger else "这一口径"
+        raise SystemExit(f"{same}已在 {last.get('run_at')} 跑过样本外（共 {len(done)} 次，结果在 {last.get('out')}）；"
+                         "再跑是复测，确需重跑加 --rerun，台账会记下改动的文件")
+    if not done:
+        return []
+    old = done[-1].get("sha256", {})
+    return sorted({k for k in set(old) | set(hashes) if old.get(k) != hashes.get(k)})
 
 
 def load_specs(protocol):
@@ -164,8 +170,8 @@ def rebuild(base, candidate, oos_table=None):
     if oos_table is not None:
         table = pd.concat([table, oos_table], ignore_index=True)
     books = morning_books(table, base, candidate)
-    morning = morning_returns(table, books, base)
-    series = {scenario: {name: morning[(scenario, name)] for name in books} for scenario in TICKS}
+    returns = morning_returns(table, books, base)
+    series = {scenario: {name: returns[(scenario, name)] for name in books} for scenario in TICKS}
     return table, books, series
 
 
@@ -197,7 +203,7 @@ def main():
     years = parse_years(args.years, protocol["years_allowed"])
     end = C.to_date(f"{years[-1]}-12-31")
     files = [ROOT / f for f in HASHED]
-    hashes = {Path(f).name: C._sha256(f) for f in files}
+    hashes = {C._ledger_key(f): C._sha256(f) for f in files}  # 和台账同一套键：项目内相对路径
     finger = fingerprint(hashes, years)
     strategy = protocol["name"]
     changed = check_ledger(C.read_ledger(), strategy, finger, hashes, args.rerun, protocol.get("previous_names", []))
@@ -210,16 +216,20 @@ def main():
             if not all(universe.values()):
                 raise ValueError(f"样本外有年份品种池为空: {[y for y, v in universe.items() if not v]}")
             names = sorted({s for group in universe.values() for s in group})
-            features.build("oos", end=end, names=names)
+            features.build("oos", end=end, pools=universe)
             oos_table = morning.prepare("oos", base, years=(oos_years[0], oos_years[-1]), pools=universe)
             table, books, series = rebuild(base, candidate, oos_table)
             notes = consistency(series["主口径"])
-    except Exception as error:  # 中途失败也留痕：台账里 opened 之后跟一条 aborted
+            write_outputs(ticket, years, oos_years, end, finger, changed, table, books, series, notes)
+    except BaseException as error:  # 中途失败（含 Ctrl+C）也留痕：台账里 opened 之后跟一条 aborted
         C.append_ledger({"kind": "final_evaluation", "status": "aborted", "strategy": strategy,
                          "run_at": pd.Timestamp.now().isoformat(timespec="seconds"), "fingerprint": finger,
                          "years": years, "error": f"{type(error).__name__}: {error}"[:500]})
         raise
-    write_outputs(ticket, years, oos_years, end, finger, changed, table, books, series, notes)
+    finally:
+        leftover = morning.FEATURES / "oos.parquet"
+        if leftover.exists():
+            leftover.unlink()  # 样本外特征表只在锁内存在，不留在锁外目录
 
 
 def write_outputs(ticket, years, oos_years, end, finger, changed, table, books, series, notes):
@@ -230,9 +240,9 @@ def write_outputs(ticket, years, oos_years, end, finger, changed, table, books, 
     summary = pd.DataFrame([describe(ret, name, scenario) for scenario, group in scored.items()
                             for name, ret in group.items()])
     summary.to_csv(out / "summary.csv", index=False, encoding="utf-8-sig")
-    year_table = yearly(series["主口径"], oos_years, years)
+    year_table = yearly(series["主口径"], years, years)
     year_table.to_csv(out / "yearly.csv", index=False, encoding="utf-8-sig")
-    trades = morning_trades(table, books, oos_years)
+    trades = morning_trades(table, books, years)
     trades.to_csv(out / "morning_trades.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(scored["主口径"]).to_csv(out / "daily.csv", encoding="utf-8-sig")
     print("图表：", plot_performance(scored["主口径"], out / "plots" / label, f"样本外 {label}（主口径，扣费后）"))

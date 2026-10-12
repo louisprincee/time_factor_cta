@@ -15,6 +15,10 @@ from tfcta.research import plot_performance
 
 RESULTS = {
     "morning": "runs/morning/meta",
+    "morning_v1": "runs/morning/morning_v1",
+    "morning_v2": "runs/morning/morning_v2",
+    "morning_benchmark": "runs/morning/morning_benchmark",
+    "morning_compare": "runs/morning/comparison",
     "oos": "runs/oos",
 }
 

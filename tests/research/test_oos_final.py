@@ -29,23 +29,35 @@ def test_label_and_fingerprint():
     assert final.fingerprint({'a': '1'}, [2024]) != final.fingerprint({'a': '1'}, [2024, 2025])
 
 
-def test_check_ledger_refuses_silent_rerun_and_reports_changed_configs():
-    finger = final.fingerprint({'x.json': 'new'}, [2024])
-    ledger = [{'kind': 'final_evaluation', 'strategy': 'S', 'status': 'result', 'fingerprint': finger,
-               'run_at': 't', 'sha256': {'x.json': 'new'}},
-              {'kind': 'final_evaluation', 'strategy': 'S', 'status': 'result', 'fingerprint': 'old',
-               'run_at': 't0', 'sha256': {'x.json': 'old'}}]
-    with pytest.raises(SystemExit):
-        final.check_ledger(ledger, 'S', finger, {'x.json': 'new'}, rerun=False)
-    assert final.check_ledger(ledger, 'S', finger, {'x.json': 'new'}, rerun=True) == ['x.json']
-    assert final.check_ledger(ledger, 'other', finger, {'x.json': 'new'}, rerun=False) == []
+def test_check_ledger_refuses_any_retest_without_rerun_and_lists_changed_files():
+    ledger = [{'kind': 'final_evaluation', 'strategy': 'S', 'status': 'result', 'fingerprint': 'f0',
+               'run_at': 't0', 'sha256': {'a.json': 'old', 'gone.py': 'x'}},
+              {'kind': 'final_evaluation', 'strategy': 'S', 'status': 'opened', 'fingerprint': 'f1'}]
+    now = {'a.json': 'new', 'src/lib.py': 'y'}
+    with pytest.raises(SystemExit):  # 年份或代码变了也是复测
+        final.check_ledger(ledger, 'S', 'another', now, rerun=False)
+    with pytest.raises(SystemExit):  # 旧名字下跑过也算
+        final.check_ledger(ledger, 'S2', 'another', now, rerun=False, previous=['S'])
+    assert final.check_ledger(ledger, 'S', 'another', now, rerun=True) == ['a.json', 'gone.py', 'src/lib.py']
+    assert final.check_ledger(ledger, 'other', 'f0', now, rerun=False) == []
 
 
-def test_yearly_marks_warmup_year_as_not_scored():
+def test_hashes_cover_library_code_and_cost_data():
+    for path in ('src/tfcta/research.py', 'src/tfcta/data.py', 'src/tfcta/config.py',
+                 'data/research/tick_size.csv', 'data/oos/fee_history.csv'):
+        assert path in final.HASHED
+
+
+def test_ledger_keys_keep_same_named_files_apart():
+    keys = {final.C._ledger_key(final.ROOT / p) for p in ('data/research/fee_history.csv', 'data/oos/fee_history.csv')}
+    assert keys == {'data/research/fee_history.csv', 'data/oos/fee_history.csv'}
+
+
+def test_yearly_only_reports_the_years_asked_for():
     days = pd.bdate_range('2023-01-02', '2024-12-31')
     ret = pd.Series(.001, index=days)
-    table = final.yearly({'A': ret}, [2023, 2024], [2024])
-    assert table.set_index('年份').计入绩效.to_dict() == {2023: False, 2024: True}
+    table = final.yearly({'A': ret}, [2024], [2024])
+    assert table.年份.tolist() == [2024] and table.计入绩效.all()
 
 
 def test_morning_books_switch_on_trailing_loss_across_partitions():
@@ -62,3 +74,16 @@ def test_morning_books_switch_on_trailing_loss_across_partitions():
         final.morning.base_books = original
     assert books['主策略·原样'].tolist() == [-1., -1., -1.]
     assert books['早盘元策略'].tolist() == [-1., -1., 1.]  # 第三天才看到前两笔亏损
+
+
+def test_rebuild_runs_end_to_end_on_a_tiny_table(monkeypatch):
+    """rebuild 里不能有局部变量遮住 morning 模块（2026-10-12 修过一次）。"""
+    days = pd.to_datetime(['2021-12-30', '2021-12-31', '2022-01-04'])
+    table = pd.DataFrame({'trading_date': days, 'symbol': 'A', 'dev15': .003, 'gross_1130': [.01, .01, .02],
+                          'cost_1130': 0., 'tick_frac': .0001, 'sigma': .01, 'sector': '黑色'})
+    monkeypatch.setattr(final.morning, 'prepare_through_2022', lambda base, first: table.copy())
+    monkeypatch.setattr(final.morning, 'base_books', lambda t, base: {'主策略': pd.Series(-1., index=t.index)})
+    base = {'sizing': {'risk_per_trade': .01, 'max_weight': 2., 'max_sector_gross': 3., 'max_gross': 4.}}
+    _, books, series = final.rebuild(base, {'book': '主策略', 'mode': '亏损反手', 'window_trades': 2})
+    assert set(series) == set(final.TICKS) and set(series['主口径']) == {'早盘元策略', '主策略·原样'}
+    assert books['早盘元策略'].tolist() == [-1., -1., 1.]

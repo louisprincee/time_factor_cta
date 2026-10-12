@@ -207,6 +207,15 @@ def _sha256(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _ledger_key(path) -> str:
+    """台账里文件的名字：项目内用相对路径（同名文件不会互相覆盖），项目外用绝对路径。"""
+    p = Path(path).resolve()
+    try:
+        return p.relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
 def append_ledger(entry: dict, ledger=None) -> None:
     import json
     path = Path(ledger or OOS_LEDGER)
@@ -245,7 +254,7 @@ class final_evaluation:
             raise HoldoutViolation(
                 f"样本外截止日须在 {STRICT_OOS_START}..{DEFAULT_OOS_END}（已分片范围），收到 {self.oos_end}")
         assert_test_window_closed(self.oos_end, today=self.today)
-        hashes = {Path(p).name: _sha256(p) for p in self.files}
+        hashes = {_ledger_key(p): _sha256(p) for p in self.files}
         entry = {
             "kind": "final_evaluation", "status": "opened",
             "run_at": _dt.datetime.now().isoformat(timespec="seconds"),

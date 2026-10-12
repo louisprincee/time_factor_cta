@@ -18,9 +18,6 @@ from tfcta.data import (
 TSMOM_WINDOWS = (20, 60, 120, 250)
 VOL_WINDOW = 60
 CS_MIN_SYMBOLS = 5
-# 火富牛《2022年度期货策略复盘与展望》里写明的数字。
-# 3 日、两端各 5 个是截面动量的例子；20 日是文中波动率图的窗口。
-# 均价突破没有给窗口，沿用同一张 20 日图，不另做搜索。
 REVIEW_MOM_WINDOW = 3
 REVIEW_VOL_WINDOW = 20
 REVIEW_TAIL = 5

@@ -6,10 +6,7 @@
 收益是同一交易日 09:17 开盘到 11:30 收盘的多头收益，不是下一个交易日。
 夜盘在数据里记在当天的 trading_date 上，所以这里的「夜盘之后的日盘」就是当天上午。
 
-三条关系按主策略的逻辑分开：
-- 上冲（dev15 > 0）：高点时钟对多头收益，预期为负（高点越晚，上午越容易回吐）。
-- 下杀（dev15 < 0）：低点时钟对多头收益，预期为正（低点越晚，上午越容易反弹）。
-- 对齐：上冲用高点时钟、下杀用低点时钟，收益改成反向收益（-方向 × 多头收益），预期为正。
+三类位置关系都使用全部有效夜盘品种日，不按 dev15 正负筛选，也不翻转收益：高点时钟、低点时钟、低点时钟减高点时钟，分别与同一段多头收益比较。
 
 显著性用按交易日聚类的 t 检验，同一天的品种不算独立样本。
 输出在 runs/morning/clock_return/。
@@ -102,23 +99,6 @@ def late_minus_early(day, clock, y):
     return cluster_slope(day[keep], (clock[keep] >= CLOCK).astype(float), y[keep])
 
 
-def relations(frame):
-    """三条关系。对齐后的收益是反向持有的毛收益：上冲做空、下杀做多。"""
-    dev = frame.dev15.to_numpy(dtype=float)
-    gross = frame.gross_1130.to_numpy(dtype=float)
-    high = frame.hclock_td.to_numpy(dtype=float)
-    low = frame.lclock_td.to_numpy(dtype=float)
-    day = frame.trading_date.to_numpy()
-    up, down = dev > 0, dev < 0
-    either = up | down
-    return [
-        {"关系": "上冲：高点时钟 → 多头收益", "预期": "负", "day": day[up], "x": high[up], "y": gross[up]},
-        {"关系": "下杀：低点时钟 → 多头收益", "预期": "正", "day": day[down], "x": low[down], "y": gross[down]},
-        {"关系": "对齐：极值时钟 → 反向收益", "预期": "正", "day": day[either],
-         "x": np.where(up, high, low)[either], "y": (-np.sign(dev) * gross)[either]},
-    ]
-
-
 def describe(sample, scope, item):
     link = association(item["day"], item["x"], item["y"])
     gap = late_minus_early(item["day"], item["x"], item["y"])
@@ -182,7 +162,7 @@ def load_research():
         raise ValueError(f"未登记板块: {sorted(unknown)}")
     table["sector"] = table.symbol.map(morning.SECTOR_OF)
     ready = (table.member & table.ret_night.notna() & table.hclock_td.notna() & table.lclock_td.notna()
-             & table.dev15.notna() & table.gross_1130.notna())
+             & table.gross_1130.notna())
     table = table.loc[ready].reset_index(drop=True)
     if table.duplicated(["symbol", "trading_date"]).any():
         raise ValueError("特征表品种/日期重复")
@@ -190,13 +170,7 @@ def load_research():
 
 
 def samples_of(table):
-    deviation = table[table.dev15.abs() > 0.002]
-    same_night = np.sign(table.ret_night.to_numpy(dtype=float)) == np.sign(table.dev15.to_numpy(dtype=float))
-    return {
-        "有夜盘": table,
-        "偏离超过0.2%": deviation,
-        "偏离超过0.2%且夜盘同向": deviation[same_night[deviation.index]],
-    }
+    return {"有夜盘": table}
 
 
 def collect(table):
@@ -204,16 +178,11 @@ def collect(table):
     for sample, frame in samples_of(table).items():
         groups = [("全部", frame)] + [(name, frame[frame.sector == name]) for name in morning.SECTORS]
         for scope, part in groups:
-            for item in relations(part):
+            for item in study_items(part):
                 relations_rows.append(describe(sample, scope, item))
-                if scope == "全部":
+                if scope == "全部" and item["关系"] != "低点时钟-高点时钟 → 多头收益":
                     bin_rows.extend(bin_means(sample, scope, item))
-                for year, year_frame in part.groupby(part.trading_date.dt.year):
-                    matched = next(row for row in relations(year_frame) if row["关系"] == item["关系"])
-                    link = association(matched["day"], matched["x"], matched["y"])
-                    year_rows.append({"样本": sample, "范围": scope, "年份": int(year), "关系": item["关系"],
-                                      "Spearman": link["Spearman"], "Spearman双尾p": link["Spearman_p"],
-                                      "笔数": link["笔数"], "天数": link["天数"]})
+            year_rows.extend(yearly_pooled_summary(part, sample, scope).to_dict("records"))
     return pd.DataFrame(relations_rows), pd.DataFrame(bin_rows), pd.DataFrame(year_rows)
 
 
@@ -227,11 +196,36 @@ def position_items(frame):
     ]
 
 
-def segment_table(frame):
+def study_items(frame):
+    """位置变量与原始多头收益的关系，不按偏离方向拆样。"""
+    high, low = position_items(frame)
+    day = frame.trading_date.to_numpy()
+    gross = frame.gross_1130.to_numpy(dtype=float)
+    return [
+        {**high, "关系": "高点时钟 → 多头收益", "预期": "负"},
+        {**low, "关系": "低点时钟 → 多头收益", "预期": "正"},
+        {"关系": "低点时钟-高点时钟 → 多头收益", "预期": "正", "day": day,
+         "x": low["x"] - high["x"], "y": gross},
+    ]
+
+
+def yearly_pooled_summary(frame, sample, scope):
+    """每个板块、每年合并所有品种日后计算 Spearman。"""
+    rows = []
+    for year, annual in frame.groupby(frame.trading_date.dt.year, sort=True):
+        for item in study_items(annual):
+            link = association(item["day"], item["x"], item["y"])
+            rows.append({"样本": sample, "范围": scope, "年份": int(year), "关系": item["关系"],
+                         "Spearman": link["Spearman"], "Spearman双尾p": link["Spearman_p"],
+                         "笔数": link["笔数"], "天数": link["天数"]})
+    return pd.DataFrame(rows)
+
+
+def segment_table(frame, scope="全部"):
     rows = []
     summaries = []
     for item in position_items(frame):
-        rows.extend(bin_means("有夜盘", "全部", item))
+        rows.extend(bin_means("有夜盘", scope, item))
         link = association(item["day"], item["x"], item["y"])
         summaries.append({"关系": item["关系"], **link, "时钟0到1的收益bp": link["斜率"] * 1e4})
     return pd.DataFrame(rows), pd.DataFrame(summaries)
@@ -286,7 +280,7 @@ def _p_text(p_value):
     return f"p = {p_value:.3f}"
 
 
-def plot_segments(segments, summary, path):
+def plot_segments(segments, summary, path, scope="全部"):
     """五等分位置上，高点、低点各自对应的上午做多收益。"""
     apply_style()
     colors = {"高点": "#2F5D7C", "低点": "#C46B4A"}
@@ -310,7 +304,9 @@ def plot_segments(segments, summary, path):
         ax.set_title(f"{name}出现的位置\nSpearman {link.Spearman:+.3f}    {_p_text(link.Spearman_p)}",
                      loc="left", fontsize=12, color="#102A43", pad=8)
     axes[0].set_ylabel("09:17 → 11:30 做多收益（bp）")
-    fig.suptitle("2016–2021  每个交易日", fontsize=15, color="#102A43", x=0.07, ha="left", y=0.98)
+    scope_label = "全板块" if scope == "全部" else scope
+    fig.suptitle(f"2016–2021  {scope_label}  每个交易日", fontsize=15,
+                 color="#102A43", x=0.07, ha="left", y=0.98)
     fig.text(0.07, 0.92,
              "竖线是按交易日聚类的 95% 区间。横轴数字是该段的品种日数量。位置从夜盘第一根到 09:16，含 09:16 这根已知 K 线。",
              fontsize=9, color="#7B8794")
@@ -357,6 +353,48 @@ def plot_sectors(sectors, path):
     plt.close(fig)
 
 
+def plot_yearly(yearly, path, scope="全部"):
+    """年度 pooled Spearman；三条线都只使用极值位置和多头收益。"""
+    apply_style()
+    frame = yearly[(yearly.样本 == "有夜盘") & (yearly.范围 == scope)]
+    years = sorted(frame.年份.unique())
+    fig, ax = plt.subplots(figsize=(11.8, 5.7))
+    series = [
+        ("高点时钟 → 多头收益", "高点时钟 → 多头收益", "#2F5D7C"),
+        ("低点时钟 → 多头收益", "低点时钟 → 多头收益", "#C46B4A"),
+        ("低点时钟-高点时钟 → 多头收益", "低点时钟 - 高点时钟 → 多头收益", "#1F7A4D"),
+    ]
+    for relation, label, color in series:
+        if relation not in set(frame.关系):
+            continue
+        part = frame[frame.关系 == relation].sort_values("年份")
+        ax.plot(part.年份.to_numpy(dtype=int), part.Spearman, marker="o", markersize=5, linewidth=2,
+                color=color, label=label)
+    ax.axhline(0, color="#9AA5B1", lw=0.8, zorder=1)
+    ax.set_xticks(years)
+    if years:
+        ax.set_xlim(years[0] - 0.2, years[-1] + 0.2)
+    ax.set_ylabel("年度 pooled Spearman")
+    ax.grid(axis="y", zorder=0)
+    ax.set_axisbelow(True)
+    ax.tick_params(length=0)
+    ax.legend(frameon=False, loc="best", fontsize=9)
+    values = frame.Spearman.dropna().to_numpy()
+    reach = max(float(np.abs(values).max()), 0.02) * 1.15
+    ax.set_ylim(-reach, reach)
+    title = "全部品种" if scope == "全部" else scope
+    fig.suptitle(f"2016–2021  夜盘样本分年 pooled Spearman · {title}", fontsize=15,
+                 color="#102A43", x=0.07, ha="left", y=0.98)
+    note = "每年合并所有品种日计算；不按 dev15 分组，也不反转收益。"
+    if scope != "全部":
+        note += " 板块图纵轴单独缩放，不宜比较不同板块的幅度。"
+    fig.text(0.07, 0.92, note,
+             fontsize=9, color="#7B8794")
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.84, bottom=0.13)
+    fig.savefig(path, dpi=170, facecolor="white")
+    plt.close(fig)
+
+
 def clear_old_plots(plot_dir):
     for name in OLD_PLOTS:
         path = plot_dir / name
@@ -385,14 +423,21 @@ def main():
     clear_old_plots(plot_dir)
     plot_segments(segments, segment_summary, plot_dir / "segments.png")
     plot_sectors(sectors, plot_dir / "sectors.png")
+    plot_yearly(yearly, plot_dir / "yearly.png")
+    yearly_sector_dir = plot_dir / "sectors"
+    yearly_sector_dir.mkdir(parents=True, exist_ok=True)
+    available_scopes = set(yearly.范围.unique())
+    for sector in morning.SECTORS:
+        if sector in available_scopes:
+            plot_yearly(yearly, yearly_sector_dir / f"yearly_{sector}.png", scope=sector)
     show = result[result.范围 == "全部"][
         ["样本", "关系", "笔数", "Spearman", "Spearman双尾p", "时钟0到1的收益bp", "斜率双尾p", "晚减早bp", "晚减早p"]]
     (OUT / "summary.json").write_text(show.to_json(orient="records", force_ascii=False, indent=2), encoding="utf-8")
     pd.set_option("display.width", 220)
     pd.set_option("display.max_columns", 20)
     print(show.round(4).to_string(index=False))
-    print("\n分板块（偏离超过 0.2%，Spearman 与双尾 p）：")
-    sector = result[result.样本 == "偏离超过0.2%"]
+    print("\n分板块（夜盘样本，Spearman 与双尾 p）：")
+    sector = result[result.样本 == "有夜盘"]
     wide = sector.pivot(index="范围", columns="关系", values=["Spearman", "Spearman双尾p"])
     print(wide.round(4).to_string())
     print("结果：", OUT)

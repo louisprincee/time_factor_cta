@@ -13,7 +13,7 @@ from tfcta.data import (
     validation_universe,
 )
 from tfcta.factors import day_codes_of, raw_price_path
-from tfcta.research import MULTIPLIER, commission_rate, load_fees, load_ticks, require_multipliers
+from tfcta.research import MULTIPLIER, commission_rate, estimate_ticks, load_fees, load_ticks, require_multipliers
 
 OUT = ROOT / "runs" / "morning" / "features"
 DECISION, ENTRY, EXIT = (9, 16), (9, 17), (11, 30)
@@ -62,6 +62,23 @@ def fee_history(partition):
     if partition == "oos":
         table = pd.concat([table, load_fees("oos")], ignore_index=True)
     table["trading_date"] = pd.to_datetime(table.trading_date)
+    return fill_close_today(table)
+
+
+CZCE_CLOSE_TODAY_FROM = pd.Timestamp("2017-06-23")  # 米筐郑商所平今费从这天起才有
+
+
+def fill_close_today(table):
+    """米筐的郑商所平今费率到 2017-06-22 才有。缺的日子取（平仓费，该品种后来第一次出现的平今费）中较高的一个，
+    宁可把成本估高；同一品种的费率类型必须一致才这样填。"""
+    table = table.sort_values(["symbol", "trading_date"]).copy()
+    later = table.groupby("symbol").close_commission_today.transform(lambda s: s.bfill())
+    source_kind = table.commission_type.where(table.close_commission_today.notna())
+    same_kind = table.commission_type.eq(source_kind.groupby(table.symbol).transform(lambda s: s.bfill()))
+    known_gap = table.trading_date < CZCE_CLOSE_TODAY_FROM  # 只补这段已知的数据缺口，别处缺了照样报错
+    gap = table.close_commission_today.isna() & later.notna() & same_kind & known_gap
+    table.loc[gap, "close_commission_today"] = np.maximum(table.close_commission[gap], later[gap])
+    table["close_today_filled"] = gap
     return table
 
 
@@ -87,6 +104,10 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
     pos = {int(ts): i for i, ts in enumerate(idx)}
     history = fees[fees.symbol.eq(symbol)].set_index("trading_date").sort_index()
     fee_rows = history.reindex(days, method="ffill")  # 只向前填充
+    if partition == "oos":  # 2023 起的年份没有落盘的 tick 表，用已读入的分钟价现算；第 y 年的值只用于 y+1 年
+        seen = estimate_ticks(raw, frame.trading_date)
+        seen = seen[seen.year >= C.STRICT_OOS_START.year].assign(symbol=symbol)
+        tick_table = pd.concat([tick_table, seen], ignore_index=True)
     ticks = prior_ticks(tick_table, symbol, max(2022, pd.Timestamp(end).year if end else 2022))
     rows = []
     for k, (s, e) in enumerate(zip(bounds[:-1], bounds[1:])):
@@ -128,18 +149,34 @@ def symbol_rows(symbol, partition, fees, tick_table, end=None):
     return out
 
 
-def build(partition, end=None, names=None):
-    """样本外（partition="oos"）只能在打开的 C.final_evaluation(...) 里调用，传入截止日和品种。"""
+def check_costs(table, pools):
+    """池内品种在池内年份必须算得出成本（手续费和上一年的最小变动价位）；缺了就停，不悄悄不交易。"""
+    year = table.trading_date.dt.year
+    member = pd.Series([s in pools.get(y, ()) for s, y in zip(table.symbol, year)], index=table.index)
+    ready = table.dev15.notna() & member
+    missing = table[ready & table.est_cost.isna()]
+    if len(missing):
+        share = missing.groupby([missing.symbol, missing.trading_date.dt.year]).size() /             table[ready].groupby([table.symbol, year]).size()
+        bad = share[share > 0.05]
+        if len(bad):
+            raise ValueError(f"池内品种缺成本（手续费或 tick），按品种、年的缺失比例: {bad.round(3).to_dict()}")
+
+
+def build(partition, end=None, names=None, pools=None):
+    """样本外（partition="oos"）只能在打开的 C.final_evaluation(...) 里调用，传入截止日和各年品种池。"""
     if partition == "oos":
-        if end is None or names is None:
-            raise ValueError("样本外特征需要截止日和品种池")
+        if end is None or pools is None:
+            raise ValueError("样本外特征需要截止日和各年品种池")
         end = C.to_date(end)
+        names = sorted({n for group in pools.values() for n in group})
     elif partition == "research":
-        names = sorted({n for group in load_universe().values() for n in group})
+        pools = load_universe()
+        names = sorted({n for group in pools.values() for n in group})
     else:
         names, _ = validation_universe()
+        pools = {C.VALIDATION_YEAR: list(names)}
     names = require_multipliers(names)
-    fees, ticks = fee_history(partition), load_ticks()
+    fees, ticks = fee_history(partition), load_ticks("research" if partition == "research" else "validation_2022")
     parts = []
     for symbol in names:
         try:
@@ -162,6 +199,7 @@ def build(partition, end=None, names=None):
         late = table.trading_date >= pd.Timestamp(C.HOLDOUT_START)
         C.assert_no_holdout_dates(table.trading_date[~late], "早盘特征预热")
         C.assert_validation_2022_dates(table.trading_date[late], "早盘特征")
+    check_costs(table[table.trading_date.dt.year.isin(pools)], pools)
     OUT.mkdir(parents=True, exist_ok=True)
     table.to_parquet(OUT / f"{partition}.parquet", index=False)
     return table
