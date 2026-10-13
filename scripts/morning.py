@@ -1,15 +1,10 @@
-"""早盘策略。不带版本参数时跑冻结的主策略（亏损反手）；版本参数只跑对应的一本。
+"""早盘策略：基础反向单，最近若干笔账面均值为负时改为顺势。
 
     python scripts/morning.py
-    python scripts/morning.py --v1
-    python scripts/morning.py --v2
-    python scripts/morning.py --benchmark
-    python scripts/morning.py --compare
     python scripts/morning.py --validation-2022
     python scripts/morning.py --grid
 
-规则在 config/morning.json。冻结主策略的输出在 runs/morning/meta/<分区>/，
-v1、v2、benchmark 在 runs/morning/morning_<版本>/<分区>/，三者并列在 runs/morning/comparison/。
+规则在 config/morning.json。回测输出在 runs/morning/meta/<分区>/，参数面在 runs/morning/meta_grid/。
 2022 的账面从研究期末接着算（2021 的单进入 2022 年初的窗口）。
 """
 import argparse
@@ -222,15 +217,10 @@ def trailing_days_mean(table, side, days):
 
 
 def switched(side, score, mode):
-    """最近窗口账面均值为负时，把原方向反过来。其他模式已移除。"""
+    """最近窗口账面均值为负时，把反向单改成顺势。其他模式已移除。"""
     if mode != "亏损反手":
         raise ValueError(f"只保留亏损反手，收到 {mode}")
     return side.where(~(score < 0), -side)
-
-
-def loss_switch(table, side, window):
-    """用这本单自己最近 window 笔已平仓的扣费收益。均值转负时，下一交易日把信号取反。"""
-    return switched(side, trailing_mean(table, side, window), "亏损反手")
 
 
 def v2_sides(table, rule):
@@ -251,8 +241,7 @@ def v2_sides(table, rule):
     return side.where(eligible, 0.0)
 
 
-def benchmark_sides(table, rule, threshold):
-    """低点时钟减高点时钟。只在绝对差达到阈值时交易，方向跟着差的符号，不用偏离和夜盘方向。"""
+def benchmark_sides(table, rule, threshold=0.6):
     spread = table.lclock_td - table.hclock_td
     side = pd.Series(np.where(spread.ge(threshold), 1.0,
                               np.where(spread.le(-threshold), -1.0, 0.0)), index=table.index)
@@ -311,13 +300,11 @@ def run_versions(version, partition="research"):
     view = table.loc[keep].reset_index(drop=True)
     calendar = pd.DatetimeIndex(sorted(view.trading_date.unique()))
 
-    window = 15  # v1、v2 的亏损反手。不带版本参数的冻结主策略仍用配置里的 30 笔。
-    threshold = spec["benchmark"]["threshold"]
-    bases = {"v1": base_books(table, spec)["主策略"], "v2": v2_sides(table, spec["rule"]),
-             "benchmark": benchmark_sides(table, spec["rule"], threshold)}
-    signals = {"v1": loss_switch(table, bases["v1"], window),
-               "v2": loss_switch(table, bases["v2"], window),
-               "benchmark": bases["benchmark"]}
+    v1_base = base_books(table, spec)["主策略"]
+    v1_score = trailing_mean(table, v1_base, spec["window_trades"])
+    v1 = switched(v1_base, v1_score, "亏损反手")
+    signals = {"v1": v1, "v2": v2_sides(table, spec["rule"]),
+               "benchmark": benchmark_sides(table, spec["rule"], threshold=0.6)}
     chosen = tuple(signals) if version == "compare" else (version,)
     if any(name not in signals for name in chosen):
         raise ValueError(f"未知策略版本: {version}")
@@ -327,18 +314,15 @@ def run_versions(version, partition="research"):
               ("农产品有色化工", view.sector.isin(("农产品", "有色", "化工")))]
     for name in chosen:
         signal = signals[name].loc[keep].reset_index(drop=True)
-        base_signal = bases[name].loc[keep].reset_index(drop=True)
         for scope_name, scope_mask in scopes:
             scoped = view.loc[scope_mask].reset_index(drop=True)
             side = signal.loc[scope_mask].reset_index(drop=True)
-            base_side = base_signal.loc[scope_mask].reset_index(drop=True)
             label = f"morning_{name}·{scope_name}"
             row, returns = book_row(scoped, side, spec["sizing"], calendar)
-            active = side.ne(0) | base_side.ne(0)
-            row.update({"组合": label, "切换比例": float((side != base_side)[active].mean()) if active.any() else 0.0,
-                        "信号品种日": int(side.ne(0).sum()),
-                        "信号交易日": int(scoped.loc[side.ne(0), "trading_date"].nunique()),
-                        "涉及品种": int(scoped.loc[side.ne(0), "symbol"].nunique())})
+            active = side.ne(0)
+            row.update({"组合": label, "信号品种日": int(active.sum()),
+                        "信号交易日": int(scoped.loc[active, "trading_date"].nunique()),
+                        "涉及品种": int(scoped.loc[active, "symbol"].nunique())})
             rows.append(row)
             curves[label] = returns
             attribution.append(cost_attribution(scoped, side, spec["sizing"], calendar, label))
@@ -353,20 +337,15 @@ def run_versions(version, partition="research"):
         output / "cost_attribution.csv", index=False, encoding="utf-8-sig")
     (output / "spec.json").write_text(json.dumps({
         "version": version, "partition": partition,
-        "loss_switch_window": window,
-        "v1_loss_switch": f"v1 自己最近 {window} 笔扣费收益均值 < 0 时，把 v1 信号取反",
-        "v2_loss_switch": f"v2 自己最近 {window} 笔扣费收益均值 < 0 时，把 v2 信号取反",
-        "benchmark_threshold": threshold,
-        "benchmark_signal": spec["benchmark"]["signal"],
+        "benchmark_signal": "long if low_clock - high_clock >= 0.6; short if <= -0.6",
         "benchmark_uses_dev15": False, "benchmark_uses_night_direction": False,
-        "benchmark_threshold_basis": spec["benchmark"]["note"],
+        "benchmark_threshold_basis": "research-only exploratory grid; fixed before holdout access",
         "oos_accessed": False,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    shown = "v1 / v2 / benchmark" if version == "compare" else f"morning_{version}"
     for scope_name in ("全板块", "农产品有色化工"):
         plot_series = {name: curves[f"morning_{name}·{scope_name}"] for name in chosen}
         plot_performance(plot_series, output / "plots" / scope_name,
-                         f"{scope_name}：{shown}（{partition}）")
+                         f"{scope_name}：morning 版本对比（{partition}）")
     print(result.round(3).to_string())
     print("结果：", output)
 
