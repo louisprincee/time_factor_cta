@@ -1,0 +1,46 @@
+{
+  "name": "高低点时钟：开盘量能与价格冲击",
+  "status": "declared_not_a_strategy",
+  "declared_at": "2026-10-14",
+  "sample": "只使用 2016–2021 研究期、当年品种池、有夜盘的品种日。2015 年仅用于滚动预热。不读 2022，也不读 2023 年以后。",
+  "decision": {
+    "window": "09:01–09:16 的 16 根分钟 bar，对应 09:00 开盘后至 09:16 收盘；假设 09:17 入场。",
+    "volume_baseline": "本品种过去 20 个有效交易日同一窗口成交量中位数，不含当天；至少 15 天。",
+    "interaction_abs_t": 2.5,
+    "min_years_same_sign": 5,
+    "n_years": 6,
+    "min_sectors_same_sign": 4,
+    "min_days_per_year_tail": 20,
+    "min_days_per_sector_tail": 60,
+    "min_names": 5,
+    "note": "三个候选统一使用同一门槛；高档减低档的截面 IC 方向和按交易日聚类的交互项方向都按下列假设预先固定。状态只作机制筛选，不直接构成交易规则。"
+  },
+  "models": {
+    "primary": "09:17→11:30 收益截面排名 ~ 低减高排名 + 状态排名 + 低减高×状态 + 仍在延伸排名 + 低减高×仍在延伸，标准误按交易日聚类。",
+    "robustness": "将仍在延伸替换为对齐 dev15 = −sign(低减高)×dev15。",
+    "multiple_testing": "三个预注册候选共用 |t|>2.5；逐年、逐板块方向一致性作为额外稳定性门槛。"
+  },
+  "variables": [
+    {
+      "id": "open_volume_surprise",
+      "name": "开盘异常成交量",
+      "formula": "09:01–09:16 累计成交量 / 本品种过去 20 个有效交易日同一窗口成交量中位数；滚动基准 shift(1)，至少 15 天。",
+      "expected_interaction": "负",
+      "meaning": "预先假设异常活跃代表信息流/参与度确认，极值更可能延续，时钟反转斜率减小；若交互为正或不稳定，则不支持该代理解释。"
+    },
+    {
+      "id": "impact_per_volume",
+      "name": "单位异常量价格冲击",
+      "formula": "|09:00 首根开盘价→09:16 收盘价收益| / sqrt(开盘异常成交量)。",
+      "expected_interaction": "正",
+      "meaning": "预先假设单位异常成交量引发的价格移动越大，越像流动性不足/暂时冲击，时钟反转斜率越大。"
+    },
+    {
+      "id": "volume_peak_clock",
+      "name": "开盘量峰时间",
+      "formula": "09:01–09:16 窗口内一分钟成交量最大值的位置，按窗口首末分钟线性缩放到 [0,1]。",
+      "expected_interaction": "负",
+      "meaning": "预先假设量峰越靠近 09:16，订单流越可能仍在推动极值延伸，时钟反转斜率减小。"
+    }
+  ]
+}

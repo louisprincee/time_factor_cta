@@ -11,30 +11,36 @@ from pathlib import Path
 # src/tfcta/config.py -> src/tfcta -> src -> time_factor_cta
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 分钟频原始单体 pickle（扩展名是 .txt，内容是 pickle），在 data/data_min/ 下。
+# 数据根目录。设置环境变量 TFCTA_DATA_ROOT 可整体重定向——用于在合成数据上演练
+# 整条管道而不污染真实分片。生产运行不要设置它。商品与股指分开放。
+DATA_ROOT = Path(_os.environ.get("TFCTA_DATA_ROOT", PROJECT_ROOT / "data"))
+COMMODITY_DATA = DATA_ROOT / "commodity"
+INDEX_DATA_ROOT = DATA_ROOT / "index"
+
+# 分钟频原始单体 pickle（扩展名是 .txt，内容是 pickle），在 data/commodity/data_min/ 下。
 # 可用环境变量 TFCTA_MINUTE_DIR 指向别处；默认数据目录受 /data/ 忽略规则保护。
-# 原始数据跟着项目走。
-MINUTE_RAW_DIR = Path(_os.environ.get("TFCTA_MINUTE_DIR", PROJECT_ROOT / "data" / "data_min"))
+MINUTE_RAW_DIR = Path(_os.environ.get("TFCTA_MINUTE_DIR", COMMODITY_DATA / "data_min"))
 MINUTE_MONOLITH = MINUTE_RAW_DIR / "future_all1mdata_20100101-20251231.txt"
 
-# 数据根目录。设置环境变量 TFCTA_DATA_ROOT 可整体重定向——用于在合成数据上演练
-# 整条管道而不污染真实分片。生产运行不要设置它。
-DATA_ROOT = Path(_os.environ.get("TFCTA_DATA_ROOT", PROJECT_ROOT / "data"))
-
-# step1 产出
-SHARD_ROOT = DATA_ROOT / "minute_shards"
+# 商品分钟分片。研究期与锁定的样本外分开存放，读取时按目录拦截。
+SHARD_ROOT = COMMODITY_DATA / "minute_shards"
 RESEARCH_DIR = SHARD_ROOT / "research"                     # <= 2021-12-31，可自由使用
 HOLDOUT_DIR = SHARD_ROOT / "holdout_locked"                # >= 2023-01-01，本阶段禁止读取
 VALIDATION_DIR = SHARD_ROOT / "validation_2022"            # 仅 2022，一次性验证
-ROLL_DIR = DATA_ROOT / "roll_dates"
+ROLL_DIR = COMMODITY_DATA / "roll_dates"
+
+# 股指期货分钟分片。研究期与锁定样本外分开，读取时按目录拦截。
+INDEX_SHARD_ROOT = INDEX_DATA_ROOT / "minute_shards"
+INDEX_RESEARCH_DIR = INDEX_SHARD_ROOT / "research"
+INDEX_HOLDOUT_DIR = INDEX_SHARD_ROOT / "holdout_locked"    # 2022–2025，单独锁定
 
 # 因子缓存与运行留痕
-FACTOR_DAILY_DIR = DATA_ROOT / "factor_daily_v3"
-UNIVERSE_DIR = DATA_ROOT / "universe"
+FACTOR_DAILY_DIR = COMMODITY_DATA / "factor_daily_v3"
+UNIVERSE_DIR = COMMODITY_DATA / "universe"
 RUNS_DIR = Path(_os.environ.get("TFCTA_RUNS_ROOT", PROJECT_ROOT / "runs"))
 CONFIG_DIR = Path(_os.environ.get("TFCTA_CONFIG_DIR", PROJECT_ROOT / "config"))
 # 研究输入费用与 tick 表；实验结果只写独立 runs/ 目录。
-RESEARCH_OUT_DIR = DATA_ROOT / "research"
+RESEARCH_OUT_DIR = COMMODITY_DATA / "research"
 
 # --------------------------------------------------------------------------
 # 时间切分（设计文档第 5 节）
@@ -184,7 +190,7 @@ class HoldoutViolation(RuntimeError):
     """研究代码试图接触 2022-01-01 及以后的数据。"""
 
 
-OOS_LEDGER = DATA_ROOT / "oos" / "ledger.jsonl"
+OOS_LEDGER = COMMODITY_DATA / "oos" / "ledger.jsonl"
 _final_evaluation: dict | None = None   # 只由 final_evaluation() 在 with 块内设置
 
 
@@ -272,10 +278,10 @@ class final_evaluation:
 
 
 def assert_research_only(path) -> None:
-    """拒绝任何指向 holdout_locked/ 的读取。"""
+    """拒绝任何指向验证期或锁定样本外目录的研究读取。"""
     p = Path(path).resolve()
     if any(root.resolve() in p.parents or p == root.resolve()
-           for root in (HOLDOUT_DIR, VALIDATION_DIR)):
+           for root in (HOLDOUT_DIR, VALIDATION_DIR, INDEX_HOLDOUT_DIR)):
         raise HoldoutViolation(
             f"本阶段禁止读取样本外数据: {p}\n"
             "研究入口禁止读取验证期和样本外路径。"

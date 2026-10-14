@@ -19,7 +19,7 @@ from tfcta.factors import (
 
 
 def run_dir(step: str) -> Path:
-    d = C.RUNS_DIR / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{step}"
+    d = C.RUNS_DIR / "commodity" / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{step}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -94,8 +94,8 @@ def commission_rate(kind, value, price, base, multiplier):
 
 def fee_path(partition):
     paths = {"research": C.RESEARCH_OUT_DIR / "fee_history.csv",
-             "validation_2022": C.DATA_ROOT / "validation_2022" / "fee_history.csv",
-             "oos": C.DATA_ROOT / "oos" / "fee_history.csv"}
+             "validation_2022": C.COMMODITY_DATA / "validation_2022" / "fee_history.csv",
+             "oos": C.COMMODITY_DATA / "oos" / "fee_history.csv"}
     if partition not in paths:
         raise C.HoldoutViolation(f"未知手续费分区 {partition}")
     return paths[partition]
@@ -143,7 +143,7 @@ TICK_MIN_DIFFS = 100   # 一年非零变动不到这么多次（几乎不成交�
 
 def tick_path(partition):
     paths = {"research": C.RESEARCH_OUT_DIR / "tick_size.csv",
-             "validation_2022": C.DATA_ROOT / "validation_2022" / "tick_size.csv"}
+             "validation_2022": C.COMMODITY_DATA / "validation_2022" / "tick_size.csv"}
     if partition not in paths:
         raise C.HoldoutViolation(f"tick 表只落盘研究期和 2022，样本外在最终评估里现算: {partition}")
     return paths[partition]

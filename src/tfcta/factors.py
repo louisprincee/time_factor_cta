@@ -449,7 +449,7 @@ def report_factors(df: pd.DataFrame,
     return res
 
 
-EXTERNAL_DATA_ROOT = C.DATA_ROOT / "external_rqdata"
+EXTERNAL_DATA_ROOT = C.COMMODITY_DATA / "external_rqdata"
 EXTERNAL_FACTOR_ROOT = C.FACTOR_DAILY_DIR / "external"
 
 
