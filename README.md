@@ -153,6 +153,14 @@ python scripts/index/gtja_time.py
 
 结果在 `runs/index/gtja_time/`。绩效只到 2021-12-31，用来对照研报方法，不把研报里筛出来的组合当成新策略。
 
+为检查连续合约走势和复权拼接，可生成 IF/IH/IC 的 2016–2021 复权日线 K 线图（不读取 2022 及以后）：
+
+```bash
+python scripts/index/plot_kline.py
+```
+
+图表写入 `runs/index/gtja_time/plots/`；日线 OHLC 由分钟分片中的复权价格聚合，成交量按交易日求和。
+
 ### 2. 品种池
 
 第 y 年的品种池只用第 y−1 年的日均成交额和有效交易日决定，写到 `data/commodity/universe/universe_by_year.json`，报告在 `runs/commodity/<时间>_step2/`：

@@ -13,6 +13,7 @@ from download.index.getRiceQuantIndexFutures import (
     INDEX_LISTED_FROM, assemble_symbol_frames, effective_start, save_oos_locked,
     split_oos_frames, split_research_frames,
 )
+from scripts.index.plot_kline import daily_bars
 
 
 def api_frame(index, suffix):
@@ -43,6 +44,31 @@ def test_assemble_symbol_frames_maps_raw_adjusted_volume_and_oi_fields():
     assert result.volume.tolist() == [10.0, 10.0]
     assert result.open_interest.tolist() == [100.0, 100.0]
     assert result.trading_date.tolist() == [pd.Timestamp("2021-01-04")] * 2
+
+
+def test_daily_bars_aggregate_adjusted_ohlcv_by_trading_date():
+    index = pd.to_datetime([
+        "2020-01-02 09:31", "2020-01-02 09:32",
+        "2020-01-03 09:31", "2020-01-03 09:32",
+    ])
+    frame = pd.DataFrame({
+        "trading_date": pd.to_datetime(["2020-01-02"] * 2 + ["2020-01-03"] * 2),
+        "openw": [10.0, 11.0, 20.0, 19.0],
+        "highw": [12.0, 13.0, 22.0, 21.0],
+        "loww": [9.0, 10.0, 18.0, 17.0],
+        "closew": [11.0, 12.0, 19.0, 18.0],
+        "volume": [1.0, 2.0, 3.0, 4.0],
+    }, index=index)
+
+    result = daily_bars(frame)
+
+    assert result.index.tolist() == list(pd.to_datetime(["2020-01-02", "2020-01-03"]))
+    assert result.iloc[0].to_dict() == {
+        "open": 10.0, "high": 13.0, "low": 9.0, "close": 12.0, "volume": 3.0,
+    }
+    assert result.iloc[1].to_dict() == {
+        "open": 20.0, "high": 22.0, "low": 17.0, "close": 18.0, "volume": 7.0,
+    }
 
 
 def test_assemble_symbol_frames_refuses_misaligned_series():
