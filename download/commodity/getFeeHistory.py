@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tfcta import config as C
 from tfcta.data import load_universe, validation_universe
-from tfcta.research import MULTIPLIER, fee_path, require_multipliers
+from tfcta.costs import MULTIPLIER, fee_path, require_multipliers
 from getRiceQuantExternalData import rqdata_credentials
 
 FIELDS = ["commission_type", "open_commission", "close_commission", "close_commission_today"]

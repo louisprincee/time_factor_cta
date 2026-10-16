@@ -238,73 +238,8 @@ def standardize(factors: pd.DataFrame, window: int, min_periods: int) -> pd.Data
     return pd.DataFrame({col: rolling_z(factors[col], window, min_periods) for col in factors.columns})
 
 
-def pair_signal(standardized: pd.DataFrame, long_signs: dict) -> pd.Series:
-    """做多要求每个因子都落在规定的一侧。全部翻到对面则做空，否则空仓。"""
-    long = pd.Series(True, index=standardized.index)
-    short = pd.Series(True, index=standardized.index)
-    for name, sign in long_signs.items():
-        values = standardized[name]
-        long &= values * sign > 0
-        short &= values * sign < 0
-    signal = pd.Series(0.0, index=standardized.index)
-    signal = signal.mask(long, 1.0).mask(short, -1.0)
-    return signal
-
-
 def open_to_open(frame: pd.DataFrame) -> pd.Series:
-    """当天开盘到下一次开盘。最后一天没有下一次开盘，留空，避免用到样本外价格。"""
+    """当天开盘到下一次开盘的预测目标。末日没有下一开盘时留空。"""
     opens = frame.sort_index().groupby(pd.to_datetime(frame.trading_date).dt.normalize(), sort=True).openw.first()
     opens.index = pd.DatetimeIndex(opens.index)
     return opens.shift(-1) / opens - 1
-
-
-def backtest(signal: pd.Series, forward: pd.Series, fee_per_side: float) -> pd.DataFrame:
-    """收盘信号在下一交易日开盘成交。仓位不变不扣费。"""
-    aligned = pd.concat({"signal": signal, "forward": forward}, axis=1).sort_index()
-    position = aligned.signal.shift(1).fillna(0.0)
-    turnover = (position - position.shift(1).fillna(0.0)).abs()
-    net = position * aligned.forward - fee_per_side * turnover
-    out = pd.DataFrame({"position": position, "gross": position * aligned.forward,
-                        "cost": fee_per_side * turnover, "net": net})
-    return out.loc[out.gross.notna()]
-
-
-def profit_factor(position: pd.Series, net: pd.Series) -> float:
-    """连续同一仓位算一笔，盈利笔合计除以亏损笔合计的绝对值。"""
-    held = position.reindex(net.index).fillna(0.0)
-    changed = held.ne(held.shift(1).fillna(0.0))
-    trade = changed.cumsum()
-    pnl = net.where(held != 0).groupby(trade).sum().dropna()
-    wins = float(pnl[pnl > 0].sum())
-    losses = float(pnl[pnl < 0].sum())
-    if losses == 0:
-        return np.nan
-    return wins / abs(losses)
-
-
-def performance(result: pd.DataFrame) -> dict:
-    net = result.net.dropna()
-    if net.empty:
-        return {"天数": 0, "持仓占比": np.nan, "年化": np.nan, "夏普": np.nan,
-                "最大回撤": np.nan, "卡玛": np.nan, "盈亏比": np.nan}
-    growth = 1 + net
-    if growth.le(0).any():
-        return {"天数": int(len(net)), "持仓占比": np.nan, "年化": np.nan, "夏普": np.nan,
-                "最大回撤": np.nan, "卡玛": np.nan, "盈亏比": np.nan}
-    equity = growth.cumprod()
-    drawdown = equity / equity.cummax() - 1
-    max_dd = float(drawdown.min())
-    annual = float(equity.iloc[-1] ** (252 / len(net)) - 1)
-    scale = float(net.std(ddof=1))
-    sharpe = float(net.mean() / scale * np.sqrt(252)) if scale > 0 else np.nan
-    calmar = float(annual / abs(max_dd)) if max_dd < 0 else np.nan
-    held = result.position.reindex(net.index).fillna(0.0)
-    return {
-        "天数": int(len(net)),
-        "持仓占比": float((held != 0).mean()),
-        "年化": annual,
-        "夏普": sharpe,
-        "最大回撤": max_dd,
-        "卡玛": calmar,
-        "盈亏比": profit_factor(held, net),
-    }

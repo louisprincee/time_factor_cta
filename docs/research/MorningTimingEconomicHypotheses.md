@@ -79,7 +79,7 @@
 
 ### 3.2 预先定向的经济状态变量
 
-商品状态配置在 `config/commodity/clock_state.json` 中声明：与价格方向对齐的深度 backwardation、去库或增仓被假设为“信息/供需确认”，其结果应是降低高低点时钟的反转关系（预期交互系数为负）。
+商品状态配置在 `config/research/clock_state.json` 中声明：与价格方向对齐的深度 backwardation、去库或增仓被假设为“信息/供需确认”，其结果应是降低高低点时钟的反转关系（预期交互系数为负）。
 
 | 状态代理 | 预期交互 | 主模型交互系数 (t) | 稳健性交互 t | 年份同号 | 板块同号 / 可判 | 低状态按方向毛收益 | 预设判定 |
 |---|---|---:|---:|---:|---:|---:|---|
@@ -93,7 +93,7 @@
 
 ### 3.3 路径状态
 
-商品路径配置 `config/commodity/clock_path.json` 事先给出两个方向：尾段冲击占比越高，时钟反转斜率越强（正交互）；价格路径效率越高，反转越弱（负交互）。
+商品路径配置 `config/research/clock_path.json` 事先给出两个方向：尾段冲击占比越高，时钟反转斜率越强（正交互）；价格路径效率越高，反转越弱（负交互）。
 
 | 路径变量 | 主模型交互系数 (t) | 稳健性交互 t | 年份符合预期 | 板块符合预期 / 可判 | 结果 |
 |---|---:|---:|---:|---:|---|
@@ -257,16 +257,16 @@ IC 确认规则比其始终顺跳空基准的前向毛收益高约 0.70 bp/日�
 
 研究代码：
 
-- [`scripts/research/morning_incremental.py`](../../scripts/research/morning_incremental.py)：商品条件回归、股指跳空增量和开盘确认交互。
-- [`scripts/research/timing_cutoff_scan.py`](../../scripts/research/timing_cutoff_scan.py)：商品与股指预设决策时点扫描。
-- [`scripts/research/impulse_confirmation_test.py`](../../scripts/research/impulse_confirmation_test.py)：固定时点状态策略与条件时间因子对照。
-- [`scripts/commodity/morning_clock_state.py`](../../scripts/commodity/morning_clock_state.py)：期限结构、仓单、持仓量状态检验。
-- [`scripts/commodity/morning_clock_path.py`](../../scripts/commodity/morning_clock_path.py)：尾段冲击占比与路径效率检验。
+- [`research/incremental.py`](../../research/incremental.py)：商品条件回归、股指跳空增量和开盘确认交互。
+- [`research/timing_cutoff.py`](../../research/timing_cutoff.py)：商品与股指预设决策时点扫描。
+- [`research/morning_clock.py`](../../research/morning_clock.py)：早盘时钟的收益、路径、量能和供需状态。`state`、`path` 两个子命令对应下面的配置。
+
+固定时点“确认则动量、未确认则反转”那一轮没有留成可运行入口。本文第 5 节的结论仍然有效，但不能再从仓库里重跑那份脚本。
 
 假设和阈值：
 
-- [`config/commodity/clock_state.json`](../../config/commodity/clock_state.json)
-- [`config/commodity/clock_path.json`](../../config/commodity/clock_path.json)
+- [`config/research/clock_state.json`](../../config/research/clock_state.json)
+- [`config/research/clock_path.json`](../../config/research/clock_path.json)
 
 主要结果：
 
@@ -296,11 +296,10 @@ IC 确认规则比其始终顺跳空基准的前向毛收益高约 0.70 bp/日�
 
 ```bash
 conda activate gu
-python scripts/research/morning_incremental.py
-python scripts/commodity/morning_clock_path.py
-python scripts/commodity/morning_clock_state.py
-python scripts/research/timing_cutoff_scan.py
-python scripts/research/impulse_confirmation_test.py
+python -m research.incremental
+python -m research.morning_clock path
+python -m research.morning_clock state
+python -m research.timing_cutoff
 ```
 
 研报原文：

@@ -157,14 +157,14 @@ subset documented above.
 ## Reproduction
 
 ```bash
-python scripts/research/morning_cross_market.py
-python scripts/research/morning_incremental.py
+python -m research.cross_market
+python -m research.incremental
 ```
 
 The runner and exact protocol are in
-[`scripts/research/morning_cross_market.py`](../../scripts/research/morning_cross_market.py)
+[`research/cross_market.py`](../../research/cross_market.py)
 and `runs/research/morning_first_pass/protocol.json`. The conditional models
-are in [`scripts/research/morning_incremental.py`](../../scripts/research/morning_incremental.py);
+are in [`research/incremental.py`](../../research/incremental.py);
 their protocol and outputs are under `runs/research/morning_incremental/`.
 The first-pass output directory contains feature rows, full-period and annual
 per-instrument diagnostics, and commodity daily cross-sectional rank ICs.
