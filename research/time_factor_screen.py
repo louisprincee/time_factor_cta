@@ -29,6 +29,7 @@ OUT = ROOT / "runs" / "research" / "time_factor_screen"
 EVAL_START = pd.Timestamp("2016-01-01")
 EVAL_END = pd.Timestamp("2021-12-31")
 MINUTE = timedelta(minutes=1)
+INDEX_SCREEN_SYMBOLS = ("IF", "IH", "IC")
 
 
 def load_config(path=CONFIG_PATH):
@@ -42,6 +43,35 @@ def load_config(path=CONFIG_PATH):
            for item in config["factors"]):
         raise ValueError("成交量时戳不能在这一轮写入预期符号")
     return config
+
+
+def configured_screen_cells(config: dict) -> int:
+    """Count configured market/decision/factor/symbol rows in the screen output."""
+    count = 0
+    for market, symbol_count in (("commodity", 1), ("index", len(INDEX_SCREEN_SYMBOLS))):
+        for item in config["factors"]:
+            if market in item.get("markets", [market]):
+                count += len(item["decisions"]) * symbol_count
+    return count
+
+
+def multiple_testing_audit(config: dict, summary: pd.DataFrame) -> dict:
+    configured_cells = configured_screen_cells(config)
+    realized_cells = len(summary)
+    return {
+        "status": "exploratory_unadjusted",
+        "configured_screen_cells": configured_cells,
+        "realized_summary_rows": realized_cells,
+        "configured_abs_t_threshold_checks": 2 * configured_cells,
+        "realized_abs_t_threshold_checks": 2 * realized_cells,
+        "correction": "none",
+        "confirmatory_claim": False,
+        "dependence": (
+            "Factors and decision times share or overlap observations; index contracts "
+            "share market dates; commodity cross-sections share dates and sectors; "
+            "serial dependence is addressed only within each HAC statistic."
+        ),
+    }
 
 
 def stamp(day, hm: str) -> pd.Timestamp:
@@ -247,8 +277,13 @@ def round_trip_cost(symbol: str, day, entry_raw: float, exit_raw: float, intrada
         return np.nan
     close_fee = fee.close_commission_today if intraday else fee.close_commission
     if pd.isna(close_fee):
-        close_fee = fee.close_commission
-    if pd.isna(close_fee) or pd.isna(fee.open_commission):
+        if intraday:
+            raise ValueError(
+                f"{symbol} {pd.Timestamp(day).date()} 缺少平今手续费，"
+                "不能用普通平仓费替代"
+            )
+        return np.nan
+    if pd.isna(fee.open_commission):
         return np.nan
     opened = commission_rate(fee.commission_type, fee.open_commission, entry_raw, entry_raw, MULTIPLIER[symbol])
     closed = commission_rate(fee.commission_type, close_fee, exit_raw, entry_raw, MULTIPLIER[symbol])
@@ -649,7 +684,7 @@ def main():
         built = rows_for_symbol(frame, symbol, "commodity", config, universe, fees, ticks)
         rows.extend(built)
         print(f"commodity {symbol}: {len(built)}", flush=True)
-    for symbol in ("IF", "IH", "IC"):
+    for symbol in INDEX_SCREEN_SYMBOLS:
         frame = load_shard(symbol, directory=C.INDEX_RESEARCH_DIR, columns=[
             "trading_date", "open", "openw", "close", "closew", "highw", "loww", "volume", "total_turnover"])
         built = rows_for_symbol(frame, symbol, "index", config)
@@ -666,10 +701,19 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     summary.to_csv(OUT / "summary.csv", index=False, encoding="utf-8-sig")
     paths.to_csv(OUT / "path_diagnostics.csv", index=False, encoding="utf-8-sig")
-    (OUT / "protocol.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    protocol = dict(config)
+    protocol["multiple_testing_audit"] = multiple_testing_audit(config, summary)
+    (OUT / "protocol.json").write_text(json.dumps(protocol, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     passed = summary[summary["达到统计门槛"]]
     print(summary.to_string(index=False), flush=True)
-    print(f"达到统计门槛: {len(passed)} / {len(summary)}", flush=True)
+    print(f"达到预设筛查门槛（未作多重检验校正）: {len(passed)} / {len(summary)}", flush=True)
+    print(
+        "多重检验审计: "
+        f"{protocol['multiple_testing_audit']['configured_screen_cells']} 个配置筛查单元，"
+        f"{protocol['multiple_testing_audit']['configured_abs_t_threshold_checks']} 个 |t| 门槛比较；"
+        "结果仅为探索性发现。",
+        flush=True,
+    )
     print("本轮不构造配对，成交量时戳即使稳定也不写入方向。", flush=True)
     print(f"结果：{OUT}", flush=True)
 

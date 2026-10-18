@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -138,3 +139,26 @@ def test_frozen_config_selects_one_allowed_oos_parameter_set(tmp_path):
     frozen["chosen"]["horizon"] = 10
     with pytest.raises(ValueError, match="horizon"):
         chosen_parameters(frozen)
+
+
+def test_research_and_validation_entrypoints_accept_the_frozen_config(monkeypatch):
+    import backtest.engine as engine
+
+    calls = []
+    raw = pd.DataFrame({"RB": [0.25]})
+    research_data = SimpleNamespace(
+        factors=SimpleNamespace(raw=lambda _name: raw),
+    )
+    monkeypatch.setattr(engine, "load_research", lambda *_args: research_data)
+    monkeypatch.setattr(engine, "load_validation", lambda *_args: ("validation data", "factor"))
+    monkeypatch.setattr(
+        engine, "_run_integer_lot_period",
+        lambda period, data, factor, _capital: calls.append((period, data, factor)),
+    )
+
+    engine.run_integer_lot_research()
+    engine.run_integer_lot_validation()
+
+    assert calls[0][0:2] == ("research", research_data)
+    pd.testing.assert_frame_equal(calls[0][2], pd.DataFrame({"RB": [0.0]}))
+    assert calls[1] == ("validation", "validation data", "factor")

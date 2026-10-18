@@ -266,11 +266,12 @@ def simulate_integer_lots(
         for symbol in columns:
             if lots[symbol]:
                 delta = adjusted_open_delta.at[day, symbol]
-                if np.isfinite(delta):
-                    if not np.isfinite(adjusted_open.at[day, symbol]):
-                        raise ValueError(f"{day.date()} {symbol} 持仓期间复权开盘价缺失")
-                    gross_pnl += lots[symbol] * multipliers[symbol] * float(delta)
-                    age[symbol] += 1
+                if not np.isfinite(delta):
+                    raise ValueError(f"{day.date()} {symbol} 持仓期间复权开盘变动缺失")
+                if not np.isfinite(adjusted_open.at[day, symbol]):
+                    raise ValueError(f"{day.date()} {symbol} 持仓期间复权开盘价缺失")
+                gross_pnl += lots[symbol] * multipliers[symbol] * float(delta)
+                age[symbol] += 1
         equity = float(equity - cost + gross_pnl)
         writeoff = 0.0
         if equity <= 0:
@@ -688,7 +689,7 @@ def plot_performance(returns, out_dir, title="净值与最大回撤", series=Non
     return path
 
 
-VAL_COLUMNS = ["trading_date", "open", "openw", "close", "highw", "loww"]
+VAL_COLUMNS = ["trading_date", "open", "openw", "close", "closew", "highw", "loww"]
 VAL_END = pd.Timestamp("2022-12-31")
 RESEARCH_YEARS = range(2016, 2022)
 LONG_ONLY_SECTORS = {
@@ -744,6 +745,16 @@ def _exposure(position: pd.DataFrame, universe: dict, years) -> float:
 def _keep_last(frames: list[pd.DataFrame]) -> pd.DataFrame:
     out = pd.concat(frames).sort_index()
     return out[~out.index.duplicated(keep="last")]
+
+
+def _validation_time_factor(history: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
+    low_clock = panel.pivot_table(
+        index="trading_date", columns="symbol", values="ts_low", aggfunc="first",
+    )
+    high_clock = panel.pivot_table(
+        index="trading_date", columns="symbol", values="ts_high", aggfunc="first",
+    )
+    return _keep_last([history, low_clock - high_clock])
 
 
 def _newey_west_mean_test(values: pd.Series, lags: int = 4) -> tuple[float, float]:
@@ -1013,7 +1024,7 @@ def _run_integer_lot_period(
 def run_integer_lot_research(initial_capital=100_000_000.0):
     from strategies.ts_low import load_config
 
-    load_config()
+    load_config(allow_frozen=True)
     data = load_research(1.0)
     factor = data.factors.raw("ts_low") - data.factors.raw("ts_high")
     _run_integer_lot_period("research", data, factor, initial_capital)
@@ -1022,7 +1033,7 @@ def run_integer_lot_research(initial_capital=100_000_000.0):
 def run_integer_lot_validation(initial_capital=100_000_000.0):
     from strategies.ts_low import load_config
 
-    load_config()
+    load_config(allow_frozen=True)
     data, factor = load_validation(1.0)
     _run_integer_lot_period("validation", data, factor, initial_capital)
 
@@ -1059,7 +1070,7 @@ def run_integer_lot_oos(initial_capital=100_000_000.0):
 def _validation_clock(symbol: str) -> pd.DataFrame:
     frame = add_intraday_coords(load_validation_shard(symbol, columns=VAL_COLUMNS))
     clock = timestamp_factors(frame).join(
-        daily_bars(frame)[["open", "openw", "close", "highw", "loww"]],
+        daily_bars(frame)[["open", "openw", "close", "closew", "highw", "loww"]],
         how="outer",
     )
     C.assert_validation_2022_dates(clock.index, f"{symbol} 2022")
@@ -1097,20 +1108,20 @@ def load_validation(n_ticks=1.0):
     panel = pd.concat([_validation_clock(symbol).assign(symbol=symbol) for symbol in names])
     panel.index.name = "trading_date"
     panel = panel.reset_index()
-    low = panel.pivot_table(index="trading_date", columns="symbol", values="ts_low", aggfunc="first")
-    high = panel.pivot_table(index="trading_date", columns="symbol", values="ts_high", aggfunc="first")
     opened = panel.pivot_table(index="trading_date", columns="symbol", values="open", aggfunc="first")
     adjusted = panel.pivot_table(index="trading_date", columns="symbol", values="openw", aggfunc="first")
     closed = panel.pivot_table(index="trading_date", columns="symbol", values="close", aggfunc="first")
-    high = panel.pivot_table(index="trading_date", columns="symbol", values="highw", aggfunc="first")
-    low = panel.pivot_table(index="trading_date", columns="symbol", values="loww", aggfunc="first")
+    adjusted_close = panel.pivot_table(index="trading_date", columns="symbol", values="closew", aggfunc="first")
+    bar_high = panel.pivot_table(index="trading_date", columns="symbol", values="highw", aggfunc="first")
+    bar_low = panel.pivot_table(index="trading_date", columns="symbol", values="loww", aggfunc="first")
     history = research.factors.raw("ts_low") - research.factors.raw("ts_high")
-    factor = _keep_last([history, low - high])
+    factor = _validation_time_factor(history, panel)
     open_px = _keep_last([research.factors.bars["open"], opened])
     open_w = _keep_last([research.factors.bars["openw"], adjusted])
     close_px = _keep_last([research.factors.bars["close"], closed])
-    high_w = _keep_last([research.factors.bars["highw"], high])
-    low_w = _keep_last([research.factors.bars["loww"], low])
+    close_w = _keep_last([research.factors.bars["closew"], adjusted_close])
+    high_w = _keep_last([research.factors.bars["highw"], bar_high])
+    low_w = _keep_last([research.factors.bars["loww"], bar_low])
     returns = (open_w.shift(-1) - open_w) / open_px
     returns = returns.loc[(returns.index >= pd.Timestamp(C.STUDY_START)) & (returns.index <= VAL_END)]
     returns = returns.loc[returns.notna().any(axis=1)]
@@ -1132,7 +1143,7 @@ def load_validation(n_ticks=1.0):
         SignalSet(
             bars={
                 "open": open_px, "openw": open_w, "close": close_px,
-                "highw": high_w, "loww": low_w,
+                "closew": close_w, "highw": high_w, "loww": low_w,
             },
             signed=research.factors.signed,
         ),

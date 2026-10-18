@@ -1,0 +1,60 @@
+{
+  "status": "exploratory_predeclared_comparison",
+  "sample": {
+    "research": "2016-01-01/2021-12-31",
+    "validation": "2022-01-01/2022-12-31",
+    "oos": "Do not read 2023-2025."
+  },
+  "portfolio": {
+    "direction": "long_only",
+    "holding_days": 5,
+    "trend": "20-day trailing time-series momentum sign, positive only",
+    "trend_window_days": 20,
+    "initial_capital": 100000000,
+    "exposure_limit": 1.5,
+    "margin_rate_assumption": 0.2,
+    "drawdown_breaker": 0.2,
+    "transaction_costs": "historical fee cache and prior-year estimated tick"
+  },
+  "micro_filter": {
+    "factor": "ts_low - ts_high",
+    "lookback_days": 250,
+    "entry_quantile": 0.8,
+    "smoothing_spans": [3, 5],
+    "hysteresis_reset_quantile": 0.5,
+    "duration_warmup_days": 251,
+    "duration_proxy": "pmt, the normalized intraday location of the longest price-duration observation",
+    "duration_stability_days": 5,
+    "duration_reference_days": 250,
+    "duration_stability_quantile": 0.5,
+    "intraday_duration_reference_days": 250,
+    "intraday_duration_level_quantile": 0.5,
+    "intraday_duration_volatility_quantile": 0.5,
+    "volume_duration_ratio_reference_days": 250,
+    "volume_duration_ratio_quantile": 0.5,
+    "adx_period": 14,
+    "adx_range_max": 20,
+    "adx_trend_min": 25,
+    "atr_period": 14,
+    "atr_reference_days": 250,
+    "atr_low_vol_quantile": 0.5,
+    "note": "The pmt stability filter is only a peak-clock proxy. Intraday duration-state variants use actual within-day price/volume duration means and sample standard deviations; level must exceed and volatility must be below their own prior 250-day medians. The volume-duration cross-filter requires vd_ratio above its own prior 250-day median. None measures order flow or proves informed accumulation."
+  },
+  "variants": [
+    "current_ts_low_reference",
+    "trend_20d",
+    "trend_plus_daily_micro_filter",
+    "trend_plus_ema3_micro_filter",
+    "trend_plus_ema5_micro_filter",
+    "trend_plus_duration_clock_stability",
+    "trend_plus_micro_hysteresis",
+    "trend_plus_daily_micro_filter_range_only",
+    "trend_plus_daily_micro_filter_trend_only",
+    "trend_plus_daily_micro_filter_low_atr",
+    "trend_plus_daily_micro_filter_high_atr",
+    "trend_plus_daily_micro_filter_and_volume_duration",
+    "trend_plus_daily_micro_filter_price_duration_stable",
+    "trend_plus_daily_micro_filter_volume_duration_stable",
+    "trend_plus_daily_micro_filter_both_durations_stable"
+  ]
+}

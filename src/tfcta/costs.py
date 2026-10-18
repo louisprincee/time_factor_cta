@@ -68,10 +68,14 @@ def load_fees(partition="research"):
         guard(table.trading_date, what="手续费缓存")
     if table.duplicated(["symbol","trading_date"]).any():
         raise ValueError("手续费缓存有重复品种/日期")
-    return table
+    return fill_close_today(table)
 
 
 CZCE_CLOSE_TODAY_FROM = pd.Timestamp("2017-06-23")
+CZCE_SYMBOLS = frozenset({
+    "CF", "FG", "JR", "LR", "MA", "OI", "PM", "RI",
+    "RM", "RS", "SF", "SM", "SR", "TA", "WH", "ZC",
+})
 
 
 def fill_close_today(table):
@@ -82,7 +86,10 @@ def fill_close_today(table):
     same_kind = table.commission_type.eq(
         source_kind.groupby(table.symbol).transform(lambda values: values.bfill())
     )
-    known_gap = table.trading_date < CZCE_CLOSE_TODAY_FROM
+    known_gap = (
+        table.symbol.isin(CZCE_SYMBOLS)
+        & (table.trading_date < CZCE_CLOSE_TODAY_FROM)
+    )
     gap = table.close_commission_today.isna() & later.notna() & same_kind & known_gap
     table.loc[gap, "close_commission_today"] = np.maximum(
         table.close_commission[gap], later[gap]

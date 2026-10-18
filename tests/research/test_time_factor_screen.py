@@ -1,9 +1,13 @@
 import json
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import pytest
 from tfcta import config as C
-from research.time_factor_screen import fair_prices, load_config, prepare, rows_for_symbol, screen_row, window_clocks
+from research.time_factor_screen import (
+    configured_screen_cells, fair_prices, load_config, multiple_testing_audit,
+    prepare, round_trip_cost, rows_for_symbol, screen_row, window_clocks,
+)
 
 def _config():
     return load_config()
@@ -138,6 +142,19 @@ def test_positive_factor_passes_only_with_the_declared_sign():
     assert passed["达到统计门槛"]
     assert rejected["达到统计门槛"] is False
 
+
+def test_screen_reports_configured_test_family_size_as_exploratory():
+    config = _config()
+    assert configured_screen_cells(config) == 130
+
+    audit = multiple_testing_audit(config, pd.DataFrame(index=range(127)))
+
+    assert audit["configured_abs_t_threshold_checks"] == 260
+    assert audit["realized_summary_rows"] == 127
+    assert audit["realized_abs_t_threshold_checks"] == 254
+    assert audit["correction"] == "none"
+    assert audit["confirmatory_claim"] is False
+
 def test_config_rejects_a_preset_volume_sign(tmp_path):
     config = _config()
     config["factors"].append({"id": "ts_volume", "expected": 1, "decisions": ["close"], "window": "upto"})
@@ -156,6 +173,19 @@ def test_day_session_product_enters_at_the_next_morning_open():
     built = pd.DataFrame(rows_for_symbol(_frame(rows), "AP", "commodity", _config()))
     trade = built[(built.decision == "close") & (built.trading_date == "2021-01-04")].iloc[0]
     assert trade.gross == pytest.approx((300 - 200) / 200)
+
+def test_intraday_cost_does_not_fall_back_to_overnight_close_fee():
+    day = pd.Timestamp("2021-01-04")
+    history = pd.DataFrame({
+        "open_commission": [1.0],
+        "close_commission": [2.0],
+        "close_commission_today": [np.nan],
+        "commission_type": ["by_volume"],
+    }, index=pd.DatetimeIndex([day]))
+
+    with pytest.raises(ValueError, match="缺少平今手续费"):
+        round_trip_cost("RB", day, 100.0, 101.0, True,
+                        {"RB": history}, {"RB": {2020: 1.0}})
 
 def test_report_behavior_factor_is_only_emitted_for_close_decision():
     rows = []

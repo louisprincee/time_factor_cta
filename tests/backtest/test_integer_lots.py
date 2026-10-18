@@ -30,10 +30,10 @@ def _inputs(days=4):
         "contract_codes": contract,
         "universe": {2020: ["CU"]},
         "multipliers": {"CU": 10.0},
-        "open_fee": fees,
-        "close_fee": fees,
-        "roll_close_fee": fees,
-        "slippage": fees,
+        "open_fee": fees.copy(),
+        "close_fee": fees.copy(),
+        "roll_close_fee": fees.copy(),
+        "slippage": fees.copy(),
         "initial_capital": 10_000.0,
         "margin_rate": 0.20,
         "holding_days": 2,
@@ -96,6 +96,88 @@ def test_single_price_lock_proxy_delays_scheduled_exit():
     assert positions.loc[positions["交易日"] == daily.index[1], "手数"].iloc[0] == 10
     assert daily.iloc[2]["平仓笔数"] == 1
     assert "退出受阻" in events["事件"].tolist()
+
+
+def test_roll_charges_old_close_and_new_open_costs_and_updates_contract():
+    inputs = _inputs(days=3)
+    inputs["entries"].iloc[0, 0] = True
+    inputs["rolls"].iloc[1, 0] = True
+    inputs["contract_codes"].iloc[1, 0] = "CU2003"
+    inputs["close_price"].iloc[0, 0] = 110.0
+    inputs["open_price"].iloc[1, 0] = 120.0
+    inputs["open_fee"].iloc[1, 0] = 0.002
+    inputs["roll_close_fee"].iloc[1, 0] = 0.001
+    inputs["adjusted_open_delta"]["CU"] = [0.0, 2.0, 0.0]
+
+    daily, positions, events = simulate_integer_lots(**inputs)
+
+    assert daily.iloc[1]["换月笔数"] == 1
+    assert daily.iloc[1]["交易费用"] == pytest.approx(35.0)
+    assert daily.iloc[1]["毛盈亏"] == pytest.approx(200.0)
+    assert positions.loc[positions["交易日"] == daily.index[1], "合约"].iloc[0] == "CU2003"
+    roll = events.loc[events["事件"] == "换月"].iloc[0]
+    assert "CU2002 -> CU2003" in roll["说明"]
+    assert "前一交易日收盘" in roll["说明"]
+
+
+def test_missing_held_position_mark_fails_instead_of_counting_zero_pnl():
+    inputs = _inputs()
+    inputs["entries"].iloc[0, 0] = True
+    inputs["adjusted_open_delta"].iloc[1, 0] = np.nan
+
+    with pytest.raises(ValueError, match="持仓期间复权开盘变动缺失"):
+        simulate_integer_lots(**inputs)
+
+
+def test_missing_open_and_close_block_exit_until_a_price_is_available():
+    inputs = _inputs(days=3)
+    inputs["entries"].iloc[0, 0] = True
+    inputs["holding_days"] = 1
+    inputs["open_price"].iloc[1, 0] = np.nan
+    inputs["close_price"].iloc[1, 0] = np.nan
+    inputs["adjusted_open_delta"]["CU"] = [0.0, 1.0, 1.0]
+
+    daily, positions, events = simulate_integer_lots(**inputs)
+
+    assert daily.iloc[1]["受阻委托数"] == 1
+    assert daily.iloc[1]["毛盈亏"] == pytest.approx(100.0)
+    assert positions.loc[positions["交易日"] == daily.index[1], "主力原始开盘价"].iloc[0] == 100.0
+    assert daily.iloc[2]["平仓笔数"] == 1
+    assert "退出受阻" in events["事件"].tolist()
+
+
+def test_holding_period_and_position_carry_across_calendar_year():
+    inputs = _inputs()
+    index = pd.to_datetime([
+        "2019-12-30", "2019-12-31", "2020-01-02", "2020-01-03",
+    ])
+    for frame in inputs.values():
+        if isinstance(frame, pd.DataFrame):
+            frame.index = index
+    inputs["universe"] = {2019: ["CU"], 2020: ["CU"]}
+    inputs["entries"].iloc[0, 0] = True
+    inputs["entries"].iloc[2, 0] = True
+    inputs["holding_days"] = 3
+    inputs["adjusted_open_delta"]["CU"] = [0.0, 0.0, 0.0, 0.0]
+
+    daily, positions, events = simulate_integer_lots(**inputs)
+
+    assert daily.loc[index[2], "持仓总手数"] == 10
+    assert daily.loc[index[3], "平仓笔数"] == 1
+    assert not (positions["交易日"] == index[3]).any()
+    assert events.loc[events["事件"] == "到期平仓", "交易日"].tolist() == [index[3]]
+
+
+def test_open_position_at_end_of_available_data_is_not_synthetically_liquidated():
+    inputs = _inputs(days=1)
+    inputs["entries"].iloc[0, 0] = True
+    inputs["holding_days"] = 1
+
+    daily, positions, events = simulate_integer_lots(**inputs)
+
+    assert daily.iloc[-1]["持仓总手数"] == 10
+    assert positions.iloc[-1]["手数"] == 10
+    assert events["事件"].tolist() == ["开仓"]
 
 
 def test_drawdown_breaker_stops_new_entries_and_liquidates_at_20_percent():

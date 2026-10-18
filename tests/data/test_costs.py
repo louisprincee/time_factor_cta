@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from tfcta import config as C
 from tfcta.costs import (
-    check_costs, estimate_ticks, fill_close_today, load_ticks, tick_path,
+    check_costs, estimate_ticks, fill_close_today, load_fees, load_ticks, tick_path,
 )
 
 def test_estimate_ticks_ignores_rare_smaller_steps_and_thin_years():
@@ -63,3 +63,31 @@ def test_close_today_fill_only_covers_the_known_czce_gap():
                           "close_commission_today": [np.nan, 6.0]})
     out = fill_close_today(table)
     assert np.isnan(out.close_commission_today.iloc[0])  # 2017-06-23 以后缺了不补，让 check_costs 报出来
+
+def test_close_today_fill_does_not_apply_to_other_exchanges():
+    table = pd.DataFrame({"symbol": ["FG", "FG", "RB", "RB"],
+                          "trading_date": pd.to_datetime([
+                              "2017-06-22", "2017-06-23", "2017-06-22", "2017-06-23",
+                          ]),
+                          "commission_type": "by_volume", "close_commission": 3.0,
+                          "close_commission_today": [np.nan, 6.0, np.nan, 6.0]})
+    out = fill_close_today(table).set_index(["symbol", "trading_date"])
+    assert out.loc[("FG", pd.Timestamp("2017-06-22")), "close_commission_today"] == 6.0
+    assert np.isnan(out.loc[("RB", pd.Timestamp("2017-06-22")), "close_commission_today"])
+
+def test_load_fees_applies_known_historical_close_today_repair(tmp_path, monkeypatch):
+    table = pd.DataFrame({
+        "symbol": ["FG", "FG"],
+        "trading_date": pd.to_datetime(["2017-06-22", "2017-06-23"]),
+        "commission_type": "by_volume",
+        "open_commission": 1.0,
+        "close_commission": 3.0,
+        "close_commission_today": [np.nan, 6.0],
+    })
+    table.to_csv(tmp_path / "fee_history.csv", index=False)
+    monkeypatch.setattr(C, "RESEARCH_OUT_DIR", tmp_path)
+
+    loaded = load_fees("research")
+
+    assert loaded.close_commission_today.tolist() == [6.0, 6.0]
+    assert loaded.close_today_filled.tolist() == [True, False]

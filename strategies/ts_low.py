@@ -35,7 +35,7 @@ TAILS = (
 def load_config(path=CONFIG_PATH, *, allow_frozen=False):
     config = json.loads(Path(path).read_text(encoding="utf-8"))
     if not allow_frozen and (config.get("frozen_at") or config.get("chosen") is not None):
-        raise ValueError("没有打开样本外，不能写 frozen_at 或 chosen")
+        raise ValueError("当前入口不接受冻结配置")
     sample = config.get("sample", "")
     if not allow_frozen and "不读 2023" not in sample:
         raise ValueError("样本口径必须写明不读 2023 年以后")

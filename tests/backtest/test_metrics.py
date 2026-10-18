@@ -34,6 +34,24 @@ def test_annualized_metrics_use_242_trading_days():
     assert metrics["ann_return"] == pytest.approx(1.01**242 - 1)
     assert metrics["ann_vol"] == pytest.approx(0.0, abs=1e-12)
 
+
+def test_validation_time_factor_uses_timestamp_difference_not_daily_price_range():
+    day = pd.Timestamp("2022-01-03")
+    history = pd.DataFrame({"RB": [0.25]}, index=[pd.Timestamp("2021-12-31")])
+    panel = pd.DataFrame({
+        "trading_date": [day],
+        "symbol": ["RB"],
+        "ts_low": [0.9],
+        "ts_high": [0.2],
+        "highw": [120.0],
+        "loww": [80.0],
+    })
+
+    factor = engine._validation_time_factor(history, panel)
+
+    assert factor.loc[day, "RB"] == pytest.approx(0.7)
+    assert factor.loc[pd.Timestamp("2021-12-31"), "RB"] == pytest.approx(0.25)
+
     varying = pd.Series([0.01, -0.005] * 121)
     expected_sharpe = varying.mean() / varying.std(ddof=1) * np.sqrt(242)
     assert sharpe_ratio(varying) == pytest.approx(expected_sharpe)
