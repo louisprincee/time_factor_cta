@@ -352,22 +352,48 @@ def _extreme_timepoint(values: np.ndarray, gnorm: np.ndarray, mode: str) -> floa
     return float(gnorm[j])
 
 
-def timestamp_factors(df: pd.DataFrame) -> pd.DataFrame:
-    """ts_high、ts_low：全日最高价、最低价首次出现的归一化时点。"""
-    for col in ('trading_date', 'gamma_norm', 'highw', 'loww'):
+def timestamp_factors(
+    df: pd.DataFrame,
+    sessions: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    """计算高低点时钟；可选地只在指定时段内重新归一化。"""
+    required = ['trading_date', 'highw', 'loww']
+    if sessions is None:
+        required.append('gamma_norm')
+    else:
+        required.append('session')
+        sessions = tuple(sessions)
+        if not sessions or len(set(sessions)) != len(sessions):
+            raise ValueError('sessions 必须是非空且不重复的时段集合')
+        unknown = set(sessions) - set(C.SESSIONS)
+        if unknown:
+            raise ValueError(f'未知交易时段: {sorted(unknown)}')
+    for col in required:
         if col not in df.columns:
             raise KeyError(f"缺少 {col} 列，请先调用 add_intraday_coords")
 
     codes, days = day_codes_of(df)
     hi = df['highw'].to_numpy(dtype='float64')
     lo = df['loww'].to_numpy(dtype='float64')
-    gnorm = df['gamma_norm'].to_numpy(dtype='float64')
+    if sessions is None:
+        gnorm = df['gamma_norm'].to_numpy(dtype='float64')
+        session = None
+    else:
+        session = df['session'].to_numpy()
     out = {k: np.full(len(days), np.nan) for k in ('ts_high', 'ts_low')}
     for k, (a, b) in enumerate(zip(*_day_spans(codes))):
-        if not np.isfinite(hi[a:b]).any():
+        if session is None:
+            day_high, day_low, day_clock = hi[a:b], lo[a:b], gnorm[a:b]
+        else:
+            selected = np.flatnonzero(np.isin(session[a:b], sessions))
+            if selected.size < 2:
+                continue
+            day_high, day_low = hi[a:b][selected], lo[a:b][selected]
+            day_clock = np.arange(selected.size, dtype='float64') / (selected.size - 1)
+        if not np.isfinite(day_high).any():
             continue
-        out['ts_high'][k] = _extreme_timepoint(hi[a:b], gnorm[a:b], 'max')
-        out['ts_low'][k] = _extreme_timepoint(lo[a:b], gnorm[a:b], 'min')
+        out['ts_high'][k] = _extreme_timepoint(day_high, day_clock, 'max')
+        out['ts_low'][k] = _extreme_timepoint(day_low, day_clock, 'min')
 
     res = pd.DataFrame(out, index=days)
     res.index.name = 'trading_date'

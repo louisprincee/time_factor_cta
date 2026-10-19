@@ -1,0 +1,28 @@
+{
+  "id": "trend_carry_full_clock",
+  "status": "exploratory_post_hoc_candidate",
+  "declared_at": "2026-10-19",
+  "sample": "仅商品2016-01-01至2021-12-31。组件与前一版组合研究期结果已看过，因此本组合是事后探索，不作确认性结论。不读取2022及2023年以后。",
+  "inputs": {
+    "trend": "10-day additive-adjusted close momentum sign",
+    "carry": "RQData roll_yield main_sub annualized_yield, lagged one trading day; use sign only and do not label positive/negative as backwardation/contango without validating vendor formula",
+    "clock": "full-trading-day ts_low - ts_high from all available bars, including NIGHT, normalized across all bars"
+  },
+  "rules": {
+    "direction": "trend sign must be nonzero and equal lagged carry sign; clock tail must have the same sign",
+    "clock_scope": "full_trading_day",
+    "clock_lookback_days": 250,
+    "clock_tail_quantile": 0.2,
+    "clock_threshold_comparison": "strict",
+    "atr": "14-day Wilder true range / additive-adjusted close",
+    "risk_scale": "cross-sectional pool median ATR% / own ATR%, clipped to [0.5, 2.0]",
+    "holding_days": 5,
+    "entry": "next tradable open after close signal",
+    "initial_capital": 100000000,
+    "gross_exposure_limit": 1.5,
+    "margin_rate_assumption": 0.2,
+    "drawdown_breaker": 0.2,
+    "costs": "historical fee cache and prior-year estimated tick"
+  },
+  "prior_information": "The day-session, cross-sectional, positive-carry component backtests and the earlier day-session combined candidate results were viewed before this variant."
+}

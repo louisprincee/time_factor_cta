@@ -1,0 +1,30 @@
+{
+  "id": "trend_ema3",
+  "status": "frozen",
+  "declared_at": "2026-10-19",
+  "frozen_at": "2026-10-19",
+  "sample": "信号比较使用 2016-01-01 至 2021-12-31，并用 2022 看过稳定性。2022 已经参与这次取舍，不能再当作没看过的验证。不读 2023 年以后。",
+  "parameters": {
+    "direction": "long_only",
+    "trend": "10-day trailing return sign, positive only",
+    "trend_window": 10,
+    "factor": "ema3(ts_low - ts_high)",
+    "smoothing_span": 3,
+    "lookback": 250,
+    "quantile": 0.8,
+    "comparison": "strict",
+    "holding_days": 5
+  },
+  "chosen": {
+    "direction": "long_only",
+    "trend": "10-day trailing return sign, positive only",
+    "trend_window": 10,
+    "factor": "ema3(ts_low - ts_high)",
+    "smoothing_span": 3,
+    "lookback": 250,
+    "quantile": 0.8,
+    "comparison": "strict",
+    "holding_days": 5
+  },
+  "hypothesis": "方向由 10 日上涨决定。低点晚于高点是两篇研报符号一致的时间信息，但单日尖刺付不起一跳，所以先做 3 日指数平均，再要求它处在该品种自己过去 250 日的最高 20%。只做多，持有 5 个有效交易日。"
+}

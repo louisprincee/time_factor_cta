@@ -229,6 +229,42 @@ def test_short_entries_are_rejected_by_long_only_simulator():
         simulate_integer_lots(**inputs)
 
 
+def test_short_entries_use_signed_pnl_and_gross_exposure():
+    inputs = _inputs()
+    inputs["entries"] = inputs["entries"].astype("int8")
+    inputs["entries"].iloc[0, 0] = -1
+    inputs["adjusted_open_delta"]["CU"] = [1.0, 2.0, 3.0, 0.0]
+
+    daily, positions, events = simulate_integer_lots(**inputs, allow_shorts=True)
+
+    assert positions.iloc[0]["手数"] == -10
+    assert positions.iloc[0]["方向"] == "空"
+    assert positions.iloc[0]["名义敞口"] == pytest.approx(10_000.0)
+    assert daily.iloc[0]["保证金需求_20pct_assumption"] == pytest.approx(2_000.0)
+    assert daily.iloc[0]["毛盈亏"] == pytest.approx(-100.0)
+    assert daily.iloc[1]["毛盈亏"] == pytest.approx(-200.0)
+    assert daily.iloc[2]["平仓笔数"] == 1
+    assert daily.iloc[2]["净值"] == pytest.approx(0.97)
+    assert "空头" in events.iloc[0]["说明"]
+
+
+def test_weighted_short_entry_scales_integer_lots_and_preserves_direction():
+    inputs = _inputs()
+    inputs["entries"] = inputs["entries"].astype("float64")
+    inputs["entries"].iloc[0, 0] = -0.5
+    inputs["adjusted_open_delta"]["CU"] = [1.0, 0.0, 0.0, 0.0]
+
+    daily, positions, _events = simulate_integer_lots(
+        **inputs,
+        allow_shorts=True,
+        weighted_entries=True,
+    )
+
+    assert positions.iloc[0]["手数"] == -5
+    assert positions.iloc[0]["名义敞口"] == pytest.approx(5_000.0)
+    assert daily.iloc[0]["毛盈亏"] == pytest.approx(-50.0)
+
+
 def test_exposure_limit_scales_integer_lot_target():
     inputs = _inputs()
     inputs["entries"].iloc[0, 0] = True

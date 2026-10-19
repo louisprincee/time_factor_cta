@@ -1,0 +1,223 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from research.cta_micro_filter_experiments import build_signal_variants, market_regimes
+from strategies.book import adx_above_range, adx_is_range, entry_schedule, high_volatility, upper_tail
+from strategies.catalog import SELECTED
+from strategies.cross_sectional_clock import signal as cross_sectional_signal
+from strategies.regime_two_leg import signal as regime_signal
+from strategies.trend_adx_range import signal as adx_signal
+from strategies.trend_ema3 import signal as ema_signal
+from strategies.trend_high_atr import signal as atr_signal
+from strategies.research_catalog import RESEARCH_EXPERIMENTS
+from strategies.trend_high_atr_carry import signal as carry_signal
+from strategies.trend_carry_common import risk_scale, symmetric_tail
+from strategies.trend_carry_full_clock import load_config as load_combined_config
+from strategies.trend_carry_full_clock import signal as combined_signal
+from tfcta.factors import tsmom_sign
+
+
+def test_only_the_upper_tail_is_long_and_a_tighter_cutoff_fires_less():
+    series = pd.Series(
+        [0, 0, 0, 1, 0.4, -1],
+        index=pd.bdate_range("2021-01-04", periods=6),
+    )
+    wide = upper_tail(series, 4, 0.7)
+    tight = upper_tail(series, 4, 0.9)
+    assert wide.iloc[4] == 1 and tight.iloc[4] == 0
+    assert upper_tail(series, 4, 0.8).iloc[5] == 0
+
+
+def test_entry_schedule_skips_the_exit_day_and_respects_the_pool():
+    index = pd.bdate_range("2020-01-01", periods=20)
+    signal = pd.DataFrame(False, index=index, columns=["RB"])
+    signal.iloc[[0, 5, 6], 0] = True
+    returns = pd.DataFrame(0.01, index=index, columns=["RB"])
+
+    entries = entry_schedule(signal, returns, {2020: ["RB"]}, index[0], index[-1], holding_days=5)
+
+    assert entries.index[entries["RB"]].tolist() == [index[1], index[7]]
+    outside = entry_schedule(signal, returns, {2020: ["CU"]}, index[0], index[-1], holding_days=5)
+    assert not outside["RB"].any()
+
+
+def test_entry_schedule_preserves_cross_sectional_short_and_long_sides():
+    index = pd.bdate_range("2020-01-01", periods=10)
+    signal = pd.DataFrame(0, index=index, columns=["RB"], dtype="int8")
+    signal.iloc[0, 0] = -1
+    signal.iloc[3, 0] = 1
+    returns = pd.DataFrame(0.01, index=index, columns=["RB"])
+
+    entries = entry_schedule(
+        signal, returns, {2020: ["RB"]}, index[0], index[-1],
+        holding_days=2, signed=True,
+    )
+
+    assert entries.loc[index[1], "RB"] == -1
+    assert entries.loc[index[4], "RB"] == 1
+
+
+def test_research_experiments_are_registered_separately_from_frozen_strategies():
+    assert [item.ID for item in SELECTED] == [
+        "trend_ema3", "trend_high_atr", "trend_adx_range", "regime_two_leg",
+    ]
+    assert [item.ID for item in RESEARCH_EXPERIMENTS] == [
+        "cross_sectional_clock", "trend_high_atr_carry", "trend_carry_full_clock",
+    ]
+    assert load_combined_config()["status"] == "exploratory_post_hoc_candidate"
+    assert load_combined_config()["rules"]["clock_scope"] == "full_trading_day"
+
+
+def test_cross_sectional_clock_selects_balanced_tails_and_skips_tied_boundary():
+    index = pd.DatetimeIndex(["2021-01-04", "2021-01-05"])
+    columns = [f"S{number:02d}" for number in range(40)]
+    values = np.tile(np.arange(40, dtype="float64"), (2, 1))
+    values[1, 7] = values[1, 8]
+    micro = pd.DataFrame(values, index=index, columns=columns)
+
+    signal = cross_sectional_signal(micro, {2021: columns})
+
+    assert (signal.iloc[0] == 1).sum() == 8
+    assert (signal.iloc[0] == -1).sum() == 8
+    assert not signal.iloc[1].any()
+
+
+def test_carry_filter_requires_positive_lagged_carry():
+    index = pd.bdate_range("2020-01-01", periods=300)
+    micro = pd.DataFrame(0.0, index=index, columns=["RB"])
+    micro.iloc[-1, 0] = 1.0
+    trend = pd.DataFrame(1.0, index=index, columns=["RB"])
+    high_vol = pd.DataFrame(True, index=index, columns=["RB"])
+    carry = pd.DataFrame(0.1, index=index, columns=["RB"])
+
+    assert carry_signal(trend, micro, high_vol, carry).iloc[-1, 0]
+    carry.iloc[-1, 0] = 0.0
+    assert not carry_signal(trend, micro, high_vol, carry).iloc[-1, 0]
+
+
+def test_combined_candidate_requires_matching_trend_carry_and_clock_tails():
+    index = pd.bdate_range("2020-01-01", periods=252)
+    clock = pd.Series([0.0] * 250 + [1.0, -1.0], index=index)
+    assert symmetric_tail(clock).iloc[-2:].tolist() == [1, -1]
+    day_clock = pd.DataFrame({"RB": clock})
+    trend = pd.DataFrame({"RB": [1.0] * 251 + [-1.0]}, index=index)
+    carry = trend.copy()
+
+    assert combined_signal(trend, carry, day_clock).iloc[-2:, 0].tolist() == [1, -1]
+    carry.iloc[-1, 0] = 1.0
+    assert combined_signal(trend, carry, day_clock).iloc[-1, 0] == 0
+
+
+def test_combined_candidate_risk_scales_by_pool_median_atr_and_clips():
+    index = pd.DatetimeIndex(["2020-01-02"])
+    symbols = list("ABCDE")
+    atr = pd.DataFrame([[0.01, 0.02, 0.02, 0.04, 0.08]], index=index, columns=symbols)
+    positions = pd.DataFrame(1, index=index, columns=symbols)
+
+    scaled = risk_scale(atr, positions, {2020: symbols})
+
+    assert scaled.iloc[0].tolist() == pytest.approx([2.0, 1.0, 1.0, 0.5, 0.5])
+
+
+def test_entry_schedule_preserves_signed_risk_weights():
+    index = pd.bdate_range("2020-01-01", periods=10)
+    signal = pd.DataFrame(0.0, index=index, columns=["RB"])
+    signal.iloc[0, 0] = -1.5
+    signal.iloc[3, 0] = 0.5
+    returns = pd.DataFrame(0.01, index=index, columns=["RB"])
+
+    entries = entry_schedule(
+        signal, returns, {2020: ["RB"]}, index[0], index[-1],
+        holding_days=2, signed=True, preserve_weights=True,
+    )
+
+    assert entries.loc[index[1], "RB"] == -1.5
+    assert entries.loc[index[4], "RB"] == 0.5
+
+
+def test_selected_signals_match_the_micro_filter_experiment():
+    index = pd.bdate_range("2015-01-01", periods=400)
+    rng = np.random.default_rng(19)
+    close = pd.DataFrame(
+        100 + np.cumsum(rng.normal(scale=0.4, size=(len(index), 2)), axis=0),
+        index=index,
+        columns=["RB", "CU"],
+    )
+    bars = {
+        "close": close,
+        "closew": close,
+        "highw": close + 1.0,
+        "loww": close - 1.0,
+    }
+    micro = pd.DataFrame(rng.normal(size=(len(index), 2)), index=index, columns=["RB", "CU"])
+    trend = tsmom_sign(bars["close"], bars["closew"], window=20)
+    regime, volatility = market_regimes(bars)
+    variants = build_signal_variants(
+        trend, micro, micro, regime=regime, volatility=volatility,
+    )
+    high_vol = volatility.eq("high_vol")
+    ranging = regime.eq("range")
+    above_range = regime.notna() & ~ranging
+    raw_tail = variants["current_ts_low_reference"]
+    expected_regime = (raw_tail & ranging) | (
+        variants["trend_plus_daily_micro_filter_high_atr"] & above_range
+    )
+
+    pd.testing.assert_frame_equal(
+        ema_signal(trend, micro, high_vol, ranging, above_range),
+        variants["trend_plus_ema3_micro_filter"],
+    )
+    pd.testing.assert_frame_equal(
+        atr_signal(trend, micro, high_vol, ranging, above_range),
+        variants["trend_plus_daily_micro_filter_high_atr"],
+    )
+    pd.testing.assert_frame_equal(
+        adx_signal(trend, micro, high_vol, ranging, above_range),
+        variants["trend_plus_daily_micro_filter_range_only"],
+    )
+    pd.testing.assert_frame_equal(
+        regime_signal(trend, micro, high_vol, ranging, above_range),
+        expected_regime,
+    )
+    pd.testing.assert_frame_equal(high_volatility(bars), high_vol)
+    pd.testing.assert_frame_equal(adx_is_range(bars), ranging)
+    pd.testing.assert_frame_equal(adx_above_range(bars), above_range)
+
+
+def test_downtrend_blocks_the_trend_leg_and_the_range_leg_ignores_it():
+    index = pd.bdate_range("2015-01-01", periods=300)
+    micro = pd.DataFrame(
+        np.linspace(-1, 2, len(index)), index=index, columns=["RB"],
+    )
+    trend = pd.DataFrame(-1.0, index=index, columns=["RB"])
+    high_vol = pd.DataFrame(True, index=index, columns=["RB"])
+    ranging = pd.DataFrame(True, index=index, columns=["RB"])
+    quiet = pd.DataFrame(False, index=index, columns=["RB"])
+    tail = upper_tail(micro["RB"]).gt(0)
+
+    assert not ema_signal(trend, micro, high_vol, ranging, quiet).to_numpy().any()
+    assert not atr_signal(trend, micro, high_vol, ranging, quiet).to_numpy().any()
+    assert not adx_signal(trend, micro, high_vol, ranging, quiet).to_numpy().any()
+    pd.testing.assert_series_equal(
+        regime_signal(trend, micro, high_vol, ranging, quiet)["RB"],
+        tail,
+        check_names=False,
+    )
+    assert not regime_signal(trend, micro, high_vol, quiet, high_vol).to_numpy().any()
+    assert not regime_signal(trend, micro, high_vol, quiet, quiet).to_numpy().any()
+
+
+def test_configs_are_frozen_together_and_match_the_catalog():
+    assert [item.ID for item in SELECTED] == [
+        "trend_ema3", "trend_high_atr", "trend_adx_range", "regime_two_leg",
+    ]
+    frozen_at = set()
+    for strategy in SELECTED:
+        config = strategy.load_config()
+        assert config["status"] == "frozen"
+        assert config["frozen_at"] == "2026-10-19"
+        assert config["chosen"] == config["parameters"]
+        assert "不读 2023" in config["sample"]
+        frozen_at.add(config["frozen_at"])
+    assert frozen_at == {"2026-10-19"}

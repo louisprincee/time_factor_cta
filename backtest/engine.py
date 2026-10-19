@@ -1,9 +1,11 @@
-"""整数手数期货账本、成本和绩效。调用 strategies/ts_low.py。
+"""整数手数期货账本、成本和绩效。策略在 strategies/catalog.py。
 
-    python -m backtest.engine --research
+    python -m backtest.engine --market commodity --research
+    python -m backtest.engine --market index --research
     python -m backtest.engine --validation
 
-样本外读取只通过显式冻结并审计的 OOS 命令。
+--market 选择商品流动性池或股指期货，策略名单不变。
+四条策略已在 2026-10-19 冻结。--oos 先核对冻结名单，再打开一次 2023–2025。
 """
 from __future__ import annotations
 
@@ -55,8 +57,10 @@ def simulate_integer_lots(
     holding_days: int,
     exposure_limit: float,
     drawdown_limit: float,
+    allow_shorts: bool = False,
+    weighted_entries: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Simulate a long-only integer-lot account with a peak-drawdown breaker."""
+    """Simulate integer-lot positions with an optional short side and drawdown breaker."""
     frames = {
         "open_price": open_price, "close_price": close_price,
         "adjusted_open": adjusted_open, "adjusted_open_delta": adjusted_open_delta,
@@ -82,8 +86,20 @@ def simulate_integer_lots(
     if not isinstance(holding_days, int) or holding_days < 1:
         raise ValueError("持仓日数必须是正整数")
     values = entries.to_numpy(dtype="float64")
-    if not np.isfinite(values).all() or not np.isin(values, [0.0, 1.0]).all():
-        raise ValueError("纯多头入场表只能包含 0、1，且不能缺失")
+    if weighted_entries:
+        valid_entries = (values == 0.0) | (
+            (np.abs(values) >= 0.5) & (np.abs(values) <= 2.0)
+            & (allow_shorts | (values > 0.0))
+        )
+    else:
+        allowed_entries = [0.0, 1.0, -1.0] if allow_shorts else [0.0, 1.0]
+        valid_entries = np.isin(values, allowed_entries)
+    if not np.isfinite(values).all() or not valid_entries.all():
+        message = "加权入场表只能包含绝对值为 0.5–2 的有效方向或 0" if weighted_entries else (
+            "入场表只能包含 -1、0、1，且不能缺失" if allow_shorts else
+            "纯多头入场表只能包含 0、1，且不能缺失"
+        )
+        raise ValueError(message)
     for symbol in columns:
         multiplier = multipliers.get(symbol)
         if multiplier is None or not np.isfinite(multiplier) or multiplier <= 0:
@@ -124,7 +140,7 @@ def simulate_integer_lots(
         drawdown_at_open = equity / peak_equity - 1.0
         year = int(day.year)
         margin_at_open = sum(
-            lots[s] * multipliers[s] * float(
+            abs(lots[s]) * multipliers[s] * float(
                 open_price.at[day, s] if np.isfinite(open_price.at[day, s]) else last_price[s]
             ) * margin_rate for s in columns if lots[s]
         )
@@ -167,7 +183,10 @@ def simulate_integer_lots(
                 else:
                     raise ValueError(f"{day.date()} {symbol} 持仓开盘价缺失")
             day_locked = not has_open or bool(locked[i, columns.get_loc(symbol)])
-            wants_entry = bool(entries.at[day, symbol])
+            entry_value = float(entries.at[day, symbol])
+            entry_signal = int(np.sign(entry_value))
+            entry_multiplier = abs(entry_value) if weighted_entries else 1.0
+            wants_entry = entry_signal != 0
             if bool(rolls.at[day, symbol]) and lots[symbol]:
                 pending_roll.add(symbol)
             exit_due = bool(lots[symbol]) and (
@@ -181,12 +200,13 @@ def simulate_integer_lots(
                         event(day, "退出受阻", symbol, lots[symbol], raw_open, reason)
                     blocked_reasons[symbol] = reason
                 else:
-                    quantity = lots[symbol]
+                    quantity = abs(lots[symbol])
+                    direction = "空头" if lots[symbol] < 0 else "多头"
                     cost += charge(close_fee, day, symbol, quantity, raw_open, "平仓")
                     cost += charge(slippage, day, symbol, quantity, raw_open, "平仓滑点")
                     exits_count += 1
                     event(day, "强制平仓" if forced_liquidation or margin_call else "到期平仓",
-                          symbol, quantity, raw_open, "多头；连续主力开盘价代理")
+                          symbol, quantity, raw_open, f"{direction}；连续主力开盘价代理")
                     lots[symbol] = age[symbol] = 0
                     contracts[symbol] = None
                     pending_roll.discard(symbol)
@@ -205,7 +225,7 @@ def simulate_integer_lots(
                         raise ValueError(f"{day.date()} {symbol} 缺少新主力合约代码")
                     if not np.isfinite(prior_close) or prior_close <= 0:
                         raise ValueError(f"{day.date()} {symbol} 换月缺少旧合约收盘价")
-                    quantity = lots[symbol]
+                    quantity = abs(lots[symbol])
                     cost += charge(roll_close_fee, day, symbol, quantity, prior_close, "换月平仓")
                     cost += charge(slippage, day, symbol, quantity, prior_close, "换月平仓滑点")
                     cost += charge(open_fee, day, symbol, quantity, raw_open, "换月开仓")
@@ -215,7 +235,8 @@ def simulate_integer_lots(
                     pending_roll.discard(symbol)
                     roll_count += 1
                     event(day, "换月", symbol, quantity, raw_open,
-                          f"多头；{old_contract or '未知'} -> {contract}；旧合约平仓价用前一交易日收盘")
+                          f"{'空头' if lots[symbol] < 0 else '多头'}；{old_contract or '未知'} -> "
+                          f"{contract}；旧合约平仓价用前一交易日收盘")
             if lots[symbol]:
                 if wants_entry:
                     event(day, "信号重叠跳过", symbol, detail="已有持仓或退出受阻")
@@ -241,13 +262,13 @@ def simulate_integer_lots(
             if symbol not in members or not members:
                 raise ValueError(f"{day.date()} {symbol} 入场时不在年度流动性池")
             current_notional = sum(
-                lots[s] * multipliers[s] * float(
+                abs(lots[s]) * multipliers[s] * float(
                     open_price.at[day, s] if np.isfinite(open_price.at[day, s]) else last_price[s]
                 ) for s in columns if lots[s]
             )
             available_equity = max(equity - cost, 0.0)
             budget = min(
-                exposure_limit * available_equity / len(members),
+                exposure_limit * available_equity / len(members) * entry_multiplier,
                 max(exposure_limit * available_equity - current_notional, 0.0),
             )
             quantity = int(math.floor(budget / (raw_open * multipliers[symbol])))
@@ -256,11 +277,13 @@ def simulate_integer_lots(
                 continue
             cost += charge(open_fee, day, symbol, quantity, raw_open, "开仓")
             cost += charge(slippage, day, symbol, quantity, raw_open, "开仓滑点")
-            lots[symbol] = quantity
+            lots[symbol] = entry_signal * quantity
             age[symbol] = 0
             contracts[symbol] = contract
             entries_count += 1
-            event(day, "开仓", symbol, quantity, raw_open, f"多头；{contract}；目标名义金额 {budget:.2f}")
+            direction = "空头" if entry_signal < 0 else "多头"
+            event(day, "开仓", symbol, quantity, raw_open,
+                f"{direction}；{contract}；目标名义金额 {budget:.2f}")
 
         gross_pnl = 0.0
         for symbol in columns:
@@ -284,7 +307,7 @@ def simulate_integer_lots(
         drawdown = equity / peak_equity - 1.0 if peak_equity else -1.0
         previous_drawdown = drawdown_at_open
         notional = sum(
-            lots[s] * multipliers[s] * float(
+            abs(lots[s]) * multipliers[s] * float(
                 open_price.at[day, s] if np.isfinite(open_price.at[day, s]) else last_price[s]
             ) for s in columns if lots[s]
         )
@@ -297,7 +320,7 @@ def simulate_integer_lots(
             "保证金需求_20pct_assumption": margin,
             "保证金权益占用": margin / equity if equity > 0 else np.nan,
             "持仓品种数": sum(value != 0 for value in lots.values()),
-            "持仓总手数": sum(lots.values()), "开仓笔数": entries_count,
+            "持仓总手数": sum(abs(value) for value in lots.values()), "开仓笔数": entries_count,
             "平仓笔数": exits_count, "换月笔数": roll_count,
             "受阻委托数": blocked_count, "停止新开仓": bool(stop_new),
             "强制清仓待执行": bool(forced_liquidation), "保证金追缴": bool(margin_call),
@@ -312,9 +335,10 @@ def simulate_integer_lots(
             exposure = lots[symbol] * multipliers[symbol] * float(price)
             position_rows.append({
                 "交易日": day, "品种": symbol, "合约": contracts[symbol],
-                "手数": lots[symbol], "方向": "多", "主力原始开盘价": float(price),
-                "合约乘数": multipliers[symbol], "名义敞口": exposure,
-                "保证金_20pct_assumption": exposure * margin_rate,
+                "手数": lots[symbol], "方向": "空" if lots[symbol] < 0 else "多",
+                "主力原始开盘价": float(price),
+                "合约乘数": multipliers[symbol], "名义敞口": abs(exposure),
+                "保证金_20pct_assumption": abs(exposure) * margin_rate,
                 "已持有交易日": age[symbol], "强平待执行": forced_liquidation,
             })
 
@@ -525,6 +549,7 @@ class StudyData:
     close_fee: pd.DataFrame
     roll_close_fee: pd.DataFrame
     slippage: pd.DataFrame
+    roll_calendar: dict | None = None
 
 def load_research(n_ticks=1.):
     universe = {y:s for y,s in load_universe().items() if 2016<=y<=2021}
@@ -790,14 +815,36 @@ def _benjamini_hochberg(p_values: list[float]) -> np.ndarray:
 
 
 
+def _market_name(market: str) -> str:
+    if market not in ("commodity", "index"):
+        raise ValueError("市场只能是 commodity 或 index")
+    return market
+
+
+def _oos_ledger_path(market: str):
+    if market == "commodity":
+        return C.OOS_LEDGER
+    return C.INDEX_DATA_ROOT / "oos" / "ledger.jsonl"
+
+
 def _run_integer_lot_period(
     period: str,
     data: StudyData,
-    factor: pd.DataFrame,
+    micro: pd.DataFrame,
     initial_capital: float = 100_000_000.0,
+    market: str = "commodity",
+    strategies=None,
+    allow_shorts: bool = False,
 ) -> None:
-    """Run the fixed long-only integer-lot portfolio for one isolated period."""
-    from strategies.ts_low import build_entry_schedule
+    """Run registered strategies on one isolated period."""
+    from strategies.book import (
+        TREND_WINDOW, adx_above_range, adx_is_range, atr_percent, entry_schedule,
+        high_volatility,
+    )
+    if strategies is None:
+        from strategies.catalog import SELECTED
+        strategies = SELECTED
+    from tfcta.factors import tsmom_sign
 
     period_years = {
         "research": tuple(RESEARCH_YEARS),
@@ -820,16 +867,14 @@ def _run_integer_lot_period(
     ):
         raise C.HoldoutViolation("整数手数样本外收益超出 2023–2025")
 
-    sector_names = ("农产品", "黑色钢铁", "有色金属", "化工")
+    market = _market_name(market)
+    sector_names = ("股指期货",) if market == "index" else ("全品种",)
     symbols = sorted({
         symbol
-        for sector in sector_names
-        for symbol in LONG_ONLY_SECTORS[sector]
+        for year, members in data.universe.items()
+        if int(year) in period_years
+        for symbol in members
         if symbol in data.returns.columns
-        and any(
-            symbol in members and int(year) in period_years
-            for year, members in data.universe.items()
-        )
     })
     require_multipliers(symbols)
     selected_universe = {
@@ -844,25 +889,13 @@ def _run_integer_lot_period(
         symbol for members in selected_universe.values() for symbol in members
     })
     if not selected_symbols:
-        raise ValueError("四板块与逐年流动性池没有交集")
+        raise ValueError("流动性池与收益没有交集")
 
     index = data.returns.index[data.returns.index.year.isin(period_years)]
     if index.empty:
         raise ValueError(f"{period} 整数手数回测没有可计分的交易日")
     columns = pd.Index(selected_symbols)
     prices = data.factors.bars
-    base_entries = build_entry_schedule(
-        factor.reindex(columns=columns),
-        data.returns.reindex(columns=columns),
-        selected_universe,
-        horizon=5,
-        lookback=250,
-        quantile=0.8,
-        start=start_date,
-        end=end_date,
-        require_exit_day=True,
-    ).reindex(index=index, columns=columns, fill_value=False)
-
     open_price = prices["open"].reindex(index=index, columns=columns)
     close_price = prices["close"].reindex(index=index, columns=columns)
     adjusted_open = prices["openw"].reindex(index=index, columns=columns)
@@ -877,15 +910,15 @@ def _run_integer_lot_period(
     fee_roll = data.roll_close_fee.reindex(index=index, columns=columns)
     slip = data.slippage.reindex(index=index, columns=columns)
     multipliers = {symbol: MULTIPLIER[symbol] for symbol in selected_symbols}
-    strategy = "纯多头_基准"
-    entries = base_entries.astype("int8")
 
-    roll_calendar = load_roll_calendar(selected_symbols, end_date.date())
+    roll_calendar = data.roll_calendar
+    if roll_calendar is None:
+        roll_calendar = load_roll_calendar(selected_symbols, end_date.date())
     contract_codes = pd.DataFrame(index=index, columns=columns, dtype=object)
     for symbol in selected_symbols:
         calendar = roll_calendar.get(symbol)
         if calendar is None or calendar.empty:
-            raise FileNotFoundError(f"{symbol} 缺少研究期主力合约换月表")
+            raise FileNotFoundError(f"{symbol} 缺少主力合约换月表")
         calendar = calendar.drop_duplicates("trading_date", keep="last").set_index(
             "trading_date"
         ).sort_index()
@@ -898,14 +931,67 @@ def _run_integer_lot_period(
         if contract_codes[symbol].isna().any():
             raise ValueError(f"{symbol} 研究期存在无法映射的主力合约代码")
 
-    annual_rows = []
-    daily_frames = []
-    position_frames = []
-    event_frames = []
-    summary_rows = []
-    output_dir = C.RUNS_DIR / "strategies" / "ts_low"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    trend = tsmom_sign(
+        data.factors.bars["close"], data.factors.bars["closew"], window=TREND_WINDOW,
+    )
+    volatile = high_volatility(data.factors.bars)
+    ranging = adx_is_range(data.factors.bars)
+    above_range = adx_above_range(data.factors.bars)
+    carry = data.factors.raw("carry_ms") if "carry_ms" in data.factors.signed else None
+    for strategy in strategies:
+        signed_entries = False
+        weighted_entries = False
+        if strategy.ID == "trend_high_atr_carry":
+            if carry is None:
+                raise ValueError("期限结构策略缺少 carry_main_sub_annualized")
+            signal = strategy.signal(trend, micro, volatile, carry)
+        elif strategy.ID == "cross_sectional_clock":
+            signal = strategy.signal(micro, selected_universe)
+            signed_entries = True
+        elif strategy.ID == "trend_carry_full_clock":
+            if carry is None:
+                raise ValueError("组合策略缺少滞后 carry")
+            from strategies.trend_carry_common import risk_scale
+            strategy.load_config()
+            signal = strategy.signal(trend, carry, micro)
+            signal = signal * risk_scale(
+                atr_percent(data.factors.bars), signal, selected_universe,
+            )
+            signed_entries = True
+            weighted_entries = True
+        else:
+            signal = strategy.signal(trend, micro, volatile, ranging, above_range)
+        entries = entry_schedule(
+            signal,
+            data.returns.reindex(columns=columns),
+            selected_universe,
+            start_date,
+            end_date,
+            signed=signed_entries,
+            preserve_weights=weighted_entries,
+        ).reindex(index=index, columns=columns, fill_value=0)
+        entries = entries.astype("float64" if weighted_entries else "int8")
+        _write_integer_lot_strategy(
+            period, strategy, entries, index, columns, selected_universe, selected_symbols,
+            open_price, close_price, adjusted_open, adjusted_open_delta,
+            adjusted_high, adjusted_low, rolls, contract_codes,
+            fee_open, fee_close, fee_roll, slip, multipliers,
+            initial_capital, sector_names, market, allow_shorts, weighted_entries,
+        )
 
+
+def _write_integer_lot_strategy(
+    period, strategy, entries, index, columns, selected_universe, selected_symbols,
+    open_price, close_price, adjusted_open, adjusted_open_delta,
+    adjusted_high, adjusted_low, rolls, contract_codes,
+    fee_open, fee_close, fee_roll, slip, multipliers,
+    initial_capital, sector_names, market="commodity",
+    allow_shorts=False,
+    weighted_entries=False,
+) -> None:
+    annual_rows = []
+    output_dir = C.RUNS_DIR / "strategies" / strategy.ID / market
+    output_dir.mkdir(parents=True, exist_ok=True)
     daily, positions, events = simulate_integer_lots(
         entries=entries,
         open_price=open_price,
@@ -927,28 +1013,34 @@ def _run_integer_lot_period(
         holding_days=5,
         exposure_limit=1.5,
         drawdown_limit=0.20,
+        allow_shorts=allow_shorts,
+        weighted_entries=weighted_entries,
     )
     if period == "research":
         C.assert_no_holdout_dates(daily.index, "整数手数研究净值")
+        period_years = tuple(RESEARCH_YEARS)
     elif period == "validation":
         C.assert_validation_2022_dates(daily.index, "整数手数验证净值")
+        period_years = (2022,)
+    elif period == "oos":
+        C.assert_strict_oos_dates(daily.index, "整数手数样本外净值")
+        if daily.index.max() > pd.Timestamp(C.DEFAULT_OOS_END):
+            raise C.HoldoutViolation("整数手数样本外净值越过 2025")
+        period_years = tuple(range(C.STRICT_OOS_START.year, C.DEFAULT_OOS_END.year + 1))
     else:
-        if daily.index.min() < pd.Timestamp(C.STRICT_OOS_START):
-            raise C.HoldoutViolation("整数手数样本外净值进入2022")
-        C.assert_oos_research_locked(daily.index.max())
-    daily["策略"] = strategy
-    positions.insert(0, "策略", strategy)
+        raise ValueError("整数手数只跑研究期、2022 验证期或 2023–2025 样本外")
+    label = strategy.NAME
+    daily["策略"] = label
+    positions.insert(0, "策略", label)
     if not events.empty:
-        events.insert(0, "策略", strategy)
-    daily_frames.append(daily.reset_index())
-    position_frames.append(positions)
-    event_frames.append(events)
+        events.insert(0, "策略", label)
     returns = daily["净收益"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     metrics = performance(returns)
-    summary_rows.append({
-        "策略": strategy,
+    summary_rows = [{
+        "策略": label,
+        "市场": "股指" if market == "index" else "商品",
         "板块池": "+".join(sector_names),
-        "参数": "250日回看/前20%/持有5日/名义敞口上限1.5倍/回撤熔断20%",
+        "参数": strategy.DETAIL,
         "初始资金": float(initial_capital),
         "池内品种数": len(selected_symbols),
         "名义敞口上限": 1.5,
@@ -964,7 +1056,7 @@ def _run_integer_lot_period(
         "平仓笔数": int(daily["平仓笔数"].sum()),
         "换月笔数": int(daily["换月笔数"].sum()),
         "涨跌停代理阻单数": int(daily["受阻委托数"].sum()),
-    })
+    }]
 
     for year in period_years:
         annual = daily.loc[daily.index.year == year, "净收益"].fillna(0.0)
@@ -972,7 +1064,7 @@ def _run_integer_lot_period(
         annual_peak = np.maximum.accumulate(np.r_[1.0, annual_nav.to_numpy()])[1:]
         annual_drawdown = annual_nav.to_numpy() / annual_peak - 1.0
         annual_rows.append({
-            "策略": strategy,
+            "策略": label,
             "年份": year,
             "净收益": float((1.0 + annual).prod() - 1.0),
             "Sharpe": sharpe_ratio(annual),
@@ -982,36 +1074,38 @@ def _run_integer_lot_period(
             "平仓笔数": int(daily.loc[daily.index.year == year, "平仓笔数"].sum()),
         })
 
+    result_dir = output_dir / period
+    result_dir.mkdir(parents=True, exist_ok=True)
     period_label = {
         "research": "2016–2021研究期",
         "validation": "2022验证期",
         "oos": "2023–2025 OOS",
     }[period]
+    book = "股指期货" if market == "index" else "商品"
     plot_performance(
-        daily["净收益"].rename(strategy),
-        output_dir / "plots" / f"integer_lot_{period}" / strategy,
-        title=f"{period_label}整数手数：{strategy}，1亿元、1.5倍敞口、20%保证金假设",
+        daily["净收益"].rename(label),
+        result_dir / "plots" / label,
+        title=f"{period_label}整数手数：{label}，{book}，1亿元、1.5倍敞口、20%保证金假设",
     )
 
-    stem = f"integer_lot_{period}"
-    summary_path = output_dir / f"{stem}.csv"
-    annual_path = output_dir / f"{stem}_annual.csv"
-    daily_path = output_dir / f"{stem}_daily.csv"
-    positions_path = output_dir / f"{stem}_positions.csv"
-    events_path = output_dir / f"{stem}_events.csv"
+    summary_path = result_dir / "summary.csv"
+    annual_path = result_dir / "annual.csv"
+    daily_path = result_dir / "daily.csv"
+    positions_path = result_dir / "positions.csv"
+    events_path = result_dir / "events.csv"
     pd.DataFrame(summary_rows).to_csv(
         summary_path, index=False, encoding="utf-8-sig", float_format="%.10f",
     )
     pd.DataFrame(annual_rows).to_csv(
         annual_path, index=False, encoding="utf-8-sig", float_format="%.10f",
     )
-    pd.concat(daily_frames, ignore_index=True).to_csv(
+    daily.reset_index().to_csv(
         daily_path, index=False, encoding="utf-8-sig", float_format="%.10f",
     )
-    pd.concat(position_frames, ignore_index=True).to_csv(
+    positions.to_csv(
         positions_path, index=False, encoding="utf-8-sig", float_format="%.10f",
     )
-    pd.concat(event_frames, ignore_index=True).to_csv(
+    events.to_csv(
         events_path, index=False, encoding="utf-8-sig", float_format="%.10f",
     )
     print(pd.DataFrame(summary_rows).to_string(index=False), flush=True)
@@ -1021,50 +1115,127 @@ def _run_integer_lot_period(
     print(f"订单/风控事件：{events_path}", flush=True)
 
 
-def run_integer_lot_research(initial_capital=100_000_000.0):
-    from strategies.ts_low import load_config
+def run_integer_lot_research(
+    initial_capital=100_000_000.0,
+    market="commodity",
+    strategy_set="frozen",
+):
+    market = _market_name(market)
+    if strategy_set not in ("frozen", "experiments"):
+        raise ValueError("strategy_set 必须是 frozen 或 experiments")
+    if strategy_set == "experiments" and market != "commodity":
+        raise ValueError("当前探索策略仅注册在商品市场")
+    if market == "index":
+        from backtest.index_market import load_research as load_index_research
+        data = load_index_research(1.0)
+    else:
+        data = load_research(1.0)
+    micro = data.factors.raw("ts_low") - data.factors.raw("ts_high")
+    if strategy_set == "frozen":
+        _run_integer_lot_period("research", data, micro, initial_capital, market=market)
+        return
 
-    load_config(allow_frozen=True)
-    data = load_research(1.0)
-    factor = data.factors.raw("ts_low") - data.factors.raw("ts_high")
-    _run_integer_lot_period("research", data, factor, initial_capital)
+    from strategies.research_catalog import RESEARCH_EXPERIMENTS
+
+    _run_integer_lot_period(
+        "research",
+        data,
+        micro,
+        initial_capital,
+        market=market,
+        strategies=RESEARCH_EXPERIMENTS,
+        allow_shorts=True,
+    )
 
 
-def run_integer_lot_validation(initial_capital=100_000_000.0):
-    from strategies.ts_low import load_config
+def run_integer_lot_validation(initial_capital=100_000_000.0, market="commodity"):
+    market = _market_name(market)
+    if market == "index":
+        from backtest.index_market import load_validation as load_index_validation
+        data, micro = load_index_validation(1.0)
+    else:
+        data, micro = load_validation(1.0)
+    _run_integer_lot_period("validation", data, micro, initial_capital, market=market)
 
-    load_config(allow_frozen=True)
-    data, factor = load_validation(1.0)
-    _run_integer_lot_period("validation", data, factor, initial_capital)
+
+def _frozen_strategy_specs() -> list[dict]:
+    """冻结名单核对发生在任何样本外读取之前。"""
+    from strategies.catalog import SELECTED
+
+    expected = ("trend_ema3", "trend_high_atr", "trend_adx_range", "regime_two_leg")
+    if tuple(strategy.ID for strategy in SELECTED) != expected:
+        raise ValueError("样本外名单与 2026-10-19 冻结的四条策略不一致")
+    specs = []
+    frozen_at = None
+    for strategy in SELECTED:
+        config = strategy.load_config()
+        if config.get("status") != "frozen" or not config.get("frozen_at") or not isinstance(
+            config.get("chosen"), dict,
+        ):
+            raise ValueError("当前保留的策略没有冻结，不能读取 2023–2025")
+        if frozen_at is None:
+            frozen_at = config["frozen_at"]
+        elif config["frozen_at"] != frozen_at:
+            raise ValueError("四条策略必须在同一天冻结")
+        specs.append(config)
+    return specs
 
 
-def run_integer_lot_oos(initial_capital=100_000_000.0):
-    from strategies.ts_low import chosen_parameters, load_config
+def _refuse_repeat_oos(strategy: str, ledger=None) -> None:
+    for entry in C.read_ledger(ledger):
+        if (
+            entry.get("kind") == "final_evaluation"
+            and entry.get("strategy") == strategy
+            and entry.get("status") == "finished"
+        ):
+            raise ValueError("这四条策略的样本外已经跑完，不能再读 2023–2025")
 
-    config = load_config(allow_frozen=True)
-    chosen = chosen_parameters(config)
-    if (
-        chosen["回看交易日"] != 250
-        or chosen["分位"] != 0.8
-        or chosen["持仓交易日"] != 5
-        or config["parameters"].get("direction") != "upper_tail_long"
-    ):
-        raise ValueError(
-            "整数手数OOS要求先冻结纯多头参数：250日回看、quantile=0.8、持有5日"
-        )
-    end = C.DEFAULT_OOS_END
+
+def run_integer_lot_oos(initial_capital=100_000_000.0, market="commodity"):
+    """四条冻结策略的样本外，从 2023 起各用 1 亿元新账。商品和股指分开记账。"""
+    market = _market_name(market)
+    specs = _frozen_strategy_specs()
+    window = specs[0]["chosen"]["trend_window"]
+    ledger = _oos_ledger_path(market)
+    if market == "index":
+        from backtest.index_market import require_oos_inputs
+        require_oos_inputs()
+        ledger_name = f"integer_lot_index_w{window}"
+        note = f"股指期货，趋势窗口 {window} 日。日盘时钟。"
+        universe = "index_futures"
+    else:
+        ledger_name = f"integer_lot_all_symbols_w{window}"
+        note = f"全品种流动性池，趋势窗口 {window} 日。"
+        universe = "all_liquidity"
+    _refuse_repeat_oos(ledger_name, ledger)
+    files = _oos_audit_files(market)
+    spec = {
+        "id": ledger_name,
+        "frozen_at": specs[0]["frozen_at"],
+        "chosen": {item["id"]: item["chosen"] for item in specs},
+        "universe": universe,
+    }
     with C.final_evaluation(
-        config, _oos_audit_files(), end, strategy=f"{config['id']}_integer_lots",
-        note="ts_low fixed integer-lot OOS backtest",
+        spec, files, C.DEFAULT_OOS_END, strategy=ledger_name, note=note, ledger=ledger,
     ):
-        if not list_shards(C.HOLDOUT_DIR):
-            from tfcta.prepare.shard import shard_oos_from_monolith
-
-            results = shard_oos_from_monolith(C.MINUTE_MONOLITH)
-            written = sum(item["status"] == "ok" for item in results)
-            print(f"已从锁定的分钟单体生成 {written} 个 2023–2025 分片", flush=True)
-        data, factor = load_oos(end)
-        _run_integer_lot_period("oos", data, factor, initial_capital)
+        if market == "index":
+            from backtest.index_market import load_oos as load_index_oos
+            data, micro = load_index_oos()
+        else:
+            data, micro = load_oos()
+        _run_integer_lot_period("oos", data, micro, initial_capital, market=market)
+    C.append_ledger({
+        "kind": "final_evaluation",
+        "status": "finished",
+        "run_at": datetime.now().isoformat(timespec="seconds"),
+        "strategy": ledger_name,
+        "frozen_at": spec["frozen_at"],
+        "chosen": spec["chosen"],
+        "universe": spec["universe"],
+        "oos_start": str(C.STRICT_OOS_START),
+        "oos_end": str(C.DEFAULT_OOS_END),
+        "note": note,
+    }, ledger)
 
 
 def _validation_clock(symbol: str) -> pd.DataFrame:
@@ -1173,7 +1344,7 @@ def load_oos(end=None, n_ticks=1.0):
         raise ValueError("样本外品种池没有可用的锁定行情分片")
 
     high_factors, low_factors = {}, {}
-    opens, adjusted_opens, closes, highs, lows = {}, {}, {}, {}, {}
+    opens, adjusted_opens, closes, adjusted_closes, highs, lows = {}, {}, {}, {}, {}, {}
     tick_parts = []
     available_years = {}
     for symbol in symbols:
@@ -1189,6 +1360,7 @@ def load_oos(end=None, n_ticks=1.0):
         opens[symbol] = bars["open"]
         adjusted_opens[symbol] = bars["openw"]
         closes[symbol] = bars["close"]
+        adjusted_closes[symbol] = bars["closew"]
         highs[symbol] = bars["highw"]
         lows[symbol] = bars["loww"]
         available_years[symbol] = set(bars.index.year)
@@ -1220,6 +1392,7 @@ def load_oos(end=None, n_ticks=1.0):
     open_px = pd.DataFrame(opens).sort_index()
     openw = pd.DataFrame(adjusted_opens).sort_index()
     close_px = pd.DataFrame(closes).sort_index()
+    closew = pd.DataFrame(adjusted_closes).sort_index()
     highw = pd.DataFrame(highs).sort_index()
     loww = pd.DataFrame(lows).sort_index()
     all_returns = (openw.shift(-1) - openw) / open_px
@@ -1250,7 +1423,7 @@ def load_oos(end=None, n_ticks=1.0):
     return StudyData(
         factors=SignalSet(
             bars={
-                "open": open_px, "openw": openw, "close": close_px,
+                "open": open_px, "openw": openw, "close": close_px, "closew": closew,
                 "highw": highw, "loww": loww,
             },
             signed={"ts_high": -high_factor, "ts_low": low_factor},
@@ -1265,15 +1438,63 @@ def load_oos(end=None, n_ticks=1.0):
     ), factor.reindex(columns=returns.columns)
 
 
-def _oos_audit_files() -> list[Path]:
+def _oos_audit_files(market: str = "commodity") -> list[Path]:
+    if market == "index":
+        return _index_oos_audit_files()
+    return _commodity_oos_audit_files()
+
+
+def _index_oos_audit_files() -> list[Path]:
+    from strategies import book, regime_two_leg, trend_adx_range, trend_ema3, trend_high_atr
+    from tfcta.costs import index_fee_path
+
+    files = [
+        Path(__file__),
+        Path(__file__).with_name("index_market.py"),
+        trend_ema3.CONFIG_PATH,
+        Path(trend_ema3.__file__),
+        trend_high_atr.CONFIG_PATH,
+        Path(trend_high_atr.__file__),
+        trend_adx_range.CONFIG_PATH,
+        Path(trend_adx_range.__file__),
+        regime_two_leg.CONFIG_PATH,
+        Path(regime_two_leg.__file__),
+        Path(book.__file__),
+        C.PROJECT_ROOT / "src" / "tfcta" / "config.py",
+        C.PROJECT_ROOT / "src" / "tfcta" / "data.py",
+        C.PROJECT_ROOT / "src" / "tfcta" / "costs.py",
+        C.PROJECT_ROOT / "src" / "tfcta" / "factors.py",
+        index_fee_path("research"),
+        index_fee_path("validation_2022"),
+        index_fee_path("oos"),
+    ]
+    for symbol in ("IF", "IH", "IC", "IM"):
+        for directory in (C.INDEX_RESEARCH_DIR, C.INDEX_HOLDOUT_DIR):
+            shard = find_shard(directory, symbol)
+            if shard is not None:
+                files.append(shard)
+            oi = find_shard(directory / "open_interest", symbol)
+            if oi is not None:
+                files.append(oi)
+    return [path for path in dict.fromkeys(files) if path.is_file()]
+
+
+def _commodity_oos_audit_files() -> list[Path]:
     """Files whose contents determine the frozen strategy's OOS result."""
-    from strategies import ts_low
+    from strategies import book, regime_two_leg, trend_adx_range, trend_ema3, trend_high_atr
 
     symbols = C.COMMODITY_SYMBOLS
     files = [
         Path(__file__),
-        Path(ts_low.CONFIG_PATH),
-        Path(ts_low.__file__),
+        trend_ema3.CONFIG_PATH,
+        Path(trend_ema3.__file__),
+        trend_high_atr.CONFIG_PATH,
+        Path(trend_high_atr.__file__),
+        trend_adx_range.CONFIG_PATH,
+        Path(trend_adx_range.__file__),
+        regime_two_leg.CONFIG_PATH,
+        Path(regime_two_leg.__file__),
+        Path(book.__file__),
         C.PROJECT_ROOT / "src" / "tfcta" / "config.py",
         C.PROJECT_ROOT / "src" / "tfcta" / "data.py",
         C.PROJECT_ROOT / "src" / "tfcta" / "costs.py",
@@ -1325,112 +1546,19 @@ def _window_row(result, position, universe, years, labels) -> dict:
     }
 
 
-def run(period: str):
-    """按研究、验证或已冻结的最终测试窗口计分。"""
-    from strategies.ts_low import (
-        build_positions, chosen_parameters, load_config, parameters,
-    )
-
-    if period == "oos":
-        config = load_config(allow_frozen=True)
-        chosen = chosen_parameters(config)
-        end = C.DEFAULT_OOS_END
-        files = _oos_audit_files()
-        with C.final_evaluation(
-            config, files, end, strategy=config["id"],
-            note="ts_low frozen strategy OOS backtest",
-        ):
-            data, factor = load_oos(end)
-            _run_period(
-                data, factor, [chosen], end, range(C.STRICT_OOS_START.year, end.year + 1),
-                "测试期", "oos.csv", allow_oos=True,
-            )
-        return
-
-    config = load_config()
-    if period == "research":
-        data = load_research(1.0)
-        factor = data.factors.raw("ts_low") - data.factors.raw("ts_high")
-        end = pd.Timestamp(C.RESEARCH_END)
-        years = RESEARCH_YEARS
-        label = "研究期"
-        filename = "research.csv"
-    elif period == "validation":
-        data, factor = load_validation(1.0)
-        end = VAL_END
-        years = range(2022, 2023)
-        label = "验证期"
-        filename = "validation.csv"
-    else:
-        raise ValueError("只能选 --research、--validation 或 --oos")
-    _run_period(data, factor, list(parameters(config)), end, years, label, filename)
-
-
-
-
-
-
-
-
-def _run_period(data, factor, specs, end, years, label, filename, *, allow_oos=False):
-    from strategies.ts_low import build_positions
-
-    rows = []
-    daily_frames = []
-    plot_root = C.RUNS_DIR / "strategies" / "ts_low" / "plots" / Path(filename).stem
-    for spec in specs:
-        position = build_positions(
-            factor, data.returns, data.universe, spec["持仓交易日"],
-            spec["回看交易日"], spec["分位"],
-            start=pd.Timestamp(f"{min(years)}-01-01"), end=end,
-        )
-        result = backtest(
-            position, data.returns, data.universe, data.open_fee, data.close_fee,
-            data.slippage, data.rolls, data.roll_close_fee,
-        )
-        if not allow_oos and result.index.max() >= pd.Timestamp(C.STRICT_OOS_START):
-            raise C.HoldoutViolation("净值进入 2023")
-        row = _window_row(result, position, data.universe, years, spec)
-        rows.append(row)
-        period_result = result.loc[result.index.year.isin(list(years))]
-        daily_frames.append(_daily_equity_frame(period_result, spec))
-        print(
-            f"{label} {spec['回看']} {spec['阈值']} {spec['持仓']} "
-            f"收益 {row['收益']:.2%} 年化 {row['年化']:.2%} 夏普 {row['夏普']:.2f}",
-            flush=True,
-        )
-        plot_name = (
-            f"lookback_{spec['回看交易日']}_quantile_{spec['分位']:g}_"
-            f"horizon_{spec['持仓交易日']}"
-        )
-        plot_performance(
-            period_result[["net"]].rename(columns={"net": "净收益"}),
-            plot_root / plot_name,
-            title=(
-                f"{label} ts_low 回看{spec['回看交易日']}日 "
-                f"前{(1 - spec['分位']):.0%} 持有{spec['持仓交易日']}日"
-            ),
-        )
-    table = pd.DataFrame(rows).drop(columns=["分位"])
-    out = C.RUNS_DIR / "strategies" / "ts_low"
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / filename
-    table.to_csv(path, index=False, encoding="utf-8-sig")
-    daily_path = out / f"{Path(filename).stem}_daily.csv"
-    pd.concat(daily_frames, ignore_index=True).to_csv(
-        daily_path, index=False, encoding="utf-8-sig",
-    )
-    print(table.to_string(index=False), flush=True)
-    print(f"结果：{path}", flush=True)
-    print(f"逐日净值：{daily_path}", flush=True)
-    print(f"净值与回撤图：{plot_root}", flush=True)
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "运行 ts_low 整数手数回测；--oos 仅可用于已冻结策略的最终测试。"
+            "运行已冻结的四条整数手数策略。--market 选择商品或股指。"
+            "--oos 只允许打开一次 2023–2025。"
         )
+    )
+    parser.add_argument(
+        "--market",
+        choices=("commodity", "index"),
+        default="commodity",
+        help="commodity 为商品流动性池，index 为股指期货。默认商品。",
     )
     period = parser.add_mutually_exclusive_group(required=True)
     period.add_argument(
@@ -1447,7 +1575,11 @@ def main(argv=None):
     )
     period.add_argument(
         "--integer-lot-research", action="store_true",
-        help="研究期四板块池整数手数回测：固定250/前20%%/5日，仅用2016–2021",
+        help="研究期全品种流动性池整数手数回测，仅用2016–2021",
+    )
+    period.add_argument(
+        "--experimental-research", action="store_true",
+        help="仅跑三条新注册商品探索策略，限定2016–2021，不读持出期",
     )
     period.add_argument(
         "--integer-lot-validation", action="store_true",
@@ -1458,12 +1590,14 @@ def main(argv=None):
         help="冻结并审计后运行2023–2025整数手数OOS",
     )
     args = parser.parse_args(argv)
-    if args.integer_lot_research or args.research:
-        run_integer_lot_research()
+    if args.experimental_research:
+        run_integer_lot_research(market=args.market, strategy_set="experiments")
+    elif args.integer_lot_research or args.research:
+        run_integer_lot_research(market=args.market)
     elif args.integer_lot_validation or args.validation:
-        run_integer_lot_validation()
+        run_integer_lot_validation(market=args.market)
     elif args.integer_lot_oos or args.oos:
-        run_integer_lot_oos()
+        run_integer_lot_oos(market=args.market)
 
 
 if __name__ == "__main__":

@@ -57,6 +57,7 @@ def test_representative_price_return_uses_the_previous_raw_price():
     out = gtja.daily_factors(pd.concat(frames), price_threshold=3.0, volume_threshold=50.0)
     # 第二天最后一根相对 110 跳出 3 点；最长持续期仍在 110，前一日代表价原始值是 100。
     assert np.isclose(out.loc[day1, "Price_duration_return"], (1110.0 - 1100.0) / 100.0)
+    assert np.isclose(out.loc[day1, "Volume_duration_return"], (1130.0 - 1100.0) / 100.0)
 
 
 def test_config_locks_the_research_sample_and_the_published_thresholds():

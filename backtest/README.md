@@ -3,18 +3,25 @@
 回测入口为 `python -m backtest.engine`，运行区间必须显式指定：
 
 ```bash
-python -m backtest.engine --research    # 2016–2021
-python -m backtest.engine --validation  # 2022
+python -m backtest.engine --research                 # 商品，2016–2021
+python -m backtest.engine --market index --research  # 股指，2016–2021
+python -m backtest.engine --validation               # 2022
+python -m backtest.engine --oos                      # 2023–2025，同一市场只打开一次
+python -m backtest.engine --experimental-research    # 新探索策略，商品2016–2021
 ```
 
-两种模式都使用整数合约手数账本，固定为低点时钟纯多头：250 日回看、因子
-最高 20%、持有 5 个有效交易日；1 亿元初始权益、名义敞口目标上限 1.5 倍、
-20% 保证金假设、20% 峰值回撤熔断。费率取对应历史手续费缓存，滑点按前一年
-tick 估算。年化收益、波动率和 Sharpe 使用每年 242 个交易日。
+`--market commodity` 是商品流动性池，也是默认值。`--market index` 跑 IF、IH、IC，IM 只在上市后的验证和样本外里按前一年流动性决定是否进池。股指没有夜盘，时点按当日日盘第一根到最后一根归一化。两个市场的结果分开写：`runs/strategies/<策略>/commodity/` 和 `runs/strategies/<策略>/index/`。股指样本外另记 `data/index/oos/ledger.jsonl`。
 
-输出包括汇总、年度、逐日、持仓和风控事件 CSV，以及每个组合的净值与最大回撤图，
-统一位于 `runs/strategies/ts_low/`。详细参数、数据边界、图表路径和回测限制见
-根目录 [`README.md`](../README.md)。
+两种模式都使用整数合约手数账本，一次跑 `strategies/catalog.py` 里的四条纯多头：
+趋势加三日平滑尾部、趋势加尾部且高波动、趋势加尾部且 ADX 震荡、趋势与震荡分腿。持有 5 个有效交易日；
+1 亿元初始权益、名义敞口上限 1.5 倍、20% 保证金假设、20% 峰值回撤熔断。费率取对应历史手续费缓存，
+滑点按前一年 tick 估算。年化收益、波动率和 Sharpe 使用每年 242 个交易日。
+
+输出再按区间放在 `research/`、`validation/` 和 `oos/`。每个区间里是
+`summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv`，净值图在同级的 `plots/`。
+商品用当年流动性池里的全部品种。股指研究期用 IF、IH、IC。
+
+`--experimental-research` 单独运行 `strategies/research_catalog.py` 注册的三条商品探索策略：时钟截面多空、时钟加正展期收益过滤，以及趋势/carry 同向确认的全交易日时钟组合（含夜盘）。纯日盘策略已移除。实验入口只读取 2016–2021 研究分片，不读取 2022 或 2023 年以后；结果仍使用整数手账本、历史费率、上一年 tick 滑点和相同风险约束。该 catalog 不参与冻结名单和 OOS 审计，组合结果属于事后探索。
 
 整数手账本以连续主力的加法复权开盘价变动估算持仓盈亏；换月在旧主力前一日收盘和新
 主力当日开盘上估算手续费与滑点，不结转真实合约现金流或结算盈亏。换月、持仓缺价、
@@ -23,6 +30,5 @@ tick 估算。年化收益、波动率和 Sharpe 使用每年 242 个交易日�
 样本末的未平仓持仓不自动强平，期末结果不含假定的清算费用。因此结果仍是研究估算，
 不是交易所级成交仿真。
 
-已移除旧多空和板块扫描入口。`--oos` 是受冻结配置与最终评估审计保护的
-2023–2025 入口。根据项目维护者确认，该时段尚未读取，仍是未触碰的最终样本外窗口；
-不要把它当作常规运行命令，只有在策略与实现冻结并明确批准最终评估后才可运行。
+已移除四板块裁剪。账本使用当年流动性池的全部商品。样本外结果记在
+`data/commodity/oos/ledger.jsonl`，全品种这次已经跑完，不能再读 2023–2025。

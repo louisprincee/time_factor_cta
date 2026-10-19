@@ -19,12 +19,6 @@
     "index_quintile_min_obs": 60,
     "note": "商品单因子 t 是逐日截面 Spearman 的 Newey–West t；控制 t 是逐日截面秩回归系数的 Newey–West t。股指两者都是单合约时间序列的 HAC t。年份和板块不足最小天数则记为不足，不算同号。成交量时戳没有预期符号，只记录全样本符号是否在年份和板块上稳定，不能据此进入配对。"
   },
-  "multiple_testing": {
-    "status": "exploratory_unadjusted",
-    "unit": "market/decision/factor/output-symbol summary row",
-    "correction": "none",
-    "note": "The configured screen defines 130 summary cells (31 commodity cross-sectional cells and 99 index contract cells); each cell applies two absolute-t thresholds, for 260 configured threshold comparisons. Factors, decisions, contracts and daily observations are dependent. This is an exploratory screen, not a confirmatory significance claim; no FDR or family-wise correction is applied."
-  },
   "duration": {
     "lookback": 250,
     "percentile": 50.0,

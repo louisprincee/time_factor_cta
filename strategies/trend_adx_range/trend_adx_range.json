@@ -1,0 +1,32 @@
+{
+  "id": "trend_adx_range",
+  "status": "frozen",
+  "declared_at": "2026-10-19",
+  "frozen_at": "2026-10-19",
+  "sample": "信号比较使用 2016-01-01 至 2021-12-31，并用 2022 看过稳定性。2022 已经参与这次取舍，不能再当作没看过的验证。不读 2023 年以后。",
+  "parameters": {
+    "direction": "long_only",
+    "trend": "10-day trailing return sign, positive only",
+    "trend_window": 10,
+    "factor": "ts_low - ts_high",
+    "lookback": 250,
+    "quantile": 0.8,
+    "comparison": "strict",
+    "adx_period": 14,
+    "adx_range_max": 20.0,
+    "holding_days": 5
+  },
+  "chosen": {
+    "direction": "long_only",
+    "trend": "10-day trailing return sign, positive only",
+    "trend_window": 10,
+    "factor": "ts_low - ts_high",
+    "lookback": 250,
+    "quantile": 0.8,
+    "comparison": "strict",
+    "adx_period": 14,
+    "adx_range_max": 20.0,
+    "holding_days": 5
+  },
+  "hypothesis": "方向仍由 10 日上涨决定，入场仍要求低点晚于高点并且处在自身最高 20%。只在 14 日 ADX 小于等于 20 的震荡里做：这时晚低点更像区间里卖压释放，而不是趋势中的一次回撤。ADX 大于等于 25 的单边段不做。"
+}

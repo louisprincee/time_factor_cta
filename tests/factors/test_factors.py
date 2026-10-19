@@ -56,6 +56,26 @@ def test_ts_high_finds_the_max_bar():
         assert out.loc[day, 'ts_high'] == pytest.approx(g['gamma_norm'].iloc[j])
 
 
+def test_session_clock_renormalizes_without_night_bars():
+    index = pd.to_datetime([
+        '2022-01-04 21:00', '2022-01-05 09:00', '2022-01-05 10:00',
+        '2022-01-05 13:00', '2022-01-05 14:59',
+    ])
+    frame = pd.DataFrame({
+        'trading_date': pd.Timestamp('2022-01-05'),
+        'highw': [999.0, 101.0, 110.0, 104.0, 103.0],
+        'loww': [1.0, 99.0, 100.0, 98.0, 90.0],
+    }, index=index)
+    enriched = add_intraday_coords(frame)
+
+    full_day = timestamp_factors(enriched)
+    day_session = timestamp_factors(enriched, sessions=('AM', 'PM'))
+
+    assert full_day.iloc[0].to_list() == [0.0, 0.0]
+    assert day_session.loc[pd.Timestamp('2022-01-05'), 'ts_high'] == pytest.approx(1 / 3)
+    assert day_session.loc[pd.Timestamp('2022-01-05'), 'ts_low'] == pytest.approx(1.0)
+
+
 def test_factor_families_cover_all_expected_columns():
     df = _prep(days=DAYS[:60])
     out = _all_factors(df)

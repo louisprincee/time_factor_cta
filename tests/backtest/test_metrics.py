@@ -122,7 +122,7 @@ def test_performance_plot_writes_nav_and_drawdown_chart(tmp_path):
 )
 def test_standard_period_cli_uses_integer_lot_runner(monkeypatch, argument, runner):
     called = []
-    monkeypatch.setattr(engine, runner, lambda: called.append(runner))
+    monkeypatch.setattr(engine, runner, lambda **kwargs: called.append(runner))
 
     engine.main([argument])
 
@@ -143,10 +143,24 @@ def test_validation_cost_coverage_rejects_missing_symbols_instead_of_dropping_th
 
 
 
+def test_market_argument_is_forwarded(monkeypatch):
+    seen = {}
+
+    def grab(**kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(engine, "run_integer_lot_research", grab)
+    engine.main(["--research", "--market", "index"])
+    assert seen == {"market": "index"}
+
+    engine.main(["--research"])
+    assert seen == {"market": "commodity"}
+
+
 def test_integer_lot_research_cli_dispatches_without_oos(monkeypatch):
     called = []
     monkeypatch.setattr(
-        engine, "run_integer_lot_research", lambda: called.append("integer-lots")
+        engine, "run_integer_lot_research", lambda **kwargs: called.append("integer-lots")
     )
 
     engine.main(["--integer-lot-research"])
@@ -157,7 +171,7 @@ def test_integer_lot_research_cli_dispatches_without_oos(monkeypatch):
 def test_integer_lot_validation_cli_dispatches(monkeypatch):
     called = []
     monkeypatch.setattr(
-        engine, "run_integer_lot_validation", lambda: called.append("integer-lot-validation")
+        engine, "run_integer_lot_validation", lambda **kwargs: called.append("integer-lot-validation")
     )
 
     engine.main(["--integer-lot-validation"])
@@ -168,7 +182,7 @@ def test_integer_lot_validation_cli_dispatches(monkeypatch):
 def test_integer_lot_oos_cli_dispatches_to_guarded_runner(monkeypatch):
     called = []
     monkeypatch.setattr(
-        engine, "run_integer_lot_oos", lambda: called.append("integer-lot-oos")
+        engine, "run_integer_lot_oos", lambda **kwargs: called.append("integer-lot-oos")
     )
 
     engine.main(["--integer-lot-oos"])
@@ -187,58 +201,19 @@ def test_benjamini_hochberg_adjusts_finite_p_values_and_preserves_nan():
 
 
 
-def test_oos_run_rejects_unfrozen_strategy_before_data_access(monkeypatch):
-    from strategies import ts_low
-
+def test_oos_refuses_before_any_holdout_read(monkeypatch):
+    monkeypatch.setattr(
+        engine, "load_oos",
+        lambda *args, **kwargs: pytest.fail("未冻结策略不能读取 2023–2025"),
+    )
     monkeypatch.setattr(
         engine, "_oos_audit_files",
-        lambda: pytest.fail("unfrozen OOS must fail before inspecting test inputs"),
-    )
-    monkeypatch.setattr(ts_low, "load_config", lambda allow_frozen=False: {"chosen": None})
-    with pytest.raises(ValueError, match="chosen"):
-        engine.run("oos")
-
-
-def test_period_backtest_saves_csv_and_nav_drawdown_plot(tmp_path, monkeypatch):
-    index = pd.bdate_range("2021-01-04", periods=8)
-    returns = pd.DataFrame({"RB": 0.01}, index=index)
-    zeros = returns * 0.0
-    data = engine.StudyData(
-        factors=engine.SignalSet(bars={}),
-        returns=returns,
-        universe={2021: ["RB"]},
-        rolls=zeros.astype(bool),
-        open_fee=zeros,
-        close_fee=zeros,
-        roll_close_fee=zeros,
-        slippage=zeros,
-    )
-    spec = {
-        "回看": "一季",
-        "回看交易日": 2,
-        "阈值": "前10%",
-        "分位": 0.9,
-        "持仓": "隔夜",
-        "持仓交易日": 1,
-    }
-    factor = pd.DataFrame({"RB": [0, 0, 0, 1, 1, 1, 1, 1]}, index=index)
-    monkeypatch.setattr(engine.C, "RUNS_DIR", tmp_path)
-
-    engine._run_period(
-        data, factor, [spec], index[-1], range(2021, 2022), "研究期", "research.csv",
+        lambda: pytest.fail("未冻结策略不能清点样本外输入"),
     )
 
-    assert (tmp_path / "strategies/ts_low/research.csv").is_file()
-    daily_path = tmp_path / "strategies/ts_low/research_daily.csv"
-    assert daily_path.is_file()
-    daily = pd.read_csv(daily_path, encoding="utf-8-sig")
-    assert len(daily) == len(index)
-    assert {"交易日", "净收益", "净值", "回撤", "成本", "换手"} <= set(daily.columns)
-    assert daily.iloc[-1]["净值"] == pytest.approx(
-        (1 + daily["净收益"]).prod()
-    )
-    plot = (
-        tmp_path / "strategies/ts_low/plots/research"
-        / "lookback_2_quantile_0.9_horizon_1/performance.png"
-    )
-    assert plot.is_file() and plot.stat().st_size > 0
+    def unfrozen():
+        raise ValueError("当前保留的策略没有冻结，不能读取 2023–2025")
+
+    monkeypatch.setattr(engine, "_frozen_strategy_specs", unfrozen)
+    with pytest.raises(ValueError, match="没有冻结"):
+        engine.run_integer_lot_oos()

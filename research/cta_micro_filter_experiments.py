@@ -23,7 +23,7 @@ from backtest.engine import (
     load_research,
     load_validation,
 )
-from strategies.ts_low import upper_tail
+from strategies.book import upper_tail
 from tfcta import config as C
 from tfcta.costs import MULTIPLIER, require_multipliers
 from tfcta.data import (

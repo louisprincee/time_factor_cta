@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tfcta.factors import _day_spans, additive_return, day_codes_of
+from tfcta.factors import _day_spans, day_codes_of
 
 MORNING = (9 * 60 + 31, 10 * 60)
 AFTERNOON_CLOSE = (14 * 60 + 31, 15 * 60)
@@ -185,9 +185,9 @@ def _day_row(price_dur, volume_dur, close, close_w, high_w, low_w, volume, turno
     row["afternoon_high_time"] = _location(high_w[afternoon], "max")
     price_at = _finite_argmax(price_dur)
     volume_at = _finite_argmax(volume_dur)
-    row["price_rep_w"] = close_w[price_at] if price_at is not None else np.nan
+    row["price_rep"] = close_w[price_at] if price_at is not None else np.nan
     row["price_rep_raw"] = close[price_at] if price_at is not None else np.nan
-    row["volume_rep_w"] = close_w[volume_at] if volume_at is not None else np.nan
+    row["volume_rep"] = close_w[volume_at] if volume_at is not None else np.nan
     row["volume_rep_raw"] = close[volume_at] if volume_at is not None else np.nan
     return row
 
@@ -223,11 +223,13 @@ def daily_factors(frame: pd.DataFrame, price_threshold: float, volume_threshold:
                              low_w[a:b], volume[a:b], turnover[a:b], minute[a:b], opens[a]))
     out = pd.DataFrame(rows, index=days)
     out.index.name = "trading_date"
-    out["Price_duration_return"] = additive_return(
-        out.price_rep_w, out.price_rep_w.shift(1), out.price_rep_raw.shift(1))
-    out["Volume_duration_return"] = additive_return(
-        out.volume_rep_w, out.volume_rep_w.shift(1), out.volume_rep_raw.shift(1))
-    return out.drop(columns=["price_rep_w", "price_rep_raw", "volume_rep_w", "volume_rep_raw"])
+    out["Price_duration_return"] = (
+        out.price_rep - out.price_rep.shift(1)
+    ) / out.price_rep_raw.shift(1).where(out.price_rep_raw.shift(1) > 0)
+    out["Volume_duration_return"] = (
+        out.volume_rep - out.volume_rep.shift(1)
+    ) / out.volume_rep_raw.shift(1).where(out.volume_rep_raw.shift(1) > 0)
+    return out.drop(columns=["price_rep", "price_rep_raw", "volume_rep", "volume_rep_raw"])
 
 
 def rolling_z(series: pd.Series, window: int, min_periods: int) -> pd.Series:
@@ -243,16 +245,11 @@ def standardize(factors: pd.DataFrame, window: int, min_periods: int) -> pd.Data
 
 
 def open_to_open(frame: pd.DataFrame) -> pd.Series:
-    """本交易日开盘到下一交易日开盘。末日没有下一开盘时留空。
-
-    收盘后才知道的因子要再后移一天，才是下一开盘到再下一开盘。
-    """
+    """当天开盘到下一次开盘的预测目标。末日没有下一开盘时留空。"""
     ordered = frame.sort_index()
-    day = pd.to_datetime(ordered["trading_date"]).dt.normalize()
-    first = ordered.groupby(day, sort=True).agg(open=("open", "first"), openw=("openw", "first"))
-    first.index = pd.DatetimeIndex(first.index)
-    return pd.Series(
-        additive_return(first.openw.shift(-1), first.openw, first.open),
-        index=first.index,
-        name="open_to_open",
-    )
+    grouped = ordered.groupby(pd.to_datetime(ordered.trading_date).dt.normalize(), sort=True)
+    opens = grouped.openw.first()
+    raw_opens = grouped.open.first()
+    opens.index = pd.DatetimeIndex(opens.index)
+    raw_opens.index = pd.DatetimeIndex(raw_opens.index)
+    return (opens.shift(-1) - opens) / raw_opens.where(raw_opens > 0)

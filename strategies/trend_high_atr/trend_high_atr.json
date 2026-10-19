@@ -1,0 +1,34 @@
+{
+  "id": "trend_high_atr",
+  "status": "frozen",
+  "declared_at": "2026-10-19",
+  "frozen_at": "2026-10-19",
+  "sample": "信号比较使用 2016-01-01 至 2021-12-31，并用 2022 看过稳定性。2022 已经参与这次取舍，不能再当作没看过的验证。不读 2023 年以后。",
+  "parameters": {
+    "direction": "long_only",
+    "trend": "10-day trailing return sign, positive only",
+    "trend_window": 10,
+    "factor": "ts_low - ts_high",
+    "lookback": 250,
+    "quantile": 0.8,
+    "comparison": "strict",
+    "atr_period": 14,
+    "atr_reference": 250,
+    "atr_rule": "strictly above own prior median",
+    "holding_days": 5
+  },
+  "chosen": {
+    "direction": "long_only",
+    "trend": "10-day trailing return sign, positive only",
+    "trend_window": 10,
+    "factor": "ts_low - ts_high",
+    "lookback": 250,
+    "quantile": 0.8,
+    "comparison": "strict",
+    "atr_period": 14,
+    "atr_reference": 250,
+    "atr_rule": "strictly above own prior median",
+    "holding_days": 5
+  },
+  "hypothesis": "方向仍由 10 日上涨决定，入场仍要求低点晚于高点并且处在自身最高 20%。只有当 14 日真实波幅高于该品种自己过去 250 日的中位数时才做：平静行情里这条时间信息盖不住一跳，波动起来后续五天的空间才够付成本。阈值跟着每个品种自己的历史走，不绑死某一种市场风格。"
+}

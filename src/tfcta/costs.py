@@ -1,6 +1,8 @@
 """手续费、合约乘数和最小变动价位。研究期与 2022、样本外分区分开读取。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -19,7 +21,10 @@ MULTIPLIER: dict[str, float] = {
     "RS": 10, "FG": 20, "SA": 20, "UR": 20, "PF": 5, "PK": 5, "CJ": 5, "PX": 5,
     "PR": 15, "SH": 30, "SF": 5, "SM": 5, "ZC": 100, "WH": 20, "PM": 50,
     "RI": 20, "LR": 20, "JR": 20, "SI": 5, "LC": 1, "PS": 3,
+    # 中金所股指：每点人民币。IF/IH 为 300，IC/IM 为 200。
+    "IF": 300, "IH": 300, "IC": 200, "IM": 200,
 }
+INDEX_MULTIPLIER = {symbol: MULTIPLIER[symbol] for symbol in ("IF", "IH", "IC", "IM")}
 
 def require_multipliers(symbols):
     """点名的品种必须有乘数；缺了就停，不跳过。"""
@@ -55,10 +60,22 @@ def fee_path(partition):
         raise C.HoldoutViolation(f"未知手续费分区 {partition}")
     return paths[partition]
 
-def load_fees(partition="research"):
-    path = fee_path(partition)
+def index_fee_path(partition):
+    """股指手续费与商品分开放，避免和商品缓存混读。"""
+    root = C.INDEX_DATA_ROOT
+    paths = {"research": root / "research" / "fee_history.csv",
+             "validation_2022": root / "validation_2022" / "fee_history.csv",
+             "oos": root / "oos" / "fee_history.csv"}
+    if partition not in paths:
+        raise C.HoldoutViolation(f"未知股指手续费分区 {partition}")
+    return paths[partition]
+
+
+def _read_fee_table(path, partition):
     if partition == "oos":
         end = pd.Timestamp(C.final_evaluation_end())  # 未打开最终评估时这里就拒绝
+    if not Path(path).is_file():
+        raise FileNotFoundError(f"手续费缓存不存在: {path}")
     table = pd.read_csv(path, parse_dates=["trading_date"])
     if partition == "oos":
         table = table[table.trading_date <= end]
@@ -66,9 +83,17 @@ def load_fees(partition="research"):
     else:
         guard = C.assert_no_holdout_dates if partition == "research" else C.assert_validation_2022_dates
         guard(table.trading_date, what="手续费缓存")
-    if table.duplicated(["symbol","trading_date"]).any():
+    if table.duplicated(["symbol", "trading_date"]).any():
         raise ValueError("手续费缓存有重复品种/日期")
     return fill_close_today(table)
+
+
+def load_index_fees(partition="research"):
+    return _read_fee_table(index_fee_path(partition), partition)
+
+
+def load_fees(partition="research"):
+    return _read_fee_table(fee_path(partition), partition)
 
 
 CZCE_CLOSE_TODAY_FROM = pd.Timestamp("2017-06-23")
