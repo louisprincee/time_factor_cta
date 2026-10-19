@@ -4,3 +4,6 @@ scipy
 matplotlib
 pyarrow
 pytest
+tqdm
+# 米筐数据接口，只有 download/ 下的脚本需要
+rqdatac

@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 
 from tfcta import config as C
-from tfcta.data import NIGHT_CLASS, add_intraday_coords, make_symbol
+from tfcta.data import add_intraday_coords
+from tests.synthetic import NIGHT_CLASS, make_symbol
 
 
 DAYS = pd.bdate_range('2016-03-01', '2016-03-31')

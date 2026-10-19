@@ -64,15 +64,17 @@ def save_and_clean(data, file_path, clean=True):
     if not clean:
         return
 
-    # 查找并删除同前缀但不同日期范围的文件
+    # 只删除日期范围被新文件完全覆盖的同前缀旧文件；不相交或更长的总表一律保留
+    new_start, new_end = re.search(r'(\d{8})-(\d{8})\.txt$', file_name).groups()
     to_delete = []
-    pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}-\d{{8}}\.txt$")
+    pattern = re.compile(rf"^{re.escape(prefix)}_(\d{{8}})-(\d{{8}})\.txt$")
 
     output_dir = os.path.dirname(os.path.abspath(file_path))
     for file in os.listdir(output_dir):
         full_path = os.path.join(output_dir, file)
         # 只处理匹配前缀的文件，且不是当前正在保存的文件
-        if pattern.match(file) and file != file_name:
+        match = pattern.match(file)
+        if match and file != file_name and new_start <= match.group(1) and match.group(2) <= new_end:
             to_delete.append(full_path)
 
     for path in to_delete:
@@ -152,10 +154,12 @@ file_prefix = 'future_all1mdata'  # 文件前缀（用于查找已有数据）
 file_extension = '.txt'  # 选择要读取的文件类型（.txt 或 .csv）
 existing_file = None
 if not args.standalone:
-    for file in os.listdir(data_dir):
-        if file.startswith(file_prefix) and file.endswith(file_extension):
-            existing_file = os.path.join(data_dir, file)
-            break  # 只读取一个文件
+    monoliths = sorted(f for f in os.listdir(data_dir)
+                       if re.fullmatch(rf"{file_prefix}_\d{{8}}-\d{{8}}{re.escape(file_extension)}", f))
+    if len(monoliths) > 1:
+        parser.error(f"目录里有多个总表 {monoliths}，增量合并会把它们混成一份；请用 --standalone 下载新区间")
+    if monoliths:
+        existing_file = os.path.join(data_dir, monoliths[0])
 
 if existing_file:
     print(f"发现已有总数据文件: {os.path.basename(existing_file)}")
@@ -173,6 +177,9 @@ if existing_file is not None and target_end > existing_end:
 elif existing_file is not None and target_end <= existing_end:
     print(f"已有数据已覆盖 {time_period}，无需更新")
     sys.exit(0)
+if existing_file is not None:
+    # 合并后的文件含全部历史，文件名必须写出真实覆盖的起止日期
+    original_time_period = f"{min(existing_start, target_start)}-{target_end}"
 
 
 # %%

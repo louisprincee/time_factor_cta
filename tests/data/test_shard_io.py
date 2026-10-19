@@ -111,34 +111,3 @@ def test_load_shard_sorts_unsorted_shard(shard_dir):
     assert out.index.is_monotonic_increasing
 
 
-def test_oos_monolith_sharding_is_guarded_and_keeps_only_2023_to_2025(
-    shard_dir, monkeypatch, tmp_path,
-):
-    import pickle
-
-    from tfcta.prepare import shard as shard_module
-
-    monkeypatch.setattr(C, "SHARD_ROOT", shard_dir / "minute_shards")
-    monkeypatch.setattr(C, "HOLDOUT_DIR", C.SHARD_ROOT / "holdout_locked")
-    monkeypatch.setattr(C, "assert_oos_research_locked", lambda end: None)
-    days = pd.to_datetime(["2022-12-30", "2023-01-03", "2025-12-31"])
-    index = pd.to_datetime([
-        "2022-12-30 09:00:00", "2023-01-03 09:00:00", "2025-12-31 09:00:00",
-    ])
-    fields = [*C.FACTOR_FIELDS, *C.PRICE_FIELDS]
-    values = {
-        field: (days if field == "trading_date" else [1.0] * len(days))
-        for field in fields
-    }
-    panel = pd.DataFrame(values, index=index)
-    panel.columns = pd.MultiIndex.from_product([["RB"], fields])
-    source = tmp_path / "minute_monolith.pkl"
-    source.write_bytes(pickle.dumps(panel))
-
-    results = shard_module.shard_oos_from_monolith(source, ["RB"], fmt="pickle")
-
-    assert results[0]["status"] == "ok"
-    shard = pd.read_pickle(C.HOLDOUT_DIR / "RB.pkl")
-    assert shard["trading_date"].min() == pd.Timestamp("2023-01-03")
-    assert shard["trading_date"].max() == pd.Timestamp("2025-12-31")
-    assert list_shards(C.HOLDOUT_DIR) == ["RB"]

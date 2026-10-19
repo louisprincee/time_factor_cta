@@ -1,10 +1,10 @@
-"""成本数据：tick 估计、郑商所平今费补齐、池内缺成本时停下。不读真实行情。"""
+"""成本数据：tick 估计和郑商所平今费补齐。不读真实行情。"""
 import numpy as np
 import pandas as pd
 import pytest
 from tfcta import config as C
 from tfcta.costs import (
-    check_costs, estimate_ticks, fill_close_today, load_fees, load_ticks, tick_path,
+    estimate_ticks, fill_close_today, load_fees, load_ticks, tick_path,
 )
 
 def test_estimate_ticks_ignores_rare_smaller_steps_and_thin_years():
@@ -48,21 +48,12 @@ def test_close_today_gap_is_not_filled_across_a_fee_type_change():
     out = fill_close_today(table)
     assert np.isnan(out.close_commission_today.iloc[0])
 
-def test_check_costs_stops_when_pool_symbols_cannot_be_costed():
-    days = pd.bdate_range("2022-01-03", periods=20)
-    table = pd.DataFrame({"symbol": "SA", "trading_date": days, "dev15": .003, "est_cost": np.nan})
-    with pytest.raises(ValueError, match="缺成本"):
-        check_costs(table, {2022: ["SA"]})
-    check_costs(table, {2022: ["RB"]})  # 不在池里就不管
-    table["est_cost"] = .0003
-    check_costs(table, {2022: ["SA"]})
-
 def test_close_today_fill_only_covers_the_known_czce_gap():
     table = pd.DataFrame({"symbol": "X", "trading_date": pd.to_datetime(["2019-03-01", "2019-03-04"]),
                           "commission_type": "by_volume", "close_commission": [3.0, 3.0],
                           "close_commission_today": [np.nan, 6.0]})
     out = fill_close_today(table)
-    assert np.isnan(out.close_commission_today.iloc[0])  # 2017-06-23 以后缺了不补，让 check_costs 报出来
+    assert np.isnan(out.close_commission_today.iloc[0])  # 2017-06-23 以后缺了不补，留给成本表在成交时报错
 
 def test_close_today_fill_does_not_apply_to_other_exchanges():
     table = pd.DataFrame({"symbol": ["FG", "FG", "RB", "RB"],

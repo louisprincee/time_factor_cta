@@ -15,37 +15,6 @@ from tfcta.data import (
 )
 
 
-TSMOM_WINDOWS = (20, 60, 120, 250)
-VOL_WINDOW = 60
-CS_MIN_SYMBOLS = 5
-REVIEW_MOM_WINDOW = 3
-REVIEW_VOL_WINDOW = 20
-REVIEW_TAIL = 5
-
-def daily_return(close: pd.DataFrame, closew: pd.DataFrame) -> pd.DataFrame:
-    prev = close.shift(1)
-    return closew.diff() / prev.where(prev > 0)
-
-
-def additive_return(exit_w, entry_w, entry_raw):
-    """加法复权价之差除以进场原始价。复权偏移不为 0 时不能用复权价相除。"""
-    exit_w = np.asarray(exit_w, dtype="float64")
-    entry_w = np.asarray(entry_w, dtype="float64")
-    entry_raw = np.asarray(entry_raw, dtype="float64")
-    out = (exit_w - entry_w) / entry_raw
-    ok = np.isfinite(exit_w) & np.isfinite(entry_w) & np.isfinite(entry_raw) & (entry_raw > 0)
-    out = np.where(ok, out, np.nan)
-    if out.shape == ():
-        return float(out)
-    return out
-
-
-def daily_vol(close: pd.DataFrame, closew: pd.DataFrame,
-              window: int = VOL_WINDOW) -> pd.DataFrame:
-    """截至当日的日收益波动。"""
-    return daily_return(close, closew).rolling(window, min_periods=window // 2).std()
-
-
 def tsmom_sign(close: pd.DataFrame, closew: pd.DataFrame,
                window: int = 20) -> pd.DataFrame:
     """过去 ``window`` 个交易日收益的符号：涨为 +1，跌为 −1。"""
@@ -55,123 +24,6 @@ def tsmom_sign(close: pd.DataFrame, closew: pd.DataFrame,
     values = np.sign(r.to_numpy(dtype='float64'))
     values[~np.isfinite(r.to_numpy(dtype='float64'))] = np.nan
     return pd.DataFrame(values, index=close.index, columns=close.columns)
-
-
-def tsmom(close: pd.DataFrame, closew: pd.DataFrame,
-          windows=TSMOM_WINDOWS) -> pd.DataFrame:
-    """多窗口时序动量，取值 -1 到 1。"""
-    vol = daily_vol(close, closew)
-    parts = []
-    for w in windows:
-        base = close.shift(w)
-        r = (closew - closew.shift(w)) / base.where(base > 0)
-        parts.append((r / (vol * np.sqrt(w))).clip(-2, 2) / 2)
-    stacked = np.stack([p.to_numpy(dtype='float64') for p in parts])
-    ok = np.isfinite(stacked)
-    cnt = ok.sum(axis=0)
-    acc = np.where(ok, stacked, 0.0).sum(axis=0)
-    out = np.where(cnt == len(parts), acc / np.maximum(cnt, 1), np.nan)
-    return pd.DataFrame(out, index=close.index, columns=close.columns)
-
-
-def momentum_components(close: pd.DataFrame, closew: pd.DataFrame,
-                        windows=TSMOM_WINDOWS,
-                        vol_window: int = VOL_WINDOW) -> dict[str, pd.DataFrame]:
-    """各窗口累计对数动量及其波动率缩放值。"""
-    ret = daily_return(close, closew)
-    log_return = np.log1p(ret.where(ret > -1))
-    vol = ret.rolling(vol_window, min_periods=max(2, vol_window // 2)).std()
-    out = {}
-    for window in windows:
-        w = int(window)
-        total = log_return.rolling(w, min_periods=w).sum()
-        out[f'tsmom_{w}'] = total
-        out[f'tsmom_ra_{w}'] = (total / (vol * np.sqrt(w))).clip(-3, 3) / 3
-    return out
-
-
-def trailing_return(close: pd.DataFrame, closew: pd.DataFrame,
-                    window: int = REVIEW_MOM_WINDOW) -> pd.DataFrame:
-    """过去 ``window`` 个交易日的简单收益。"""
-    base = close.shift(int(window))
-    return (closew - closew.shift(int(window))) / base.where(base > 0)
-
-
-def realized_vol(close: pd.DataFrame, closew: pd.DataFrame,
-                 window: int = REVIEW_VOL_WINDOW) -> pd.DataFrame:
-    """截至当日的收益年化波动，窗口默认 20 日。"""
-    ret = daily_return(close, closew)
-    return ret.rolling(int(window), min_periods=int(window)).std() * np.sqrt(
-        C.TRADING_DAYS_PER_YEAR
-    )
-
-
-def vol_change_sign(close: pd.DataFrame, closew: pd.DataFrame,
-                    window: int = REVIEW_VOL_WINDOW) -> pd.DataFrame:
-    """自身波动相对 ``window`` 日前是抬升还是回落：抬升 +1，回落 −1。"""
-    vol = realized_vol(close, closew, window)
-    delta = vol - vol.shift(int(window))
-    values = np.sign(delta.to_numpy(dtype="float64"))
-    values[~np.isfinite(delta.to_numpy(dtype="float64"))] = np.nan
-    return pd.DataFrame(values, index=close.index, columns=close.columns)
-
-
-def ma_breakout(closew: pd.DataFrame, window: int = REVIEW_VOL_WINDOW) -> pd.DataFrame:
-    """收盘相对自身均线：在均线上方 +1，下方 −1。"""
-    average = closew.rolling(int(window), min_periods=int(window)).mean()
-    gap = closew - average
-    values = np.sign(gap.to_numpy(dtype="float64"))
-    values[~np.isfinite(gap.to_numpy(dtype="float64"))] = np.nan
-    return pd.DataFrame(values, index=closew.index, columns=closew.columns)
-
-
-def cross_sectional_tails(factor: pd.DataFrame,
-                          universe: dict[int, list[str]],
-                          n: int = REVIEW_TAIL,
-                          min_symbols: int | None = None) -> pd.DataFrame:
-    """截面两端：最大的 ``n`` 个为 +1，最小的 ``n`` 个为 −1，中间为 0。"""
-    n = int(n)
-    need = 2 * n if min_symbols is None else int(min_symbols)
-    out = pd.DataFrame(np.nan, index=factor.index, columns=factor.columns)
-    years = pd.DatetimeIndex(factor.index).year
-    for year in sorted(set(years)):
-        columns = [s for s in universe.get(int(year), []) if s in factor.columns]
-        if len(columns) < need:
-            continue
-        dates = factor.index[years == year]
-        block = factor.loc[dates, columns]
-        count = block.notna().sum(axis=1)
-        valid = count >= need
-        short = block.rank(axis=1, method="min", ascending=True).le(n) & block.notna()
-        long = block.rank(axis=1, method="min", ascending=False).le(n) & block.notna()
-        both = long & short
-        side = np.zeros(block.shape)
-        side[short.to_numpy()] = -1.0
-        side[long.to_numpy()] = 1.0
-        side[both.to_numpy()] = 0.0
-        side[~valid.to_numpy()] = np.nan
-        out.loc[dates, columns] = side
-    return out
-
-
-def cross_sectional_rank(factor: pd.DataFrame,
-                         universe: dict[int, list[str]],
-                         min_symbols: int = CS_MIN_SYMBOLS) -> pd.DataFrame:
-    """按每年事前确定的品种池做截面百分位排名（中心化到 ±0.5），池外与样本不足日期留 NaN。"""
-    out = pd.DataFrame(np.nan, index=factor.index, columns=factor.columns)
-    years = pd.DatetimeIndex(factor.index).year
-    for year in sorted(set(years)):
-        columns = [s for s in universe.get(int(year), []) if s in factor.columns]
-        if not columns:
-            continue
-        dates = factor.index[years == year]
-        block = factor.loc[dates, columns]
-        count = block.notna().sum(axis=1)
-        valid = count >= int(min_symbols)
-        ranked = block.rank(axis=1, method='average').sub(0.5).div(
-            count.replace(0, np.nan), axis=0) - 0.5
-        out.loc[dates[valid], columns] = ranked.loc[valid]
-    return out
 
 
 # --------------------------------------------------------------------------
@@ -352,48 +204,22 @@ def _extreme_timepoint(values: np.ndarray, gnorm: np.ndarray, mode: str) -> floa
     return float(gnorm[j])
 
 
-def timestamp_factors(
-    df: pd.DataFrame,
-    sessions: tuple[str, ...] | None = None,
-) -> pd.DataFrame:
-    """计算高低点时钟；可选地只在指定时段内重新归一化。"""
-    required = ['trading_date', 'highw', 'loww']
-    if sessions is None:
-        required.append('gamma_norm')
-    else:
-        required.append('session')
-        sessions = tuple(sessions)
-        if not sessions or len(set(sessions)) != len(sessions):
-            raise ValueError('sessions 必须是非空且不重复的时段集合')
-        unknown = set(sessions) - set(C.SESSIONS)
-        if unknown:
-            raise ValueError(f'未知交易时段: {sorted(unknown)}')
-    for col in required:
+def timestamp_factors(df: pd.DataFrame) -> pd.DataFrame:
+    """全交易日（含夜盘）高低点首次出现的位置，按 gamma_norm 归一化到 0–1。"""
+    for col in ('trading_date', 'highw', 'loww', 'gamma_norm'):
         if col not in df.columns:
             raise KeyError(f"缺少 {col} 列，请先调用 add_intraday_coords")
 
     codes, days = day_codes_of(df)
     hi = df['highw'].to_numpy(dtype='float64')
     lo = df['loww'].to_numpy(dtype='float64')
-    if sessions is None:
-        gnorm = df['gamma_norm'].to_numpy(dtype='float64')
-        session = None
-    else:
-        session = df['session'].to_numpy()
+    gnorm = df['gamma_norm'].to_numpy(dtype='float64')
     out = {k: np.full(len(days), np.nan) for k in ('ts_high', 'ts_low')}
     for k, (a, b) in enumerate(zip(*_day_spans(codes))):
-        if session is None:
-            day_high, day_low, day_clock = hi[a:b], lo[a:b], gnorm[a:b]
-        else:
-            selected = np.flatnonzero(np.isin(session[a:b], sessions))
-            if selected.size < 2:
-                continue
-            day_high, day_low = hi[a:b][selected], lo[a:b][selected]
-            day_clock = np.arange(selected.size, dtype='float64') / (selected.size - 1)
-        if not np.isfinite(day_high).any():
+        if not np.isfinite(hi[a:b]).any():
             continue
-        out['ts_high'][k] = _extreme_timepoint(day_high, day_clock, 'max')
-        out['ts_low'][k] = _extreme_timepoint(day_low, day_clock, 'min')
+        out['ts_high'][k] = _extreme_timepoint(hi[a:b], gnorm[a:b], 'max')
+        out['ts_low'][k] = _extreme_timepoint(lo[a:b], gnorm[a:b], 'min')
 
     res = pd.DataFrame(out, index=days)
     res.index.name = 'trading_date'
@@ -676,7 +502,7 @@ def check_version(path: Path) -> None:
     metadata = path.with_suffix(path.suffix + '.json')
     if path.exists() and (not metadata.exists() or
         json.loads(metadata.read_text()).get('version') != CACHE_VERSION):
-        raise RuntimeError(f'{path} 因子公式版本不符，请用 build_factors.py --overwrite 重建')
+        raise RuntimeError(f'{path} 因子公式版本不符，请用 python src/tfcta/prepare/factors.py --overwrite 重建')
 
 
 # --------------------------------------------------------------------------
@@ -757,7 +583,7 @@ def _read(path: Path, columns: list[str]) -> pd.DataFrame:
     df = read_frame(path)
     missing = [c for c in columns if c not in df.columns]
     if missing:
-        raise KeyError(f"{path} 缺少因子列 {missing}，请用 build_factors.py --overwrite 重建")
+        raise KeyError(f"{path} 缺少因子列 {missing}，请用 python src/tfcta/prepare/factors.py --overwrite 重建")
     df = df[columns]
     df.index = pd.to_datetime(df.index)
     C.assert_no_holdout_dates(df.index, what=str(path))
@@ -772,7 +598,7 @@ def load_symbol(symbol: str, lookback: int, pct: float,
     p = find_shard(combo_dir(lookback, pct, root), symbol)
     if p is None:
         raise FileNotFoundError(
-            f"缺少 {combo_name(lookback, pct)}/{symbol}，请先运行 build_factors.py")
+            f"缺少 {combo_name(lookback, pct)}/{symbol}，请先运行 python src/tfcta/prepare/factors.py")
     out = _read(p, DURATION_FACTORS)
     if with_timestamp:
         q = find_shard(timestamp_dir(root), symbol)
@@ -788,94 +614,33 @@ def load_report(symbol: str, root: Path | None = None) -> pd.DataFrame:
     root = root or C.FACTOR_DAILY_DIR
     path = find_shard(report_dir(root), symbol)
     if path is None:
-        raise FileNotFoundError(f"缺少 report/{symbol}，请先运行 build_factors.py")
+        raise FileNotFoundError(f"缺少 report/{symbol}，请先运行 python src/tfcta/prepare/factors.py")
     return _read(path, list(REPORT_COLUMNS)).sort_index()
 
 
-Z_WINDOW, Z_MIN = 252, 120
-SIGNED_PRIORS = {**C.FACTOR_SIGNS, "tsmom": 1., "carry_ms": 1., "neg_clv": 1.}
-TIME_FACTORS = frozenset(C.FACTOR_SIGNS)
-
-
-def exante_z(factor, window=None, min_periods=None):
-    w = C.IC_Z_WINDOW if window is None else window
-    m = C.IC_Z_MIN if min_periods is None else min_periods
-    mean = factor.rolling(w,min_periods=m).mean()
-    std = factor.rolling(w,min_periods=m).std()
-    return ((factor-mean)/std.where(std>0)).clip(-3,3)
-
-
-def trail_z(factor):
-    return exante_z(factor,Z_WINDOW,Z_MIN)
-
-
-def to_signal(name, raw, timing="z", direction=None):
-    signed = raw * (SIGNED_PRIORS[name] if direction is None else direction)
-    if name in TIME_FACTORS:
-        if timing == "z":
-            return trail_z(signed).clip(-1,1)
-        if timing == "quantile":
-            history = signed.shift(1).rolling(Z_WINDOW,min_periods=Z_MIN)
-            lo, hi = history.quantile(.2), history.quantile(.8)
-            out = signed*0.
-            # Equal boundaries / tied flat data give no trade, not +1 bias.
-            out = out.mask(signed>hi,1.).mask(signed<lo,-1.)
-            return out.where(lo.notna() & hi.notna() & (hi>lo))
-        raise ValueError("时间信号须用 z/quantile")
-    if name == "carry_ms":
-        rms = (signed.shift(1)**2).rolling(Z_WINDOW,min_periods=Z_MIN).mean()**.5
-        return (signed/rms.where(rms>0)).clip(-1,1)  # do not demean carry
-    return signed.clip(-1,1)  # bounded trend / CLV, preserves economic sign
-
-
-def combine(frames, method="mean", weights=None):
-    if not frames:
-        raise ValueError("至少选择一个因子")
-    if method not in ("mean","agree","filter"):
-        raise ValueError("组合方法须为 mean/agree/filter")
-    values = np.stack([f.reindex_like(frames[0]).fillna(0.).to_numpy() for f in frames])
-    w = np.ones(len(frames)) if weights is None else np.asarray(weights,dtype=float)
-    if len(w)!=len(frames) or not np.isfinite(w).all() or (w<=0).any():
-        raise ValueError("组合权重须为有限正数；反向通过因子 direction 指定")
-    mean = np.average(values,axis=0,weights=w)
-    if method == "agree":
-        mean = np.where(np.all(values>0,axis=0) | np.all(values<0,axis=0),mean,0.)
-    if method == "filter":
-        if len(frames)<2:
-            raise ValueError("filter 需要主信号和至少一个过滤信号")
-        control = np.average(values[1:],axis=0,weights=w[1:])
-        mean = np.where((values[0]*control)>0,values[0],0.)
-    return pd.DataFrame(mean,index=frames[0].index,columns=frames[0].columns).clip(-1,1)
+SIGNED_PRIORS = {**C.FACTOR_SIGNS, "carry_ms": 1.}
 
 
 @dataclass
 class SignalSet:
     bars: dict
     signed: dict = field(default_factory=dict)
-    unsigned: dict = field(default_factory=dict)
-    vol: pd.DataFrame | None = None
 
     def raw(self,name):
         if name in self.signed:
             return self.signed[name]/SIGNED_PRIORS[name]
-        if name in self.unsigned:
-            return self.unsigned[name]
         raise KeyError(f"未知因子 {name}，可用 {sorted(self.signed)}")
 
 
 def assemble(bars,time_raw,_universe,external_partitions=("research",)):
-    """只装配当前候选用到的因子：时间因子、时序动量、期限结构和收盘位置。"""
+    """装配时间因子（乘上事前方向）和滞后期限结构。"""
     result = SignalSet(bars=bars)
     for name,sign in C.FACTOR_SIGNS.items():
         result.signed[name] = time_raw[name]*sign
-    close, adjusted = bars["close"], bars["closew"]
-    result.signed["tsmom"] = tsmom(close,adjusted)
+    close = bars["close"]
     source = load_wide(list(close.columns),external_partitions,close.index)
     if "carry_main_sub_annualized" in source:
         result.signed["carry_ms"] = source["carry_main_sub_annualized"]
-    high, low = bars["highw"],bars["loww"]
-    result.signed["neg_clv"] = -(2*adjusted-high-low)/(high-low).where(high>low)
-    result.vol = daily_vol(close,adjusted)
     return result
 
 

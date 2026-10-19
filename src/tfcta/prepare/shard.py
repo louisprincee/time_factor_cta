@@ -48,7 +48,7 @@ def extract_roll_dates(sub: pd.DataFrame) -> pd.DataFrame | None:
 def clean_symbol(sub: pd.DataFrame) -> tuple[pd.DataFrame | None, list[str], list[str]]:
     """单品种只留分片字段，规整 trading_date，丢掉全空行。"""
     # 因子字段是计算所必需的；开盘价是收益口径所必需的。后者缺失仍允许分片
-    # （因子可以先算），但会在 info 里标明，第 4 步读到时会直接报错而不是用收盘价顶替。
+    # （因子可以先算），但会在 info 里标明，回测读到时会直接报错而不是用收盘价顶替。
     wanted = list(dict.fromkeys([*C.FACTOR_FIELDS, *C.PRICE_FIELDS]))
     keep = [c for c in wanted if c in sub.columns]
     missing = [c for c in C.FACTOR_FIELDS if c not in sub.columns]
@@ -107,100 +107,6 @@ def shard_one(panel: pd.DataFrame, sym: str, write: bool = True,
     return info
 
 
-def shard_oos_from_monolith(
-    src: Path | None = None,
-    symbols: list[str] | None = None,
-    fmt: str = 'auto',
-) -> list[dict]:
-    """Write 2023–2025 shards only while the audited final-evaluation gate is open."""
-    C.assert_oos_research_locked(C.DEFAULT_OOS_END)
-    src = Path(src or C.MINUTE_MONOLITH)
-    if not src.is_file():
-        raise FileNotFoundError(f"找不到样本外分钟单体文件: {src}")
-    if list_shards(C.HOLDOUT_DIR):
-        raise FileExistsError(
-            f"{C.HOLDOUT_DIR} 已有样本外分片；拒绝覆盖或混入另一份数据源"
-        )
-
-    with src.open('rb') as source:
-        panel = pickle.load(source)
-    if not isinstance(panel.columns, pd.MultiIndex) or panel.columns.nlevels < 2:
-        raise ValueError("分钟单体必须使用（品种、字段）多层列索引")
-    if 'trading_date' not in panel.columns.get_level_values(1):
-        raise KeyError("分钟单体缺少 trading_date 字段")
-
-    start = pd.Timestamp(C.STRICT_OOS_START)
-    stop = pd.Timestamp(C.DEFAULT_OOS_END)
-    syms = symbols or C.COMMODITY_SYMBOLS
-    have = set(panel.columns.get_level_values(0))
-    requested = [symbol for symbol in syms if symbol in have]
-    if not requested:
-        raise ValueError("分钟单体中没有请求的商品品种")
-
-    date_ranges = []
-    for symbol in requested:
-        dates = pd.to_datetime(panel[symbol]['trading_date'], errors='coerce').dropna()
-        if len(dates):
-            date_ranges.append((dates.min(), dates.max()))
-    if not date_ranges or min(lo for lo, _ in date_ranges) > start or max(
-        hi for _, hi in date_ranges
-    ) < stop:
-        raise ValueError(
-            "分钟单体没有覆盖完整的 2023–2025 窗口: "
-            f"{min((lo for lo, _ in date_ranges), default=None)}.."
-            f"{max((hi for _, hi in date_ranges), default=None)}"
-        )
-
-    stage = C.SHARD_ROOT / f".holdout_locked_{os.getpid()}_{time.time_ns()}"
-    stage.mkdir(parents=True, exist_ok=False)
-    results = []
-    try:
-        if any(hi > stop for _, hi in date_ranges):
-            raise ValueError(
-                "分钟单体含有截止日之后的数据: "
-                f"{max(hi for _, hi in date_ranges)}"
-            )
-        for symbol in requested:
-            df, missing, missing_price = clean_symbol(panel[symbol])
-            if df is None:
-                results.append({
-                    'symbol': symbol, 'status': 'no_trading_date', 'missing': missing,
-                })
-                continue
-            oos = df.loc[
-                (df['trading_date'] >= start) & (df['trading_date'] <= stop)
-            ]
-            if oos.empty:
-                results.append({'symbol': symbol, 'status': 'empty'})
-                continue
-            C.assert_strict_oos_dates(oos['trading_date'], what=f"{symbol} 样本外切片")
-            path = save_shard(oos, stage, symbol, fmt=fmt)
-            results.append({
-                'symbol': symbol,
-                'status': 'ok',
-                'rows': int(len(oos)),
-                'days': int(oos['trading_date'].nunique()),
-                'start': str(oos['trading_date'].min().date()),
-                'end': str(oos['trading_date'].max().date()),
-                'missing_fields': missing,
-                'missing_price_fields': missing_price,
-                'path': str(C.HOLDOUT_DIR / path.name),
-            })
-
-        written = [item for item in results if item['status'] == 'ok']
-        if not written:
-            raise ValueError("没有任何可写入的 2023–2025 商品分片")
-        if C.HOLDOUT_DIR.exists():
-            raise FileExistsError(
-                f"{C.HOLDOUT_DIR} 在分片期间被创建；拒绝覆盖现有目录"
-            )
-        stage.rename(C.HOLDOUT_DIR)
-    finally:
-        if stage.exists():
-            shutil.rmtree(stage)
-    return results
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--symbols', nargs='*', default=None,
@@ -230,6 +136,11 @@ def main() -> int:
         return 2
 
     syms = args.symbols or (C.ALL_SYMBOLS if args.all else C.COMMODITY_SYMBOLS)
+    locked = [s for s in syms if find_shard(C.HOLDOUT_DIR, s) is not None]
+    if locked and not args.dry_run:
+        print(f"{C.HOLDOUT_DIR} 已有 {len(locked)} 个品种的锁定分片（{locked[:5]}…），不覆盖。"
+              "重切会改写研究期、锁定分区和换月表；确需重建请先手动移走旧分片并在台账里记一笔。")
+        return 2
     if fmt == 'pickle':
         print("未检测到 pyarrow/fastparquet，退回 pickle 分片。"
               "装上 pyarrow 可获得更小体积与按列读取。")

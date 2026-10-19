@@ -1,4 +1,4 @@
-"""日频因子缓存测试（设计文档第 10.2 节 + 第 11 节第 4 行验收）。"""
+"""日频因子缓存测试。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ import pandas as pd
 import pytest
 
 from tfcta import config as C
-from tfcta.data import find_shard, make_symbol, save_shard
+from tfcta.data import find_shard, save_shard
+from tests.synthetic import make_symbol
 from tfcta.factors import (
     build_symbol, combo_dir, intraday_abs_diff, load_symbol, rolling_threshold,
     rolling_threshold_grid, timestamp_dir,
@@ -118,5 +119,5 @@ def test_injected_thresholds_match_recomputed():
 
 def test_load_symbol_raises_clearly_when_missing():
     root, _, combos = _tiny_cache()
-    with pytest.raises(FileNotFoundError, match='build_factors'):
+    with pytest.raises(FileNotFoundError, match='prepare/factors.py'):
         load_symbol('XX', 999, 55.0, root=root / 'factors')

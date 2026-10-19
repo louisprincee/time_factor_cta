@@ -31,7 +31,7 @@ def main() -> int:
 
     stats = collect_stats(args.symbols, verbose=False)
     if stats.empty:
-        print(f"没有可用分片，请先运行 step1_shard_minutes.py\n路径: {C.RESEARCH_DIR}")
+        print(f"没有可用分片，请先运行 python src/tfcta/prepare/shard.py\n路径: {C.RESEARCH_DIR}")
         return 2
 
     max_year = int(stats['year'].max())

@@ -1,6 +1,6 @@
 """保留策略共用的时钟尾部、波动标记和开仓日程。
 
-这里不读行情。趋势符号用 tfcta.factors.tsmom_sign，和微观过滤实验同一条定义。
+这里不读行情。趋势符号用 tfcta.factors.tsmom_sign。
 """
 from __future__ import annotations
 

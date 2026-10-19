@@ -15,3 +15,6 @@ config/rqdata.env
 /data/
 /runs/
 .DS_Store
+
+# 本地编辑器配置
+.vscode/

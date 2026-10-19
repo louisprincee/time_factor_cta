@@ -10,7 +10,7 @@ python -m backtest.engine --oos                      # 2023–2025，同一市�
 python -m backtest.engine --experimental-research    # 新探索策略，商品2016–2021
 ```
 
-`--market commodity` 是商品流动性池，也是默认值。`--market index` 跑 IF、IH、IC，IM 只在上市后的验证和样本外里按前一年流动性决定是否进池。股指没有夜盘，时点按当日日盘第一根到最后一根归一化。两个市场的结果分开写：`runs/strategies/<策略>/commodity/` 和 `runs/strategies/<策略>/index/`。股指样本外另记 `data/index/oos/ledger.jsonl`。
+`--market commodity` 是商品流动性池，也是默认值。`--market index` 跑 IF、IH、IC。2022 验证只用这三个；IM 只在样本外里按前一年流动性决定是否进池。股指没有夜盘，时点按当日日盘第一根到最后一根归一化。两个市场的结果分开写：`runs/strategies/<策略>/commodity/` 和 `runs/strategies/<策略>/index/`。股指样本外另记 `data/index/oos/ledger.jsonl`。
 
 两种模式都使用整数合约手数账本，一次跑 `strategies/catalog.py` 里的四条纯多头：
 趋势加三日平滑尾部、趋势加尾部且高波动、趋势加尾部且 ADX 震荡、趋势与震荡分腿。持有 5 个有效交易日；
@@ -22,6 +22,8 @@ python -m backtest.engine --experimental-research    # 新探索策略，商品2
 商品用当年流动性池里的全部品种。股指研究期用 IF、IH、IC。
 
 `--experimental-research` 单独运行 `strategies/research_catalog.py` 注册的三条商品探索策略：时钟截面多空、时钟加正展期收益过滤，以及趋势/carry 同向确认的全交易日时钟组合（含夜盘）。纯日盘策略已移除。实验入口只读取 2016–2021 研究分片，不读取 2022 或 2023 年以后；结果仍使用整数手账本、历史费率、上一年 tick 滑点和相同风险约束。该 catalog 不参与冻结名单和 OOS 审计，组合结果属于事后探索。
+
+手续费表只向后沿用最多 31 天的旧费率，tick 表在上一年估不出时最多再沿用一年；超出就是缺成本，成交当天直接报错，不会悄悄用旧值。
 
 整数手账本以连续主力的加法复权开盘价变动估算持仓盈亏；换月在旧主力前一日收盘和新
 主力当日开盘上估算手续费与滑点，不结转真实合约现金流或结算盈亏。换月、持仓缺价、
