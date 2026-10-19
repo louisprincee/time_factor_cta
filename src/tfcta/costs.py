@@ -123,24 +123,7 @@ def fill_close_today(table):
     return table
 
 
-def check_costs(table, pools):
-    """Fail when active pool observations are missing estimated transaction costs."""
-    year = table.trading_date.dt.year
-    member = pd.Series(
-        [symbol in pools.get(year, ()) for symbol, year in zip(table.symbol, year)],
-        index=table.index,
-    )
-    ready = table.dev15.notna() & member
-    missing = table[ready & table.est_cost.isna()]
-    if len(missing):
-        total = table[ready].groupby([table.symbol, year]).size()
-        share = missing.groupby([missing.symbol, missing.trading_date.dt.year]).size() / total
-        bad = share[share > 0.05]
-        if len(bad):
-            raise ValueError(
-                f"池内品种缺成本（手续费或 tick），按品种、年的缺失比例: "
-                f"{bad.round(3).to_dict()}"
-            )
+FEE_MAX_STALE = pd.Timedelta(days=31)
 
 
 def fee_tables(table, prices):
@@ -153,7 +136,8 @@ def fee_tables(table, prices):
             raise KeyError(f"手续费缓存缺 {symbol}")
         if sub.index.has_duplicates:
             raise ValueError(f"手续费缓存 {symbol} 日期重复")
-        q = sub.reindex(prices.index, method="ffill")  # never backfill
+        # 只向后沿用不超过 FEE_MAX_STALE 的旧费率，从不回填；文件中途断档时成交会报错
+        q = sub.reindex(prices.index, method="ffill", tolerance=FEE_MAX_STALE)
         mult = MULTIPLIER[symbol]
         opened[symbol] = commission_rate(q.commission_type, q.open_commission, prices[symbol], prices[symbol], mult)
         closed[symbol] = commission_rate(q.commission_type, q.close_commission, prices[symbol], prices[symbol], mult)
@@ -165,6 +149,7 @@ def fee_tables(table, prices):
 TICK_MIN_SHARE = 0.01
 
 TICK_MIN_DIFFS = 100
+TICK_MAX_STALE = 1
 
 def tick_path(partition):
     paths = {"research": C.RESEARCH_OUT_DIR / "tick_size.csv",
@@ -212,6 +197,7 @@ def slippage_tables(ticks, prices, n_ticks=1.):
         # Remove float32 quote noise in the existing estimates.
         sub = sub.round(2)
         years = sorted(set(prices.index.year) | set(sub.index+1))
-        prior = sub.rename(index=lambda y: int(y)+1).reindex(years).ffill()
+        # 上一年估不出 tick（成交太稀）时最多再往前沿用 TICK_MAX_STALE 年，表截断时成交会报错
+        prior = sub.rename(index=lambda y: int(y)+1).reindex(years).ffill(limit=TICK_MAX_STALE)
         result[symbol] = prior.reindex(prices.index.year).to_numpy()/prices[symbol] * n_ticks
     return result

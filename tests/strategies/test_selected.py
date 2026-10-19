@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from research.cta_micro_filter_experiments import build_signal_variants, market_regimes
 from strategies.book import adx_above_range, adx_is_range, entry_schedule, high_volatility, upper_tail
 from strategies.catalog import SELECTED
 from strategies.cross_sectional_clock import signal as cross_sectional_signal
@@ -12,7 +11,7 @@ from strategies.trend_ema3 import signal as ema_signal
 from strategies.trend_high_atr import signal as atr_signal
 from strategies.research_catalog import RESEARCH_EXPERIMENTS
 from strategies.trend_high_atr_carry import signal as carry_signal
-from strategies.trend_carry_common import risk_scale, symmetric_tail
+from strategies.trend_carry_full_clock import risk_scale, symmetric_tail
 from strategies.trend_carry_full_clock import load_config as load_combined_config
 from strategies.trend_carry_full_clock import signal as combined_signal
 from tfcta.factors import tsmom_sign
@@ -136,7 +135,28 @@ def test_entry_schedule_preserves_signed_risk_weights():
     assert entries.loc[index[4], "RB"] == 0.5
 
 
-def test_selected_signals_match_the_micro_filter_experiment():
+def _reference_regimes(bars):
+    """逐行写出的 14 日 Wilder ATR% 与 ADX，作为冻结信号的独立对照。"""
+    high, low, close = bars["highw"], bars["loww"], bars["closew"]
+    prior = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - prior).abs(), (low - prior).abs()], keys=range(3),
+    ).groupby(level=1).max().reindex(close.index)
+    true_range.iloc[0] = (high - low).iloc[0]
+
+    def wilder(frame):
+        return frame.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+
+    up, down = high.diff(), -low.diff()
+    plus = wilder(up.where((up > down) & (up > 0), 0.0)) / wilder(true_range) * 100
+    minus = wilder(down.where((down > up) & (down > 0), 0.0)) / wilder(true_range) * 100
+    adx = wilder((plus - minus).abs() / (plus + minus) * 100)
+    atr = wilder(true_range) / close
+    median = atr.shift(1).rolling(250, min_periods=250).median()
+    return adx, atr.gt(median)
+
+
+def test_selected_signals_match_an_independent_reference():
     index = pd.bdate_range("2015-01-01", periods=400)
     rng = np.random.default_rng(19)
     close = pd.DataFrame(
@@ -147,42 +167,39 @@ def test_selected_signals_match_the_micro_filter_experiment():
     bars = {
         "close": close,
         "closew": close,
-        "highw": close + 1.0,
-        "loww": close - 1.0,
+        "highw": close + 1.0 + rng.uniform(0, 1, size=close.shape),
+        "loww": close - 1.0 - rng.uniform(0, 1, size=close.shape),
     }
     micro = pd.DataFrame(rng.normal(size=(len(index), 2)), index=index, columns=["RB", "CU"])
-    trend = tsmom_sign(bars["close"], bars["closew"], window=20)
-    regime, volatility = market_regimes(bars)
-    variants = build_signal_variants(
-        trend, micro, micro, regime=regime, volatility=volatility,
-    )
-    high_vol = volatility.eq("high_vol")
-    ranging = regime.eq("range")
-    above_range = regime.notna() & ~ranging
-    raw_tail = variants["current_ts_low_reference"]
-    expected_regime = (raw_tail & ranging) | (
-        variants["trend_plus_daily_micro_filter_high_atr"] & above_range
-    )
+    trend = tsmom_sign(bars["close"], bars["closew"], window=10)
+    adx, high_vol = _reference_regimes(bars)
+    ranging = adx.notna() & adx.le(20)
+    above_range = adx.notna() & adx.gt(20)
 
-    pd.testing.assert_frame_equal(
-        ema_signal(trend, micro, high_vol, ranging, above_range),
-        variants["trend_plus_ema3_micro_filter"],
-    )
-    pd.testing.assert_frame_equal(
-        atr_signal(trend, micro, high_vol, ranging, above_range),
-        variants["trend_plus_daily_micro_filter_high_atr"],
-    )
-    pd.testing.assert_frame_equal(
-        adx_signal(trend, micro, high_vol, ranging, above_range),
-        variants["trend_plus_daily_micro_filter_range_only"],
-    )
-    pd.testing.assert_frame_equal(
-        regime_signal(trend, micro, high_vol, ranging, above_range),
-        expected_regime,
-    )
+    def tail(values):
+        return pd.DataFrame({s: upper_tail(values[s], 250, 0.8) for s in values}, index=index).gt(0)
+
+    raw_tail = tail(micro)
+    ema_tail = tail(micro.ewm(span=3, min_periods=3, adjust=False).mean())
+    long = trend.gt(0)
+
     pd.testing.assert_frame_equal(high_volatility(bars), high_vol)
     pd.testing.assert_frame_equal(adx_is_range(bars), ranging)
     pd.testing.assert_frame_equal(adx_above_range(bars), above_range)
+    pd.testing.assert_frame_equal(
+        ema_signal(trend, micro, high_vol, ranging, above_range), long & ema_tail,
+    )
+    pd.testing.assert_frame_equal(
+        atr_signal(trend, micro, high_vol, ranging, above_range), long & raw_tail & high_vol,
+    )
+    pd.testing.assert_frame_equal(
+        adx_signal(trend, micro, high_vol, ranging, above_range), long & raw_tail & ranging,
+    )
+    pd.testing.assert_frame_equal(
+        regime_signal(trend, micro, high_vol, ranging, above_range),
+        (ranging & raw_tail) | (above_range & long & raw_tail & high_vol),
+    )
+    assert ranging.to_numpy().any() and above_range.to_numpy().any() and high_vol.to_numpy().any()
 
 
 def test_downtrend_blocks_the_trend_leg_and_the_range_leg_ignores_it():

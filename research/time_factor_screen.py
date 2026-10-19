@@ -25,7 +25,7 @@ from tfcta.costs import MULTIPLIER, commission_rate, load_fees
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "research" / "time_factor_screen.json"
-OUT = ROOT / "runs" / "research" / "time_factor_screen"
+OUT = C.RUNS_DIR / "research" / "time_factor_screen"
 EVAL_START = pd.Timestamp("2016-01-01")
 EVAL_END = pd.Timestamp("2021-12-31")
 MINUTE = timedelta(minutes=1)

@@ -1,4 +1,4 @@
-"""品种池测试（设计文档第 4 节）。"""
+"""品种池测试。"""
 
 from __future__ import annotations
 

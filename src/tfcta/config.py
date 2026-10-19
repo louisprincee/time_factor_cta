@@ -25,7 +25,7 @@ MINUTE_MONOLITH = MINUTE_RAW_DIR / "future_all1mdata_20100101-20251231.txt"
 # 商品分钟分片。研究期与锁定的样本外分开存放，读取时按目录拦截。
 SHARD_ROOT = COMMODITY_DATA / "minute_shards"
 RESEARCH_DIR = SHARD_ROOT / "research"                     # <= 2021-12-31，可自由使用
-HOLDOUT_DIR = SHARD_ROOT / "holdout_locked"                # >= 2023-01-01，本阶段禁止读取
+HOLDOUT_DIR = SHARD_ROOT / "holdout_locked"                # 切分时写入 >= 2022-01-01；只在最终评估里读 2023 起
 VALIDATION_DIR = SHARD_ROOT / "validation_2022"            # 仅 2022，一次性验证
 ROLL_DIR = COMMODITY_DATA / "roll_dates"
 
@@ -43,7 +43,7 @@ CONFIG_DIR = Path(_os.environ.get("TFCTA_CONFIG_DIR", PROJECT_ROOT / "config"))
 RESEARCH_OUT_DIR = COMMODITY_DATA / "research"
 
 # --------------------------------------------------------------------------
-# 时间切分（设计文档第 5 节）
+# 时间切分
 # --------------------------------------------------------------------------
 HOLDOUT_START = _dt.date(2022, 1, 1)      # 研究期硬边界：>= 此日期禁止接触
 VALIDATION_END = _dt.date(2022, 12, 31)
@@ -69,11 +69,11 @@ ALL_SYMBOLS = [
     'LG', 'PR', 'PX', 'SI', 'PS',
 ]
 
-# 金融期货，一律剔除（设计文档第 4.1 节第一步）
+# 金融期货，不进商品池
 FINANCIAL_SYMBOLS = ['IC', 'IF', 'IH', 'IM', 'T', 'TF', 'TS', 'TL']
 COMMODITY_SYMBOLS = [s for s in ALL_SYMBOLS if s not in FINANCIAL_SYMBOLS]
 
-# 品种池门槛（设计文档第 4.1 节）
+# 品种池门槛
 MIN_DAILY_TURNOVER = 30e8      # 日均成交额 >= 30 亿元（按 trading_date 日度求和后取中位数）
 MIN_VALID_DAY_RATIO = 0.90     # 当年 closew 非 NaN 的交易日占比
 MIN_VALID_DAYS = 200           # 当年有效交易日下限
@@ -95,7 +95,7 @@ NIGHT_BARS_0100 = 285          # 21:00-01:00 约 240 分钟
 # --------------------------------------------------------------------------
 # 字段
 # --------------------------------------------------------------------------
-# 因子计算实际需要的字段（设计文档第 3.1 节）。丢掉 dominant_id 这个 object 列是省内存的关键。
+# 因子计算实际需要的字段。丢掉 dominant_id 这个 object 列是省内存的关键。
 FACTOR_FIELDS = [
     'closew',          # 加法复权收盘价，用于价格形状与位置对照
     'close',           # FP 与 DFP 分母（比例量一律用原始价）
@@ -104,13 +104,13 @@ FACTOR_FIELDS = [
     'total_turnover',  # 成交额峰值时间戳 + 流动性筛选
     'trading_date',    # 唯一合法的"日"定义（夜盘归属次日）
 ]
-# 收益口径需要的开盘价（设计文档第 8.3 节）。因子计算不用它们，
+# 收益口径需要的开盘价。因子计算不用它们，
 # 但 day_ret 要用，而且分片一旦落盘就补不回这两列——所以 step1 一并保留。
 PRICE_FIELDS = ['open', 'openw']
 ROLL_FIELD = 'dominant_id'     # 仅 step1 用于提取换月日，提完即丢
 
 # --------------------------------------------------------------------------
-# 时段定义（设计文档第 6.1 节）
+# 时段定义
 # --------------------------------------------------------------------------
 # 用 (起, 止] 的分钟墙钟区间判定；NIGHT 跨自然日，单独处理。
 SESSION_NIGHT = 'NIGHT'
@@ -134,25 +134,9 @@ THRESHOLD_LOOKBACKS = [250]
 THRESHOLD_PCTS = [55.0]
 FP_TOP_NS = [1, 3]
 
+# 持续期因子缓存用的阈值：过去 250 日、第 55 百分位（兴业口径的中心参数）。
 IC_REFERENCE_LOOKBACK = 250
 IC_REFERENCE_PCT = 55.0
-IC_MIN_OBS = 60
-# Diagnostics evaluate 1/3/5/10-day horizons separately from rebalancing.
-IC_PERIOD = 'ME'
-IC_PERIOD_MIN_OBS = 10      # 一期至少这么多个有效 (因子, 收益) 配对才算一个观测
-IC_PERIOD_MIN_COUNT = 6     # 少于这么多期不给 t 值，宁可留空也不给一个假精度
-# 事前标准化窗口。因子 z 与收益的波动都只用 t 日已知的数据。
-IC_Z_WINDOW = 252
-IC_VOL_WINDOW = 60
-IC_Z_MIN = 20
-
-# 方向验收判「与先验相反」所需的最小 |t|（时序 t，不是横截面 t）。
-# 没有这道门槛，IC = +0.0008、t = 0.22 会被判成 flip 并拦在第 4 步——那不是"方向相反"，
-# 那是"这个因子在商品上没有可测的 IC"。两件事的处置完全不同：前者要去查实现，
-# 后者是一个研究结论（论文的因子没迁移过来），应当记录并继续，而不是假装查到了 bug。
-# 注意这**不是**放松闸门：显著的反向依然是 flip 并且照样拦。
-SIGN_T_MIN = 2.0
-
 # --------------------------------------------------------------------------
 # 因子方向。事前先验，不在 2016–2021 的分钟 IC 上重估或翻号。
 # +1 越大越看多，-1 越大越看空。
@@ -179,11 +163,7 @@ FACTOR_SIGNS = {
     'spike_am': +1,
     'vol_pm': +1,
 }
-DURATION_FACTORS = ['dfp_max', 'dfp_top3']
 TIMESTAMP_FACTORS = ['ts_high', 'ts_low']
-PRIOR_FACTORS = list(FACTOR_SIGNS)
-
-
 # --------------------------------------------------------------------------
 # 样本外守卫
 # --------------------------------------------------------------------------

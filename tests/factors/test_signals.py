@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta.factors import cross_sectional_rank, tsmom_sign
+from tfcta.factors import tsmom_sign
 
 
 def _idx(n):
@@ -23,19 +23,3 @@ def test_tsmom_sign_is_trailing_month_direction_and_ignores_the_future():
     pd.testing.assert_series_equal(sign.iloc[:-1], sign_crashed.iloc[:-1])
     assert sign_crashed.iloc[-1] == -1.0
 
-def test_cross_sectional_momentum_ranks_only_current_year_universe():
-    idx = pd.bdate_range('2020-01-01', periods=6)
-    factor = pd.DataFrame({
-        'A': [1, 2, 3, 4, 5, 6],
-        'B': [2, 3, 4, 5, 6, 7],
-        'C': [3, 4, 5, 6, 7, 8],
-        'D': [4, 5, 6, 7, 8, 9],
-        'E': [5, 6, 7, 8, 9, 10],
-        'OUT': [100, 100, 100, 100, 100, 100],
-    }, index=idx)
-    ranked = cross_sectional_rank(
-        factor, {2020: ['A', 'B', 'C', 'D', 'E']})
-    assert ranked.loc[idx[-1], 'A'] == pytest.approx(-0.4)
-    assert ranked.loc[idx[-1], 'E'] == pytest.approx(0.4)
-    assert ranked['OUT'].isna().all()
-    assert ranked.notna().sum(axis=1).eq(5).all()

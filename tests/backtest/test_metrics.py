@@ -1,4 +1,4 @@
-"""回测绩效、紧缩夏普和过拟合概率。当前没有策略在跑。"""
+"""回测绩效、紧缩夏普、过拟合概率和命令行分派。"""
 from __future__ import annotations
 
 import numpy as np
@@ -89,22 +89,6 @@ def test_drawdown_includes_starting_capital():
     assert performance(pd.Series([-.10, .02]))['max_drawdown'] == pytest.approx(-.10)
 
 
-def test_daily_equity_frame_records_nav_and_drawdown():
-    index = pd.bdate_range("2024-01-02", periods=3)
-    result = pd.DataFrame({
-        "gross": [0.10, -0.20, 0.05],
-        "net": [0.10, -0.20, 0.05],
-        "turnover": [1.0, 2.0, 1.0],
-        "cost": [0.0, 0.0, 0.0],
-    }, index=index)
-
-    daily = engine._daily_equity_frame(result, {"策略": "test"})
-
-    assert daily["净值"].tolist() == pytest.approx([1.10, 0.88, 0.924])
-    assert daily["回撤"].tolist() == pytest.approx([0.0, -0.20, -0.16])
-    assert daily["交易日"].tolist() == list(index)
-
-
 def test_performance_plot_writes_nav_and_drawdown_chart(tmp_path):
     returns = pd.Series([0.02, -0.03, 0.01], index=pd.bdate_range("2024-01-02", periods=3))
     path = plot_performance(returns, tmp_path)
@@ -155,50 +139,6 @@ def test_market_argument_is_forwarded(monkeypatch):
 
     engine.main(["--research"])
     assert seen == {"market": "commodity"}
-
-
-def test_integer_lot_research_cli_dispatches_without_oos(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        engine, "run_integer_lot_research", lambda **kwargs: called.append("integer-lots")
-    )
-
-    engine.main(["--integer-lot-research"])
-
-    assert called == ["integer-lots"]
-
-
-def test_integer_lot_validation_cli_dispatches(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        engine, "run_integer_lot_validation", lambda **kwargs: called.append("integer-lot-validation")
-    )
-
-    engine.main(["--integer-lot-validation"])
-
-    assert called == ["integer-lot-validation"]
-
-
-def test_integer_lot_oos_cli_dispatches_to_guarded_runner(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        engine, "run_integer_lot_oos", lambda **kwargs: called.append("integer-lot-oos")
-    )
-
-    engine.main(["--integer-lot-oos"])
-
-    assert called == ["integer-lot-oos"]
-
-
-
-
-def test_benjamini_hochberg_adjusts_finite_p_values_and_preserves_nan():
-    adjusted = engine._benjamini_hochberg([0.01, 0.04, 0.03, np.nan])
-
-    assert adjusted[:3] == pytest.approx([0.03, 0.04, 0.04])
-    assert np.isnan(adjusted[3])
-
-
 
 
 def test_oos_refuses_before_any_holdout_read(monkeypatch):
