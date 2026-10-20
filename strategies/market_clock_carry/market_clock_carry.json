@@ -1,0 +1,16 @@
+{
+  "id": "market_clock_carry",
+  "status": "exploratory_predeclared",
+  "declared_at": "2026-10-20",
+  "sample": "仅商品 2016-01-01 至 2021-12-31 研究期；2015 只做预热。不读取2022及2023年以后，不读 2026。",
+  "hypothesis": "五个事前方向的时间因子合成一个当天的全市场分数。分数大于 0，并且该品种滞后一个交易日的主力对次主力年化展期收益严格大于 0，下一开盘等权做多，名义敞口上限 1 倍。展期收益为正表示近月高于远月。分数不为正、展期收益小于等于 0 或缺失，权重为 0。不做 5 日粘滞，不做二十日跌破。回撤 10% 清仓并停 10 个交易日。",
+  "parameters": {
+    "factors": ["ts_low", "ts_high", "dfp_top3", "ts_low_pm", "ts_high_pm"],
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.0,
+    "drawdown_breaker": 0.10,
+    "halt_days": 10
+  },
+  "costs": "历史手续费，按金额 ×1.01、按手数 +0.01 元；滑点为上一年估计 tick 每边 1 跳"
+}

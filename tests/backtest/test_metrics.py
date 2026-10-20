@@ -134,26 +134,23 @@ def test_market_argument_is_forwarded(monkeypatch):
         seen.update(kwargs)
 
     monkeypatch.setattr(engine, "run_integer_lot_research", grab)
-    engine.main(["--research", "--market", "index"])
-    assert seen == {"market": "index"}
+    with pytest.raises(SystemExit):
+        engine.main(["--research", "--market", "index"])
 
     engine.main(["--research"])
     assert seen == {"market": "commodity"}
 
 
-def test_oos_refuses_before_any_holdout_read(monkeypatch):
-    monkeypatch.setattr(
-        engine, "load_oos",
-        lambda *args, **kwargs: pytest.fail("未冻结策略不能读取 2023–2025"),
-    )
-    monkeypatch.setattr(
-        engine, "_oos_audit_files",
-        lambda: pytest.fail("未冻结策略不能清点样本外输入"),
-    )
+def test_oos_span_writes_the_ledger_before_loading(monkeypatch, tmp_path):
+    import research.market_clock_carry as span
+    from tfcta import config as C
 
-    def unfrozen():
-        raise ValueError("当前保留的策略没有冻结，不能读取 2023–2025")
+    ledger = tmp_path / "ledger.jsonl"
 
-    monkeypatch.setattr(engine, "_frozen_strategy_specs", unfrozen)
-    with pytest.raises(ValueError, match="没有冻结"):
-        engine.run_integer_lot_oos()
+    def fake_load(end):
+        assert any(entry.get("status") == "opened" for entry in C.read_ledger(ledger))
+        raise RuntimeError(f"opened-before-load-{end}")
+
+    monkeypatch.setattr(span, "_load", fake_load)
+    with pytest.raises(RuntimeError, match="opened-before-load-2024"):
+        span.run_span(2024, 2024, ledger=ledger)

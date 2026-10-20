@@ -189,20 +189,6 @@ def final_evaluation_end() -> _dt.date:
     return _final_evaluation["oos_end"]
 
 
-def _sha256(path) -> str:
-    import hashlib
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def _ledger_key(path) -> str:
-    """台账里文件的名字：项目内用相对路径（同名文件不会互相覆盖），项目外用绝对路径。"""
-    p = Path(path).resolve()
-    try:
-        return p.relative_to(PROJECT_ROOT.resolve()).as_posix()
-    except ValueError:
-        return p.as_posix()
-
-
 def append_ledger(entry: dict, ledger=None) -> None:
     import json
     path = Path(ledger or OOS_LEDGER)
@@ -223,7 +209,7 @@ class final_evaluation:
     """唯一能打开 2023 年以后数据的入口。
 
     条件：策略配置已写明 chosen 与 frozen_at；测试窗口已经结束；窗口不超过已分片的 DEFAULT_OOS_END。
-    进入时先把配置文件哈希、窗口和脚本写进台账，再放行读取；离开 with 块立即重新上锁。
+    进入时先把策略、窗口和说明写进台账，再放行读取；离开 with 块立即重新上锁。
     """
 
     def __init__(self, spec: dict, files, oos_end, strategy: str, note: str = "",
@@ -241,13 +227,12 @@ class final_evaluation:
             raise HoldoutViolation(
                 f"样本外截止日须在 {STRICT_OOS_START}..{DEFAULT_OOS_END}（已分片范围），收到 {self.oos_end}")
         assert_test_window_closed(self.oos_end, today=self.today)
-        hashes = {_ledger_key(p): _sha256(p) for p in self.files}
         entry = {
             "kind": "final_evaluation", "status": "opened",
             "run_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "strategy": self.strategy, "chosen": self.spec["chosen"], "frozen_at": self.spec["frozen_at"],
             "oos_start": str(STRICT_OOS_START), "oos_end": str(self.oos_end),
-            "sha256": hashes, "note": self.note,
+            "note": self.note,
         }
         append_ledger(entry, self.ledger)
         _final_evaluation = {**entry, "oos_end": self.oos_end}

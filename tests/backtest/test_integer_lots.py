@@ -294,13 +294,51 @@ def test_target_lots_breaker_liquidates_the_whole_book_until_next_year():
     assert daily["停止新开仓"].iloc[-1]
 
 
-def test_target_lots_reject_negative_or_oversized_weights():
+def test_target_lots_fifteen_percent_breaker_pauses_ten_days_then_reopens():
+    from backtest.engine import simulate_target_lots
+
+    days = 16
+    targets, inputs = _target_inputs([0.0] + [1.0] * (days - 1), delta=0.0)
+    inputs["adjusted_open_delta"].iloc[1, 0] = -20.0
+    inputs["drawdown_limit"] = 0.15
+    daily, _, events = simulate_target_lots(targets, **inputs, halt_days=10)
+    detail = events.loc[events["事件"] == "回撤熔断清仓触发", "说明"].iloc[0]
+    assert "暂停 10 个交易日" in detail
+    assert daily["停止新开仓"].iloc[2:12].all()
+    assert not bool(daily["停止新开仓"].iloc[12])
+    assert daily["开仓笔数"].iloc[12] == 1
+
+
+def test_target_lots_reject_weights_outside_the_cap():
     from backtest.engine import TARGET_CAP, simulate_target_lots
 
-    for bad in (-0.5, TARGET_CAP + 0.1):
+    for bad in (-TARGET_CAP - 0.1, TARGET_CAP + 0.1, float("nan")):
         targets, inputs = _target_inputs([0.0, bad])
         with pytest.raises(ValueError, match="目标权重"):
             simulate_target_lots(targets, **inputs)
+
+
+def test_target_lots_short_loses_when_the_open_rises():
+    from backtest.engine import simulate_target_lots
+
+    targets, inputs = _target_inputs([0.0, -1.0, -1.0, 0.0], delta=1.0, fee=0.001)
+    daily, positions, events = simulate_target_lots(targets, **inputs)
+    assert positions["手数"].tolist() == [-10, -10]
+    assert daily["毛盈亏"].tolist() == pytest.approx([0.0, -100.0, -100.0, 0.0])
+    assert daily["交易费用"].tolist() == pytest.approx([0.0, 10.0, 0.0, 10.0])
+    assert events["事件"].tolist() == ["开空", "平空"]
+    assert daily["敞口倍数"].iloc[1] == pytest.approx(10 * 10 * 100 / daily["权益"].iloc[1])
+
+
+def test_target_lots_flip_from_long_to_short_pays_both_sides():
+    from backtest.engine import simulate_target_lots
+
+    targets, inputs = _target_inputs([0.0, 1.0, -1.0], delta=0.0, fee=0.001)
+    daily, positions, events = simulate_target_lots(targets, **inputs)
+    # 开多付过 10 元后，当日初权益 9990 把空头向下取整为 9 手；平多 10 手再开空 9 手
+    assert positions["手数"].tolist() == [10, -9]
+    assert events["事件"].tolist() == ["开仓", "平仓", "开空"]
+    assert daily["交易费用"].tolist() == pytest.approx([0.0, 10.0, 19.0])
 
 
 def test_target_weight_above_one_scales_the_equal_weight_budget():

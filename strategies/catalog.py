@@ -1,6 +1,4 @@
-"""当前保留的四条策略。2026-10-19 已一起冻结，样本外只打开一次。"""
+"""四条尾部策略的实现已于 2026-10-20 删除。做法和当时的数字在 docs/四策略做法与表现.md。"""
 from __future__ import annotations
 
-from strategies import regime_two_leg, trend_adx_range, trend_ema3, trend_high_atr
-
-SELECTED = (trend_ema3, trend_high_atr, trend_adx_range, regime_two_leg)
+SELECTED: tuple = ()

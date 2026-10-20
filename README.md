@@ -2,8 +2,8 @@
 
 根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-- 当前主线：只做多全市场时钟 [`market_clock_long`](strategies/market_clock_long/)，2026-10-20 冻结，按年依次打开 2022–2025。做法和逐年结果见 [`docs/全市场时钟做法与表现.md`](docs/全市场时钟做法与表现.md)。
-- 冻结的四条纯多头尾部策略（2026-10-19），商品样本外已经跑完，作为记录保留。见 [`docs/四策略做法与表现.md`](docs/四策略做法与表现.md)。
+- 当前策略：当天分数大于 0 且滞后一日展期收益大于 0 才做多，[`market_clock_carry`](strategies/market_clock_carry/)。五日符号已换掉。只做多全市场时钟的做法见 [`docs/全市场时钟做法与表现.md`](docs/全市场时钟做法与表现.md)。
+- 四条纯多头尾部策略的代码和结果已于 2026-10-20 删除。做法和当时的数字留在 [`docs/四策略做法与表现.md`](docs/四策略做法与表现.md)。
 
 ## 环境
 
@@ -41,23 +41,17 @@ python download/commodity/getRiceQuantExternalData.py  # 展期收益、仓单�
 
 ## 回测
 
+当前跑当日分数且展期为正。研究期、2022 和 2023–2025 都可以整段或分年。2022 及以后先记台账，以前看过，不是干净样本外。
+
 ```bash
 python -m backtest.engine --research
-python -m backtest.engine --market index --research
 python -m backtest.engine --validation
-python -m backtest.engine --market index --validation
 python -m backtest.engine --oos
-python -m backtest.engine --market index --oos
+python -m backtest.engine --year 2024
+python -m backtest.engine --start 2018 --end 2020
 ```
 
-冻结的全市场时钟按年打开，必须按 2022、2023、2024、2025 的顺序，每年只能一次，先写台账再读数据：
-
-```bash
-python -m backtest.engine --experimental-research   # 全市场时钟研究期
-python -m backtest.engine --year 2024               # 下一年
-```
-
-不写 `--market` 就是商品。`--research`、`--validation`、`--oos` 一次跑 `strategies/catalog.py` 里的四条。`python -m backtest.engine --experimental-research` 单独跑 `strategies/research_catalog.py` 里的探索策略（只做多全市场时钟），只读 2016–2021。结果在 `runs/strategies/<策略>/commodity/` 或 `index/` 下，再分 `research/`、`validation/`、`oos/`。账本细节见 [`backtest/README.md`](backtest/README.md)，规则见 [`strategies/README.md`](strategies/README.md)。
+结果在 `runs/strategies/market_clock_carry/commodity/` 下。账本细节见 [`backtest/README.md`](backtest/README.md)，规则见 [`strategies/README.md`](strategies/README.md)。
 
 股指研究期手续费：
 
@@ -82,7 +76,7 @@ python download/index/getRiceQuantIndexFutures.py --symbols IF IH IC --start-dat
 python -m research.time_factor_screen   # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
 python -m research.gtja_time            # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
 python -m research.index_kline          # IF / IH / IC 研究期日 K 线图
-python -m research.market_clock_long    # 只做多全市场时钟：登记变体、稳健性网格、经济机制检验，商品 2016–2021
+python -m research.market_clock_carry      # 当天分数且展期收益为正，商品 2016–2021
 ```
 
 检验规则先写在 `config/research/` 下的 JSON 里，再跑。这些脚本不构造冻结策略的持仓。

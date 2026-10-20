@@ -3,12 +3,7 @@ import pandas as pd
 
 from strategies.book import adx_above_range, adx_is_range, entry_schedule, high_volatility, upper_tail
 from strategies.catalog import SELECTED
-from strategies.regime_two_leg import signal as regime_signal
-from strategies.trend_adx_range import signal as adx_signal
-from strategies.trend_ema3 import signal as ema_signal
-from strategies.trend_high_atr import signal as atr_signal
 from strategies.research_catalog import RESEARCH_EXPERIMENTS
-from tfcta.factors import tsmom_sign
 
 
 def test_only_the_upper_tail_is_long_and_a_tighter_cutoff_fires_less():
@@ -36,10 +31,10 @@ def test_entry_schedule_skips_the_exit_day_and_respects_the_pool():
 
 
 def test_research_experiments_are_registered_separately_from_frozen_strategies():
-    assert [item.ID for item in SELECTED] == [
-        "trend_ema3", "trend_high_atr", "trend_adx_range", "regime_two_leg",
+    assert SELECTED == ()
+    assert [item.ID for item in RESEARCH_EXPERIMENTS] == [
+        "market_clock_carry",
     ]
-    assert [item.ID for item in RESEARCH_EXPERIMENTS] == ["market_clock_long"]
 
 
 def _reference_regimes(bars):
@@ -63,7 +58,7 @@ def _reference_regimes(bars):
     return adx, atr.gt(median)
 
 
-def test_selected_signals_match_an_independent_reference():
+def test_volatility_and_adx_match_an_independent_reference():
     index = pd.bdate_range("2015-01-01", periods=400)
     rng = np.random.default_rng(19)
     close = pd.DataFrame(
@@ -77,71 +72,9 @@ def test_selected_signals_match_an_independent_reference():
         "highw": close + 1.0 + rng.uniform(0, 1, size=close.shape),
         "loww": close - 1.0 - rng.uniform(0, 1, size=close.shape),
     }
-    micro = pd.DataFrame(rng.normal(size=(len(index), 2)), index=index, columns=["RB", "CU"])
-    trend = tsmom_sign(bars["close"], bars["closew"], window=10)
     adx, high_vol = _reference_regimes(bars)
     ranging = adx.notna() & adx.le(20)
     above_range = adx.notna() & adx.gt(20)
-
-    def tail(values):
-        return pd.DataFrame({s: upper_tail(values[s], 250, 0.8) for s in values}, index=index).gt(0)
-
-    raw_tail = tail(micro)
-    ema_tail = tail(micro.ewm(span=3, min_periods=3, adjust=False).mean())
-    long = trend.gt(0)
-
     pd.testing.assert_frame_equal(high_volatility(bars), high_vol)
     pd.testing.assert_frame_equal(adx_is_range(bars), ranging)
     pd.testing.assert_frame_equal(adx_above_range(bars), above_range)
-    pd.testing.assert_frame_equal(
-        ema_signal(trend, micro, high_vol, ranging, above_range), long & ema_tail,
-    )
-    pd.testing.assert_frame_equal(
-        atr_signal(trend, micro, high_vol, ranging, above_range), long & raw_tail & high_vol,
-    )
-    pd.testing.assert_frame_equal(
-        adx_signal(trend, micro, high_vol, ranging, above_range), long & raw_tail & ranging,
-    )
-    pd.testing.assert_frame_equal(
-        regime_signal(trend, micro, high_vol, ranging, above_range),
-        (ranging & raw_tail) | (above_range & long & raw_tail & high_vol),
-    )
-    assert ranging.to_numpy().any() and above_range.to_numpy().any() and high_vol.to_numpy().any()
-
-
-def test_downtrend_blocks_the_trend_leg_and_the_range_leg_ignores_it():
-    index = pd.bdate_range("2015-01-01", periods=300)
-    micro = pd.DataFrame(
-        np.linspace(-1, 2, len(index)), index=index, columns=["RB"],
-    )
-    trend = pd.DataFrame(-1.0, index=index, columns=["RB"])
-    high_vol = pd.DataFrame(True, index=index, columns=["RB"])
-    ranging = pd.DataFrame(True, index=index, columns=["RB"])
-    quiet = pd.DataFrame(False, index=index, columns=["RB"])
-    tail = upper_tail(micro["RB"]).gt(0)
-
-    assert not ema_signal(trend, micro, high_vol, ranging, quiet).to_numpy().any()
-    assert not atr_signal(trend, micro, high_vol, ranging, quiet).to_numpy().any()
-    assert not adx_signal(trend, micro, high_vol, ranging, quiet).to_numpy().any()
-    pd.testing.assert_series_equal(
-        regime_signal(trend, micro, high_vol, ranging, quiet)["RB"],
-        tail,
-        check_names=False,
-    )
-    assert not regime_signal(trend, micro, high_vol, quiet, high_vol).to_numpy().any()
-    assert not regime_signal(trend, micro, high_vol, quiet, quiet).to_numpy().any()
-
-
-def test_configs_are_frozen_together_and_match_the_catalog():
-    assert [item.ID for item in SELECTED] == [
-        "trend_ema3", "trend_high_atr", "trend_adx_range", "regime_two_leg",
-    ]
-    frozen_at = set()
-    for strategy in SELECTED:
-        config = strategy.load_config()
-        assert config["status"] == "frozen"
-        assert config["frozen_at"] == "2026-10-19"
-        assert config["chosen"] == config["parameters"]
-        assert "不读 2023" in config["sample"]
-        frozen_at.add(config["frozen_at"])
-    assert frozen_at == {"2026-10-19"}
