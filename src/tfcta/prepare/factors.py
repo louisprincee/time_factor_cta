@@ -1,4 +1,4 @@
-"""只在研究期构建时间因子和期限结构对照。"""
+"""只在研究期构建时间因子缓存。"""
 
 import argparse
 from pathlib import Path
@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 from tfcta import config as C
 from tfcta.data import load_universe
-from tfcta.factors import build_partition, build_symbol
+from tfcta.factors import build_symbol
 
 
 def main():
@@ -19,8 +19,6 @@ def main():
     for i,symbol in enumerate(symbols,1):
         result = build_symbol(symbol,[(C.IC_REFERENCE_LOOKBACK,C.IC_REFERENCE_PCT)],overwrite=args.overwrite)
         print(f'[{i}/{len(symbols)}] {symbol}: {result}',flush=True)
-    result = build_partition('research',symbols)
-    print(f'Research carry caches: {len(result)}',flush=True)
 
 
 if __name__=='__main__':

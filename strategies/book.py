@@ -118,22 +118,13 @@ def entry_schedule(
     start,
     end,
     holding_days: int = HOLDING_DAYS,
-    signed: bool = False,
-    preserve_weights: bool = False,
 ) -> pd.DataFrame:
     """收盘信号的下一可交易日开仓。持有期内以及到期当日都不再开新仓。"""
     if holding_days < 1:
         raise ValueError("持仓期必须至少为 1 个交易日")
-    if preserve_weights and not signed:
-        raise ValueError("保留仓位权重时必须同时启用 signed")
     start = pd.Timestamp(start)
     end = pd.Timestamp(end)
-    entries = pd.DataFrame(
-        0 if signed else False,
-        index=returns.index,
-        columns=returns.columns,
-        dtype="float64" if preserve_weights else "int8" if signed else bool,
-    )
+    entries = pd.DataFrame(False, index=returns.index, columns=returns.columns, dtype=bool)
     pools = {int(year): set(names) for year, names in universe.items()}
     for symbol in returns.columns:
         if symbol not in signal.columns:
@@ -141,8 +132,8 @@ def entry_schedule(
         tradable = returns.index[np.isfinite(returns[symbol].to_numpy(dtype="float64"))]
         order = {pd.Timestamp(day): i for i, day in enumerate(tradable)}
         blocked_until = -1
-        active = signal[symbol].fillna(0)
-        for day in signal.index[active.ne(0)]:
+        active = signal[symbol].fillna(False).astype(bool)
+        for day in signal.index[active]:
             day = pd.Timestamp(day)
             if day < start or day > end or symbol not in pools.get(day.year, set()):
                 continue
@@ -157,9 +148,6 @@ def entry_schedule(
                 or entry_position + holding_days >= len(tradable)
             ):
                 continue
-            entries.at[entry_day, symbol] = (
-                float(active.at[day]) if preserve_weights
-                else int(np.sign(active.at[day])) if signed else True
-            )
+            entries.at[entry_day, symbol] = True
             blocked_until = entry_position + holding_days
     return entries

@@ -7,7 +7,8 @@ python -m backtest.engine --research                 # 商品，2016–2021
 python -m backtest.engine --market index --research  # 股指，2016–2021
 python -m backtest.engine --validation               # 2022
 python -m backtest.engine --oos                      # 2023–2025，同一市场只打开一次
-python -m backtest.engine --experimental-research    # 新探索策略，商品2016–2021
+python -m backtest.engine --experimental-research    # 全市场时钟，商品2016–2021
+python -m backtest.engine --year 2024                # 全市场时钟按年打开，2022→2025 依次，每年一次
 ```
 
 `--market commodity` 是商品流动性池，也是默认值。`--market index` 跑 IF、IH、IC。2022 验证只用这三个；IM 只在样本外里按前一年流动性决定是否进池。股指没有夜盘，时点按当日日盘第一根到最后一根归一化。两个市场的结果分开写：`runs/strategies/<策略>/commodity/` 和 `runs/strategies/<策略>/index/`。股指样本外另记 `data/index/oos/ledger.jsonl`。
@@ -21,7 +22,11 @@ python -m backtest.engine --experimental-research    # 新探索策略，商品2
 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv`，净值图在同级的 `plots/`。
 商品用当年流动性池里的全部品种。股指研究期用 IF、IH、IC。
 
-`--experimental-research` 单独运行 `strategies/research_catalog.py` 注册的三条商品探索策略：时钟截面多空、时钟加正展期收益过滤，以及趋势/carry 同向确认的全交易日时钟组合（含夜盘）。纯日盘策略已移除。实验入口只读取 2016–2021 研究分片，不读取 2022 或 2023 年以后；结果仍使用整数手账本、历史费率、上一年 tick 滑点和相同风险约束。该 catalog 不参与冻结名单和 OOS 审计，组合结果属于事后探索。
+`--year` 只跑冻结的全市场时钟：先检查前面的年份都已跑完、本年没打开过，2022 写一条 `year_test` 台账，2023 起通过 `final_evaluation` 写台账，然后读数据。研究期因子缓存接上 2022 起现算的五个因子（研究期最后 60 天两边必须一致，否则报错），本年用一本 1 亿元新账计分，之前的年份只做预热。结果写到 `runs/strategies/market_clock_long/commodity/<年份>/`，台账在 `data/commodity/oos/ledger.jsonl`。
+
+`--experimental-research` 单独运行 `strategies/research_catalog.py` 注册的探索策略（现在只有只做多全市场时钟）。实验入口只读取 2016–2021 研究分片，不读取 2022 或 2023 年以后；结果使用同样的历史费率、上一年 tick 滑点和风险约束。该 catalog 不参与冻结名单和 OOS 审计。
+
+策略声明 `EXECUTION = "target"` 时改用 `simulate_target_lots`：策略的 `targets()` 给出每个品种在执行日开盘的目标权重（0 到 3，等权满仓为 1），名义金额 = 权重 × 1.5 × 期初权益 / 池宽，开盘只成交目标与现有手数的差额，权重不变不调手数，整本账一个熔断。两个账本都是纯多头。`ledger_inputs()` 给出一个区间对齐好的价格、换月、合约代码、费用和滑点，研究脚本直接调用账本时用它。
 
 手续费表只向后沿用最多 31 天的旧费率，tick 表在上一年估不出时最多再沿用一年；超出就是缺成本，成交当天直接报错，不会悄悄用旧值。
 

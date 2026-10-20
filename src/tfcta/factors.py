@@ -9,10 +9,7 @@ import numpy as np
 import pandas as pd
 
 from tfcta import config as C
-from tfcta.data import (
-    add_intraday_coords, find_shard, list_shards, load_daily_bars, load_oos_shard,
-    load_shard, load_universe, load_validation_shard, read_frame, save_shard,
-)
+from tfcta.data import add_intraday_coords, find_shard, load_daily_bars, load_shard, read_frame, save_shard
 
 
 def tsmom_sign(close: pd.DataFrame, closew: pd.DataFrame,
@@ -316,150 +313,6 @@ def report_factors(df: pd.DataFrame,
     return res
 
 
-EXTERNAL_DATA_ROOT = C.COMMODITY_DATA / "external_rqdata"
-EXTERNAL_FACTOR_ROOT = C.FACTOR_DAILY_DIR / "external"
-
-
-def guard_dates(dates,partition):
-    if partition == "research":
-        C.assert_no_holdout_dates(dates,"carry缓存")
-    elif partition == "validation_2022":
-        C.assert_validation_2022_dates(dates,"carry缓存")
-    elif partition == "oos":
-        end = C.final_evaluation_end()  # 未打开最终评估时拒绝
-        C.assert_strict_oos_dates(dates,"carry缓存")
-        if len(dates) and pd.DatetimeIndex(dates).max() > pd.Timestamp(end):
-            raise C.HoldoutViolation(f"carry缓存越过样本外截止日 {end}")
-    else:
-        raise C.HoldoutViolation(f"未知 carry 分区 {partition}")
-
-def _date_index(index: pd.Index) -> pd.DatetimeIndex:
-    if isinstance(index, pd.MultiIndex):
-        for name in ("date", "trading_date"):
-            if name in index.names:
-                return pd.DatetimeIndex(pd.to_datetime(index.get_level_values(name)).normalize())
-    return pd.DatetimeIndex(pd.to_datetime(index).normalize())
-
-
-def _series(data, column: str | None = None, numeric: bool = True) -> pd.Series:
-    if data is None:
-        return pd.Series(dtype="float64")
-    if isinstance(data, pd.Series):
-        values = data
-    elif isinstance(data, pd.DataFrame) and column in data.columns:
-        values = data[column]
-    else:
-        return pd.Series(dtype="float64")
-    result = pd.Series(values.to_numpy(), index=_date_index(data.index))
-    result = result[~result.index.isna()]
-    result = result[~result.index.duplicated(keep="last")].sort_index()
-    if numeric:
-        result = pd.to_numeric(result, errors="coerce")
-    return result
-
-
-def align_asof(source: pd.Series, calendar: pd.DatetimeIndex,
-               lag: int = 1, fill_limit: int = 5) -> pd.Series:
-    """只向前填充已经观测到的值，再整体滞后 ``lag`` 个交易日。"""
-    calendar = pd.DatetimeIndex(pd.to_datetime(calendar)).normalize().sort_values()
-    source = source[~source.index.duplicated(keep="last")].sort_index()
-    if source.empty:
-        return pd.Series(np.nan, index=calendar, dtype="float64")
-    return source.reindex(calendar, method="ffill", limit=fill_limit).shift(lag)
-
-
-def build_partition(partition="research", symbols=None):
-    if partition not in ("research","validation_2022","oos"):
-        raise C.HoldoutViolation(f"未知 carry 分区 {partition}")
-    # (源目录, 该目录数据所属分区)；样本外接在研究期和 2022 后面，滞后对齐才能跨年衔接
-    roots = [(EXTERNAL_DATA_ROOT, "research")]
-    if partition in ("validation_2022", "oos"):
-        roots.append((EXTERNAL_DATA_ROOT / "validation_2022", "validation_2022"))
-    if partition == "oos":
-        end = pd.Timestamp(C.final_evaluation_end())
-        roots.append((EXTERNAL_DATA_ROOT / "holdout_locked", "oos"))
-    summary = {}
-    for symbol in symbols or list_shards(C.RESEARCH_DIR):
-        pieces = []
-        for root, part in roots:
-            manifest = root / "coverage.json"
-            if not manifest.exists():
-                continue
-            entry = json.loads(manifest.read_text()).get("items",{}).get(f"roll_yield/{symbol}_main_sub")
-            if not entry or not entry.get("coverage"):
-                continue
-            path = (root / entry["file"]).resolve()
-            if root.resolve() not in path.parents:
-                raise ValueError("carry源路径越界")
-            series = _series(pd.read_pickle(path),"annualized_yield")
-            if part == "oos":
-                series = series[(series.index >= pd.Timestamp(C.STRICT_OOS_START)) & (series.index <= end)]
-            guard_dates(series.index, part)
-            pieces.append(series)
-        if not pieces:
-            continue
-        minutes = []
-        if find_shard(C.RESEARCH_DIR, symbol) is not None:
-            minutes.append(load_shard(symbol,columns=["trading_date"]))
-        if partition in ("validation_2022", "oos") and find_shard(C.VALIDATION_DIR, symbol) is not None:
-            minutes.append(load_validation_shard(symbol,columns=["trading_date"]))
-        if partition == "oos" and find_shard(C.HOLDOUT_DIR, symbol) is not None:
-            minutes.append(load_oos_shard(symbol, end=end.date(), columns=["trading_date"]))
-        if not minutes:
-            continue
-        minute = pd.concat(minutes)
-        calendar = pd.DatetimeIndex(pd.to_datetime(minute.trading_date).unique()).sort_values()
-        aligned = align_asof(pd.concat(pieces),calendar)
-        if partition == "research":
-            keep = calendar.year<=2021
-        elif partition == "validation_2022":
-            keep = calendar.year==2022
-        else:
-            keep = (calendar >= pd.Timestamp(C.STRICT_OOS_START)) & (calendar <= end)
-        frame = pd.DataFrame({"carry_main_sub_annualized":aligned.loc[keep]})
-        guard_dates(frame.index,partition)
-        if frame.empty:
-            continue
-        path = save_shard(frame,EXTERNAL_FACTOR_ROOT/partition,symbol)
-        summary[symbol] = {"file":str(path),"lag_days":1,"fill_limit":5}
-    return summary
-
-
-def load_panel(symbols=None, partition="research", root=None):
-    if partition not in ("research","validation_2022","oos"):
-        raise C.HoldoutViolation(f"未知 carry 分区 {partition}")
-    if partition == "oos":
-        C.assert_oos_research_locked()
-    directory = Path(root or EXTERNAL_FACTOR_ROOT)/partition
-    values = {}
-    for symbol in symbols or list_shards(directory):
-        path = find_shard(directory,symbol)
-        if path is None:
-            continue
-        if partition == 'research':
-            C.assert_research_only(path)
-        frame = read_frame(path,["carry_main_sub_annualized"])
-        guard_dates(frame.index,partition)
-        if frame.index.has_duplicates:
-            raise ValueError(f"{path} carry日期重复")
-        if "carry_main_sub_annualized" in frame:
-            values[symbol] = frame["carry_main_sub_annualized"]
-    return {"carry_main_sub_annualized":pd.DataFrame(values).sort_index()} if values else {}
-
-
-def load_wide(symbols,partitions,index):
-    if isinstance(partitions,str):
-        partitions = (partitions,)
-    frames = [load_panel(symbols,p).get("carry_main_sub_annualized") for p in partitions]
-    frames = [f for f in frames if f is not None]
-    if not frames:
-        return {}
-    joined = pd.concat(frames).sort_index()
-    if joined.index.has_duplicates:
-        raise ValueError("carry分区重叠")
-    return {"carry_main_sub_annualized":joined.reindex(index=index,columns=symbols)}
-
-
 TIMESTAMP_DIR_NAME = 'timestamp'
 REPORT_DIR_NAME = 'report'
 # v3: raw decimal-price durations, positive threshold, full lookback warm-up;
@@ -618,7 +471,7 @@ def load_report(symbol: str, root: Path | None = None) -> pd.DataFrame:
     return _read(path, list(REPORT_COLUMNS)).sort_index()
 
 
-SIGNED_PRIORS = {**C.FACTOR_SIGNS, "carry_ms": 1.}
+SIGNED_PRIORS = dict(C.FACTOR_SIGNS)
 
 
 @dataclass
@@ -632,15 +485,11 @@ class SignalSet:
         raise KeyError(f"未知因子 {name}，可用 {sorted(self.signed)}")
 
 
-def assemble(bars,time_raw,_universe,external_partitions=("research",)):
-    """装配时间因子（乘上事前方向）和滞后期限结构。"""
+def assemble(bars,time_raw):
+    """装配时间因子，乘上事前方向。"""
     result = SignalSet(bars=bars)
     for name,sign in C.FACTOR_SIGNS.items():
         result.signed[name] = time_raw[name]*sign
-    close = bars["close"]
-    source = load_wide(list(close.columns),external_partitions,close.index)
-    if "carry_main_sub_annualized" in source:
-        result.signed["carry_ms"] = source["carry_main_sub_annualized"]
     return result
 
 
@@ -656,4 +505,4 @@ def load(symbols):
     missing = [n for n, frame in raw.items() if frame.empty]
     if missing:
         raise KeyError(f"因子缓存缺少 {missing}")
-    return assemble(load_daily_bars(symbols),raw,load_universe())
+    return assemble(load_daily_bars(symbols),raw)

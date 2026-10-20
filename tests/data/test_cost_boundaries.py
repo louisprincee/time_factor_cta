@@ -2,26 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tfcta import config as C
-from tfcta.data import save_shard
-from tfcta.factors import align_asof, load_panel
 from tfcta.costs import fee_tables, slippage_tables
-
-
-def test_carry_research_cache_cannot_hide_future_dates(tmp_path):
-    save_shard(pd.DataFrame({'carry_main_sub_annualized':[.1]},
-        index=pd.to_datetime(['2023-01-04'])),tmp_path/'research','A','pickle')
-    with pytest.raises(C.HoldoutViolation):
-        load_panel(['A'],root=tmp_path)
-
-
-def test_carry_uses_preceding_day_and_expires_stale_data():
-    dates = pd.bdate_range('2021-12-20',periods=10)
-    source = pd.Series([.1],index=dates[:1])
-    aligned = align_asof(source,dates)
-    assert np.isnan(aligned.iloc[0])
-    assert aligned.iloc[1] == .1
-    assert np.isnan(aligned.iloc[-1])
 
 
 def test_historical_fees_split_open_close_and_old_contract_at_roll():

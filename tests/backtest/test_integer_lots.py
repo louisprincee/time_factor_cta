@@ -220,51 +220,6 @@ def test_drawdown_freeze_resets_next_year_without_repeated_trigger():
     ]
 
 
-def test_short_entries_are_rejected_by_long_only_simulator():
-    inputs = _inputs()
-    inputs["entries"] = inputs["entries"].astype("int8")
-    inputs["entries"].iloc[0, 0] = -1
-
-    with pytest.raises(ValueError, match="纯多头入场表"):
-        simulate_integer_lots(**inputs)
-
-
-def test_short_entries_use_signed_pnl_and_gross_exposure():
-    inputs = _inputs()
-    inputs["entries"] = inputs["entries"].astype("int8")
-    inputs["entries"].iloc[0, 0] = -1
-    inputs["adjusted_open_delta"]["CU"] = [1.0, 2.0, 3.0, 0.0]
-
-    daily, positions, events = simulate_integer_lots(**inputs, allow_shorts=True)
-
-    assert positions.iloc[0]["手数"] == -10
-    assert positions.iloc[0]["方向"] == "空"
-    assert positions.iloc[0]["名义敞口"] == pytest.approx(10_000.0)
-    assert daily.iloc[0]["保证金需求_20pct_assumption"] == pytest.approx(2_000.0)
-    assert daily.iloc[0]["毛盈亏"] == pytest.approx(-100.0)
-    assert daily.iloc[1]["毛盈亏"] == pytest.approx(-200.0)
-    assert daily.iloc[2]["平仓笔数"] == 1
-    assert daily.iloc[2]["净值"] == pytest.approx(0.97)
-    assert "空头" in events.iloc[0]["说明"]
-
-
-def test_weighted_short_entry_scales_integer_lots_and_preserves_direction():
-    inputs = _inputs()
-    inputs["entries"] = inputs["entries"].astype("float64")
-    inputs["entries"].iloc[0, 0] = -0.5
-    inputs["adjusted_open_delta"]["CU"] = [1.0, 0.0, 0.0, 0.0]
-
-    daily, positions, _events = simulate_integer_lots(
-        **inputs,
-        allow_shorts=True,
-        weighted_entries=True,
-    )
-
-    assert positions.iloc[0]["手数"] == -5
-    assert positions.iloc[0]["名义敞口"] == pytest.approx(5_000.0)
-    assert daily.iloc[0]["毛盈亏"] == pytest.approx(-50.0)
-
-
 def test_exposure_limit_scales_integer_lot_target():
     inputs = _inputs()
     inputs["entries"].iloc[0, 0] = True
@@ -291,3 +246,66 @@ def test_locked_proxy_requires_finite_daily_range():
     daily, _positions, events = simulate_integer_lots(**inputs)
     assert daily.iloc[0]["开仓笔数"] == 1
     assert "开仓" in events["事件"].tolist()
+
+
+def _target_inputs(fractions, delta=0.0, fee=0.0):
+    inputs = _inputs(len(fractions))
+    index, columns = inputs["entries"].index, inputs["entries"].columns
+    inputs.pop("entries"), inputs.pop("holding_days")
+    inputs["adjusted_open_delta"].iloc[:, 0] = delta
+    for name in ("open_fee", "close_fee", "roll_close_fee"):
+        inputs[name].iloc[:, 0] = fee
+    return pd.DataFrame({"CU": fractions}, index=index, columns=columns), inputs
+
+
+def test_target_lots_trade_only_the_difference_and_hold_when_target_is_unchanged():
+    from backtest.engine import simulate_target_lots
+
+    targets, inputs = _target_inputs([0.0, 1.0, 1.0, 0.5, 0.5, 0.0], fee=0.001)
+    daily, positions, events = simulate_target_lots(targets, **inputs)
+    lots = positions.set_index("交易日")["手数"]
+    # 1.0 × 10000 / (100 × 10) = 10 手；付过 10 元费用后 0.5 × 9990 / 1000 向下取整为 4 手
+    assert lots.tolist() == [10, 10, 4, 4]
+    assert daily["开仓笔数"].tolist() == [0, 1, 0, 0, 0, 0]
+    assert daily["平仓笔数"].tolist() == [0, 0, 0, 1, 0, 1]
+    assert daily["交易费用"].tolist() == pytest.approx([0, 10.0, 0, 6.0, 0, 4.0])
+    assert events["事件"].tolist() == ["开仓", "减仓", "平仓"]
+
+
+def test_target_lots_retry_a_blocked_rebalance_and_respect_the_pool():
+    from backtest.engine import simulate_target_lots
+
+    targets, inputs = _target_inputs([1.0, 1.0, 1.0, 1.0])
+    inputs["adjusted_high"].iloc[0, 0] = inputs["adjusted_low"].iloc[0, 0]
+    daily, positions, _ = simulate_target_lots(targets, **inputs)
+    assert daily["受阻委托数"].iloc[0] == 1 and daily["开仓笔数"].iloc[1] == 1
+    inputs["universe"] = {2020: ["AL"]}
+    _, outside, _ = simulate_target_lots(targets, **{**inputs, "multipliers": {"CU": 10.0}})
+    assert outside.empty
+
+
+def test_target_lots_breaker_liquidates_the_whole_book_until_next_year():
+    from backtest.engine import simulate_target_lots
+
+    targets, inputs = _target_inputs([1.0, 1.0, 1.0, 1.0, 1.0], delta=-30.0)
+    daily, positions, events = simulate_target_lots(targets, **inputs)
+    assert "回撤熔断清仓触发" in set(events["事件"])
+    assert daily["持仓总手数"].iloc[-1] == 0
+    assert daily["停止新开仓"].iloc[-1]
+
+
+def test_target_lots_reject_negative_or_oversized_weights():
+    from backtest.engine import TARGET_CAP, simulate_target_lots
+
+    for bad in (-0.5, TARGET_CAP + 0.1):
+        targets, inputs = _target_inputs([0.0, bad])
+        with pytest.raises(ValueError, match="目标权重"):
+            simulate_target_lots(targets, **inputs)
+
+
+def test_target_weight_above_one_scales_the_equal_weight_budget():
+    from backtest.engine import simulate_target_lots
+
+    targets, inputs = _target_inputs([0.0, 2.0, 2.0])
+    _, positions, _ = simulate_target_lots(targets, **inputs)
+    assert positions["手数"].tolist() == [20, 20]               # 2 × 1.0 × 10000 / (100 × 10)

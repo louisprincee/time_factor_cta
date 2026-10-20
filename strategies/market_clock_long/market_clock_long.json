@@ -1,0 +1,45 @@
+{
+  "id": "market_clock_long",
+  "status": "frozen",
+  "declared_at": "2026-10-20",
+  "frozen_at": "2026-10-20",
+  "sample": "参数只在商品 2016-01-01 至 2021-12-31 研究期上选择，2015 只做预热。冻结后按年依次打开 2022、2023、2024、2025，每年先记台账再读取，各用 1 亿元新账计分。不读 2026。",
+  "hypothesis": "许多品种同一天一起出现「低点晚、高点早、收在持续期公允价下方」，看作跨品种的集中抛压，之后几天回补。只做多：全市场看多时全池持有多头，否则空仓。研究期机制检验（同涨同跌、放量、持仓下降）都不支持这个解释，冻结时按「商品多头加上全市场收弱后加仓」理解。",
+  "parameters": {
+    "direction": "long_only",
+    "factors": ["ts_low", "ts_high", "dfp_top3", "ts_low_pm", "ts_high_pm"],
+    "score": "time5",
+    "z_window": 250,
+    "holding_days": 5,
+    "vol_scale": true,
+    "trend_cap": true,
+    "weights": "inverse_vol",
+    "gross_exposure_limit": 1.5,
+    "drawdown_breaker": 0.2
+  },
+  "chosen": {
+    "direction": "long_only",
+    "factors": ["ts_low", "ts_high", "dfp_top3", "ts_low_pm", "ts_high_pm"],
+    "score": "time5",
+    "z_window": 250,
+    "holding_days": 5,
+    "vol_scale": true,
+    "trend_cap": true,
+    "weights": "inverse_vol",
+    "gross_exposure_limit": 1.5,
+    "drawdown_breaker": 0.2
+  },
+  "rules": {
+    "score": "五个因子乘事前方向，各品种自身过去 250 个有值交易日（不含当天，至少 125 个）的 z，截断 ±3；五个取平均（至少 3 个）；当年池内平均（至少 10 个品种）",
+    "signal": "市场分数大于 0 当日看多，否则看平，不做空",
+    "bullish_share": "最近 5 个收盘信号里看多的占比",
+    "account_multiplier": "min(1, 池子收盘收益过去 250 日标准差 / 过去 20 日标准差)；池子收益过去 250 日累计和小于 0 时再乘 0.5",
+    "relative_weight": "1 / 自身过去 60 日收盘收益标准差，除以当日池内平均，上限 3，缺失取 1",
+    "target": "看多占比 × 账户乘数 × 相对权重，只在看多占比变化时按当时的乘数和权重重算，否则沿用；下一交易日开盘执行",
+    "sizing": "名义金额 = 目标权重 × 1.5 × 当日期初权益 / 当年池宽，向下取整到整数手，只成交差额",
+    "risk": "整本账一个 20% 峰值回撤熔断，触发后清仓到下一个日历年",
+    "costs": "历史交易所手续费，按金额 ×1.01、按手数 +0.01 元；滑点为上一年估计 tick 每边 1 跳"
+  },
+  "research_result": "2016–2021 研究期净 Sharpe 1.43，年化 10.2%，年化波动 7.0%，最大回撤 −10.4%，相对池内等权开盘收益 beta 0.48、年化 alpha 3.6%，下跌月捕获 0.35，黑色板块占毛盈亏 36.2%。",
+  "prior_information": "同一信号先后看过：多空、子账户错开版本（净 Sharpe 0.34，未通过）；只做多等权主规格（1.31，beta 0.71，alpha 3.4%）及其 3 日、尾部入场、常驻多头基准变体；稳健性登记的六个变体（config/research/market_clock_long_robustness.json）。板块占比门槛原为 35%，候选 36.2% 未通过，用户在看到结果后放宽到 40% 并决定冻结，这一点属于事后放宽。"
+}

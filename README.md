@@ -1,8 +1,9 @@
 # 时间因子 CTA
 
-商品期货和股指期货上的四条纯多头策略。信号用日内高低点时戳，收盘决定，下一交易日开盘进，持有 5 个有效交易日。回测是整数手数账本。
+根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-做法、样本边界和已经跑出来的数字写在 [`docs/四策略做法与表现.md`](docs/四策略做法与表现.md)。
+- 当前主线：只做多全市场时钟 [`market_clock_long`](strategies/market_clock_long/)，2026-10-20 冻结，按年依次打开 2022–2025。做法和逐年结果见 [`docs/全市场时钟做法与表现.md`](docs/全市场时钟做法与表现.md)。
+- 冻结的四条纯多头尾部策略（2026-10-19），商品样本外已经跑完，作为记录保留。见 [`docs/四策略做法与表现.md`](docs/四策略做法与表现.md)。
 
 ## 环境
 
@@ -18,9 +19,9 @@ conda activate factor-mining
 |---|---|---|---|
 | 预热 | 2015 | 研究分片里，不计分 | 研究分片里，不计分 |
 | 研究期 | 2016–2021 | `data/commodity/minute_shards/research/` | `data/index/minute_shards/research/`，IF / IH / IC |
-| 2022 | 2022 | `validation_2022/`，商品上已经看过 | 和 2023–2025 一起锁在 `holdout_locked/`，还没打开 |
-| 样本外 | 2023–2025 | `holdout_locked/`，商品上已经读过多次（早盘策略、四板块、20 日和 10 日窗口），不能再用 | 同上，还没打开 |
-| 前推 | 2026-01-01 起 | `data/commodity/data_min/` 里单独下载的 2026 文件，未分片 | — |
+| 2022 | 2022 | `validation_2022/`，商品上已经看过；全市场时钟 2026-10-20 已打开 | 和 2023–2025 一起锁在 `holdout_locked/`，还没打开 |
+| 样本外 | 2023–2025 | `holdout_locked/`，商品上已经读过多次（早盘策略、四板块、20 日和 10 日窗口）；全市场时钟只按年打开，2023 已打开，2024、2025 还没有 | 同上，还没打开 |
+| 前推 | 2026-01-01 起 | `data/commodity/data_min/` 里单独下载的 2026 文件，未分片，不读 | — |
 
 研究代码读到 2022 年及以后会抛 `HoldoutViolation`。2023–2025 只有 `final_evaluation` 块里能读。商品台账在 `data/commodity/oos/ledger.jsonl`，股指台账在 `data/index/oos/ledger.jsonl`。
 
@@ -49,7 +50,14 @@ python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
 ```
 
-不写 `--market` 就是商品。一次跑 `strategies/catalog.py` 里的四条。`python -m backtest.engine --experimental-research` 单独跑 `strategies/research_catalog.py` 里的三条商品探索策略，只读 2016–2021。结果在 `runs/strategies/<策略>/commodity/` 或 `index/` 下，再分 `research/`、`validation/`、`oos/`。账本细节见 [`backtest/README.md`](backtest/README.md)，规则见 [`strategies/README.md`](strategies/README.md)。
+冻结的全市场时钟按年打开，必须按 2022、2023、2024、2025 的顺序，每年只能一次，先写台账再读数据：
+
+```bash
+python -m backtest.engine --experimental-research   # 全市场时钟研究期
+python -m backtest.engine --year 2024               # 下一年
+```
+
+不写 `--market` 就是商品。`--research`、`--validation`、`--oos` 一次跑 `strategies/catalog.py` 里的四条。`python -m backtest.engine --experimental-research` 单独跑 `strategies/research_catalog.py` 里的探索策略（只做多全市场时钟），只读 2016–2021。结果在 `runs/strategies/<策略>/commodity/` 或 `index/` 下，再分 `research/`、`validation/`、`oos/`。账本细节见 [`backtest/README.md`](backtest/README.md)，规则见 [`strategies/README.md`](strategies/README.md)。
 
 股指研究期手续费：
 
@@ -74,6 +82,7 @@ python download/index/getRiceQuantIndexFutures.py --symbols IF IH IC --start-dat
 python -m research.time_factor_screen   # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
 python -m research.gtja_time            # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
 python -m research.index_kline          # IF / IH / IC 研究期日 K 线图
+python -m research.market_clock_long    # 只做多全市场时钟：登记变体、稳健性网格、经济机制检验，商品 2016–2021
 ```
 
 检验规则先写在 `config/research/` 下的 JSON 里，再跑。这些脚本不构造冻结策略的持仓。

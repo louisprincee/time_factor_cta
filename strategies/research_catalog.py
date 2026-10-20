@@ -1,14 +1,6 @@
-"""Exploratory strategies; deliberately separate from the frozen OOS catalog."""
+"""研究期探索策略；与冻结名单分开，不能通过样本外入口运行。"""
 from __future__ import annotations
 
-from strategies import (
-    cross_sectional_clock,
-    trend_carry_full_clock,
-    trend_high_atr_carry,
-)
+from strategies import market_clock_long
 
-RESEARCH_EXPERIMENTS = (
-    cross_sectional_clock,
-    trend_high_atr_carry,
-    trend_carry_full_clock,
-)
+RESEARCH_EXPERIMENTS = (market_clock_long,)
