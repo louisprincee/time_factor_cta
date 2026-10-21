@@ -51,6 +51,10 @@ The four long-only tail rules, their write-up and `backtest/index_market.py` wer
   - Interaction: t 2.25.
   - These numbers were seen in scratch before being declared.
   - Deflated Sharpe at 100 trials is only 0.06–0.12; PBO 0.33. Do not call the research Sharpe evidence.
+- **Dual short tested and failed** (`research/market_clock_carry_short.py`, research only): score < 0 and lagged carry < 0 → short.
+  - Next-bar pool return on score < 0 days is −0.3bp (t −0.10), and the carry < 0 basket is no worse than the pool. The score's information is one-sided.
+  - Short-only net Sharpe −0.52 (pool) / −0.91 (selected). Long-short 0.71 / 0.35, against the frozen long 1.36 / 1.19.
+  - It only pays in sharp crashes (2020 Q1: +10.6% / +16.4%). Do not add this short leg.
 - **2022:** one unfrozen 2022 open of `market_clock_carry` was voided in the ledger (8 pool symbols had no 2022 roll yield; old sizing). The data has since been downloaded.
 - 2024–2025 were not used to choose these rules.
 
@@ -116,7 +120,8 @@ strategies/         market_clock_carry/: signal, targets, roll yield, four Book 
 backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, max_drawdown, newey_west_t,
                     deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
 research/           market_clock_carry (spans, beta/alpha, ledger, freeze gate), market_clock_carry_factors
-                    (signal-level tests), time_factor_screen, gtja_time; index_kline is only a chart utility
+                    (signal-level tests), market_clock_carry_short (dual short test), time_factor_screen,
+                    gtja_time; index_kline is only a chart utility
 config/research/    predeclared JSON specs for research studies and exploratory strategies
 download/           RiceQuant downloaders (commodity minute/external/fees, index minute)
 tests/              pytest, synthetic data only (generator in tests/synthetic.py)

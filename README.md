@@ -74,6 +74,7 @@ python download/index/getRiceQuantIndexFutures.py --symbols IF IH IC --start-dat
 python -m research.time_factor_screen          # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
 python -m research.gtja_time                   # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
 python -m research.market_clock_carry_factors  # 当前策略的分数择时、展期截面 IC、叠加、账本分解、紧缩 Sharpe 和 PBO
+python -m research.market_clock_carry_short    # 对偶空头（分数 < 0 且展期 < 0 做空），研究期没过
 python -m research.index_kline                 # IF / IH / IC 研究期日 K 线图
 ```
 
