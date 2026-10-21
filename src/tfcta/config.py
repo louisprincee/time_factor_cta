@@ -205,17 +205,23 @@ def read_ledger(ledger=None) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _sha256(path) -> str:
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 class final_evaluation:
     """唯一能打开 2023 年以后数据的入口。
 
     条件：策略配置已写明 chosen 与 frozen_at；测试窗口已经结束；窗口不超过已分片的 DEFAULT_OOS_END。
-    进入时先把策略、窗口和说明写进台账，再放行读取；离开 with 块立即重新上锁。
+    进入时先把策略、窗口、文件哈希和说明写进台账，再放行读取；离开 with 块立即重新上锁。
     """
 
     def __init__(self, spec: dict, files, oos_end, strategy: str, note: str = "",
-                 today=None, ledger=None):
+                 today=None, ledger=None, oos_start=STRICT_OOS_START):
         self.spec, self.files, self.strategy, self.note = spec, list(files), strategy, note
         self.oos_end, self.today, self.ledger = to_date(oos_end), today, ledger
+        self.oos_start = to_date(oos_start)
 
     def __enter__(self) -> dict:
         global _final_evaluation
@@ -223,6 +229,8 @@ class final_evaluation:
             raise HoldoutViolation("已有一个打开的最终评估")
         if not self.spec.get("chosen") or not self.spec.get("frozen_at"):
             raise HoldoutViolation("配置没有冻结（缺 chosen 或 frozen_at），不能打开样本外")
+        if self.oos_start < STRICT_OOS_START or self.oos_start > self.oos_end:
+            raise HoldoutViolation(f"样本外起始日须不早于 {STRICT_OOS_START} 且不晚于截止日，收到 {self.oos_start}")
         if self.oos_end < STRICT_OOS_START or self.oos_end > DEFAULT_OOS_END:
             raise HoldoutViolation(
                 f"样本外截止日须在 {STRICT_OOS_START}..{DEFAULT_OOS_END}（已分片范围），收到 {self.oos_end}")
@@ -231,8 +239,8 @@ class final_evaluation:
             "kind": "final_evaluation", "status": "opened",
             "run_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "strategy": self.strategy, "chosen": self.spec["chosen"], "frozen_at": self.spec["frozen_at"],
-            "oos_start": str(STRICT_OOS_START), "oos_end": str(self.oos_end),
-            "note": self.note,
+            "oos_start": str(self.oos_start), "oos_end": str(self.oos_end),
+            "sha256": {Path(p).name: _sha256(p) for p in self.files}, "note": self.note,
         }
         append_ledger(entry, self.ledger)
         _final_evaluation = {**entry, "oos_end": self.oos_end}

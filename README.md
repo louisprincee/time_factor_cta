@@ -2,8 +2,8 @@
 
 根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-- 当前策略：当天分数大于 0 且滞后一日展期收益大于 0 才做多，[`market_clock_carry`](strategies/market_clock_carry/)。五日符号已换掉。只做多全市场时钟的做法见 [`docs/全市场时钟做法与表现.md`](docs/全市场时钟做法与表现.md)。
-- 四条纯多头尾部策略的代码和结果已于 2026-10-20 删除。做法和当时的数字留在 [`docs/四策略做法与表现.md`](docs/四策略做法与表现.md)。
+- 当前策略：当天收盘的全市场时间因子分数大于 0，并且该品种滞后一日的展期收益大于 0，才做多。四条只差分仓和敞口：按池宽或入选平分，上限 1 倍或 1.5 倍。代码在 [`strategies/market_clock_carry`](strategies/market_clock_carry/)，规则、研究期结果和信号层检验在 [`docs/当日分数且展期为正.md`](docs/当日分数且展期为正.md)。
+- 四条已在 2026-10-21 一起冻结，2022 及以后还没用冻结版本打开过。旧的只做多全市场时钟见 [`docs/全市场时钟做法与表现.md`](docs/全市场时钟做法与表现.md)。
 
 ## 环境
 
@@ -19,11 +19,12 @@ conda activate factor-mining
 |---|---|---|---|
 | 预热 | 2015 | 研究分片里，不计分 | 研究分片里，不计分 |
 | 研究期 | 2016–2021 | `data/commodity/minute_shards/research/` | `data/index/minute_shards/research/`，IF / IH / IC |
-| 2022 | 2022 | `validation_2022/`，商品上已经看过；全市场时钟 2026-10-20 已打开 | 和 2023–2025 一起锁在 `holdout_locked/`，还没打开 |
-| 样本外 | 2023–2025 | `holdout_locked/`，商品上已经读过多次（早盘策略、四板块、20 日和 10 日窗口）；全市场时钟只按年打开，2023 已打开，2024、2025 还没有 | 同上，还没打开 |
+| 2022 | 2022 | `validation_2022/`，以前看过，不是干净样本 | 锁在 `holdout_locked/`，没打开 |
+| 2023 | 2023 | `holdout_locked/`，旧策略看过，不是干净样本 | 同上 |
+| 干净样本外 | 2024–2025 | `holdout_locked/`，没有用来选当前策略 | 同上 |
 | 前推 | 2026-01-01 起 | `data/commodity/data_min/` 里单独下载的 2026 文件，未分片，不读 | — |
 
-研究代码读到 2022 年及以后会抛 `HoldoutViolation`。2023–2025 只有 `final_evaluation` 块里能读。商品台账在 `data/commodity/oos/ledger.jsonl`，股指台账在 `data/index/oos/ledger.jsonl`。
+研究代码读到 2022 年及以后会抛 `HoldoutViolation`。策略冻结之后才能打开 2022 及以后（四条已冻结），打开前先写台账：2022 记一条 `year_test`，2023 起通过 `final_evaluation`。台账在 `data/commodity/oos/ledger.jsonl`，作废记录用 `kind: void`。不读 2026。
 
 ## 数据准备
 
@@ -34,30 +35,27 @@ python src/tfcta/prepare/shard.py                      # 分钟总表切成研�
 python src/tfcta/prepare/shard.py --validation-from-monolith   # 只写 2022 验证分片
 python src/tfcta/prepare/universe.py                   # 逐年流动性池，第 y 年只看第 y−1 年
 python src/tfcta/prepare/ticks.py                      # 逐年最小变动价位，第 y 年用于第 y+1 年
-python src/tfcta/prepare/factors.py                    # 研究期时间因子和期限结构缓存
-python download/commodity/getFeeHistory.py --partition research
-python download/commodity/getRiceQuantExternalData.py  # 展期收益、仓单、持仓等外部数据
+python src/tfcta/prepare/factors.py                    # 研究期时间因子缓存（N=250、M=55 持续期阈值）
+python download/commodity/getFeeHistory.py --partition research        # 另有 validation_2022、oos 两个分区
+python download/commodity/getRiceQuantExternalData.py --datasets roll_yield --end-date 20251231   # 主力对次主力展期收益，按研究期 / 2022 / 锁定分区存
 ```
+
+展期收益缺失时回测会报出是哪个品种哪一年，不会悄悄当成不入选。补某几个品种用 `--symbols` 和 `--start-date/--end-date`。
 
 ## 回测
 
-当前跑当日分数且展期为正。研究期、2022 和 2023–2025 都可以整段或分年。2022 及以后先记台账，以前看过，不是干净样本外。
+不写策略名时四条都跑，写了就只跑那一条，例如 `python -m backtest.engine 按池宽1倍 --research`。
 
 ```bash
-python -m backtest.engine --research
-python -m backtest.engine --validation
-python -m backtest.engine --oos
-python -m backtest.engine --year 2024
+python -m backtest.engine --research                 # 2016–2021
+python -m backtest.engine --research --by-year       # 每年一本新的 1 亿元账
 python -m backtest.engine --start 2018 --end 2020
+python -m backtest.engine --validation               # 2022，冻结后
+python -m backtest.engine --year 2024                # 单年，冻结后
+python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 ```
 
-结果在 `runs/strategies/market_clock_carry/commodity/` 下。账本细节见 [`backtest/README.md`](backtest/README.md)，规则见 [`strategies/README.md`](strategies/README.md)。
-
-股指研究期手续费：
-
-```bash
-python download/commodity/getFeeHistory.py --market index --partition research
-```
+结果在 `runs/strategies/<id>/commodity/<区间>/`。账本细节见 [`backtest/README.md`](backtest/README.md)，规则见 [`strategies/README.md`](strategies/README.md)。
 
 ## 下载
 
@@ -73,13 +71,13 @@ python download/index/getRiceQuantIndexFutures.py --symbols IF IH IC --start-dat
 ## 因子检验
 
 ```bash
-python -m research.time_factor_screen   # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
-python -m research.gtja_time            # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
-python -m research.index_kline          # IF / IH / IC 研究期日 K 线图
-python -m research.market_clock_carry      # 当天分数且展期收益为正，商品 2016–2021
+python -m research.time_factor_screen          # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
+python -m research.gtja_time                   # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
+python -m research.market_clock_carry_factors  # 当前策略的分数择时、展期截面 IC、叠加、账本分解、紧缩 Sharpe 和 PBO
+python -m research.index_kline                 # IF / IH / IC 研究期日 K 线图
 ```
 
-检验规则先写在 `config/research/` 下的 JSON 里，再跑。这些脚本不构造冻结策略的持仓。
+检验规则先写在 `config/research/` 下的 JSON 里，再跑。结果在 `runs/research/<名字>/` 和 `runs/index/gtja_time/`。
 
 ## 测试
 
@@ -87,4 +85,4 @@ python -m research.market_clock_carry      # 当天分数且展期收益为正�
 python -m pytest
 ```
 
-测试用合成数据，不读真实的 2022 和 2023–2025 行情。
+测试用合成数据，不读真实的 2022 及以后行情。

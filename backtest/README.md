@@ -1,42 +1,40 @@
 # 回测
 
-回测入口为 `python -m backtest.engine`，运行区间必须显式指定：
+入口是 `python -m backtest.engine`，区间必须显式指定：
 
 ```bash
 python -m backtest.engine --research                 # 2016–2021 一本账
 python -m backtest.engine --research --by-year       # 每年一本新账
-python -m backtest.engine --validation               # 2022
-python -m backtest.engine --oos                      # 2023–2025 一本账
-python -m backtest.engine --oos --by-year
 python -m backtest.engine --year 2019
 python -m backtest.engine --start 2018 --end 2020
-python -m backtest.engine --start 2022 --end 2024 --by-year
+python -m backtest.engine --validation               # 2022，策略冻结后
+python -m backtest.engine --year 2024                # 单年，冻结后
+python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 ```
 
-样本内和样本外都用这三种：整段一本账、单独一年、从某年到某年。`--by-year` 把区间拆成每年一本新的 1 亿元账。碰到 2022 及以后先记台账。结果文件已经在的区间只打印，不再读行情。
+不写策略名时四条都跑，写了只跑那一条：`python -m backtest.engine 按池宽1倍 --research`，或 `--strategy 入选平分1.5倍 --year 2019`。只做商品。
 
-当前只有商品上的五日符号，`--market index` 会拒绝。四条尾部策略的做法在 `docs/四策略做法与表现.md`。
+2022 及以后：四条里有任何一条没冻结，整批直接拒绝，不写台账也不读行情。冻结了就先写台账再读（2022 记 `year_test`，2023 起走 `final_evaluation`，都带冻结日期、`chosen` 和代码与规格文件的哈希）。台账里已经打开过的窗口只打印旧结果；结果文件丢了，要先追加一条 `kind: void` 并写原因才能重开。不读 2026。
 
-整数手数账本：1 亿元初始权益、名义敞口上限 1.5 倍、20% 保证金假设。冻结的只做多时钟是 20% 峰值回撤、停到下一年。五日符号是 10% 峰值回撤、停 10 个交易日。费率取对应历史手续费缓存，滑点按前一年 tick 估算。年化收益、波动率和 Sharpe 使用每年 242 个交易日。已删除的四条纯多头（持有 5 日、20% 熔断停到下一年）只留在 `docs/四策略做法与表现.md`。
+## 账本
 
-输出再按区间放在 `research/`、`validation/` 和 `oos/`。每个区间里是
-`summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv`，净值图在同级的 `plots/`。
-商品用当年流动性池里的全部品种。股指研究期用 IF、IH、IC。
+`simulate_target_lots`：整数手、按目标仓位交易。策略给出每个品种在执行日开盘的目标权重（−3 到 3，负数做空，当前策略只用 0 和 1）。
 
-当前策略是当日分数且展期为正，名义敞口上限 1 倍。结果写到 `runs/strategies/market_clock_carry/commodity/` 下的 `research`、`2022`、`oos` 或 `起始-结束`。2022 及以后先记台账。这些年份以前看过，不是干净样本外。展期收益只用到 2025-12-31。
+- 名义金额 = 权重 × 敞口上限 × 期初权益 / 分母，向下取整到整数手。分母 `pool` 是当年池宽；`selected` 是当天权重不为 0 的池内品种数，入选数一变，所有持仓按新的份数重新平分。
+- 权重不变（`selected` 还要入选数不变）就继续持有，不随价格或权益调手数，只成交差额。
+- 盈亏 = 有符号手数 × 合约乘数 × 复权开盘价变动（加法复权，差值除以原始价，不做比值）。
+- 换月在旧主力前一日收盘和新主力当日开盘上收手续费和滑点，不结转真实合约结算盈亏。
+- 无开盘价或最高等于最低（涨跌停代理）当日不成交，次日重试。持仓期间缺复权开盘变动直接报错。
+- 整本账一个峰值回撤熔断：当前策略 10% 清仓、停 10 个交易日，恢复当日把熔断用的峰值改成当时权益（`daily.csv` 的 `熔断口径回撤`）。`summary.csv` 的 `最大回撤` 从初始资金起算，不受这个重置影响。
+- 保证金按名义金额 20% 估计，超过权益就清仓。
+- 1 亿元初始权益。年化收益、波动率和 Sharpe 用每年 242 个交易日。
 
-`--experimental-research` 跑 `strategies/research_catalog.py`，现在只有五日符号，只读 2016–2021。
+手续费按历史费率：按金额 ×1.01、按手数 +0.01 元；手续费表最多向后沿用 31 天。滑点是上一年估计 tick 每边 1 跳，上一年估不出时最多再沿用一年。超出就是缺成本，成交当天报错。
 
-策略声明 `EXECUTION = "target"` 时改用 `simulate_target_lots`：策略的 `targets()` 给出每个品种在执行日开盘的目标权重（0 到 3，等权满仓为 1），名义金额 = 权重 × 1.5 × 期初权益 / 池宽，开盘只成交目标与现有手数的差额，权重不变不调手数，整本账一个熔断。两个账本都是纯多头。`ledger_inputs()` 给出一个区间对齐好的价格、换月、合约代码、费用和滑点，研究脚本直接调用账本时用它。
+`load_research()` 读研究期因子缓存和日线；`load_through_year(y)` 在研究期后面接上 2022 至 y 年现算的五个因子（研究期最后 60 天两边必须一致，否则报错），2023 起只能在最终评估块内调用。`ledger_inputs()` 把一个区间的价格、换月、合约代码、费用和滑点对齐好。
 
-手续费表只向后沿用最多 31 天的旧费率，tick 表在上一年估不出时最多再沿用一年；超出就是缺成本，成交当天直接报错，不会悄悄用旧值。
+## 输出
 
-整数手账本以连续主力的加法复权开盘价变动估算持仓盈亏；换月在旧主力前一日收盘和新
-主力当日开盘上估算手续费与滑点，不结转真实合约现金流或结算盈亏。换月、持仓缺价、
-自然年切换及样本末未到期持仓有合成边界测试；持仓期间缺失复权开盘变动会显式报错。
-持仓日原始开盘价缺失按不可成交处理，退出委托延迟，并以最后有效开盘价记录敞口。
-样本末的未平仓持仓不自动强平，期末结果不含假定的清算费用。因此结果仍是研究估算，
-不是交易所级成交仿真。
+`runs/strategies/<id>/commodity/<区间>/`，区间是 `research`、`oos`、单年 `2019`，或 `2018-2020`。每个区间里有 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv`，净值图在 `plots/<策略名>/`。研究期每条还写一份 `runs/research/<id>/protocol.json`（当时的规格）。
 
-已移除四板块裁剪。账本使用当年流动性池的全部商品。样本外结果记在
-`data/commodity/oos/ledger.jsonl`，全品种这次已经跑完，不能再读 2023–2025。
+绩效函数 `performance`、`sharpe_ratio`、`max_drawdown`、`newey_west_t`、`deflated_sharpe`、`pbo_cscv` 也在 `backtest/engine.py`。

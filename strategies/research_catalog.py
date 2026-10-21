@@ -1,6 +1,6 @@
-"""研究期探索策略；与冻结名单分开，不能通过样本外入口运行。"""
+"""当前的四条，2026-10-21 冻结。没冻结的策略只能跑研究期；冻结后才能用 --validation、--year、--oos 打开 2022 及以后。"""
 from __future__ import annotations
 
-from strategies import market_clock_carry
+from strategies.market_clock_carry import BOOKS
 
-RESEARCH_EXPERIMENTS = (market_clock_carry,)
+RESEARCH_EXPERIMENTS = BOOKS

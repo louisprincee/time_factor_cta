@@ -1,5 +1,7 @@
-"""回测绩效、紧缩夏普、过拟合概率和命令行分派。"""
+"""绩效、紧缩夏普、过拟合概率、命令行分派和 2022 以后的台账门槛。"""
 from __future__ import annotations
+
+import json
 
 import numpy as np
 import pandas as pd
@@ -7,60 +9,53 @@ import pytest
 
 from backtest import engine
 from backtest.engine import (
-    METRIC_KEYS, deflated_sharpe, performance, pbo_cscv, plot_performance,
-    sharpe_ratio,
+    METRIC_KEYS, deflated_sharpe, max_drawdown, newey_west_t, pbo_cscv, performance,
+    plot_performance, sharpe_ratio,
 )
+from tfcta import config as C
 
 
 def test_metrics_hand_values():
     # 两天 +10%、-5%：净值 1.1 * 0.95 = 1.045
     r = pd.Series([0.10, -0.05])
     m = performance(r, periods=252)
-    nav = 1.045
-    ann = nav ** (252 / 2) - 1
+    ann = 1.045 ** (252 / 2) - 1
     vol = float(r.std(ddof=1) * np.sqrt(252))
     assert m['n_days'] == 2
     assert m['ann_return'] == pytest.approx(ann)
     assert m['ann_vol'] == pytest.approx(vol)
     assert m['ret_risk'] == pytest.approx(ann / vol)
     assert m['win_rate'] == pytest.approx(0.5)
-    # 高点 1.1，回落到 1.045，回撤 1.045/1.1 - 1
     assert m['max_drawdown'] == pytest.approx(1.045 / 1.1 - 1)
 
 
-def test_annualized_metrics_use_242_trading_days():
-    returns = pd.Series([0.01] * 242)
-    metrics = performance(returns)
-    assert metrics["ann_return"] == pytest.approx(1.01**242 - 1)
-    assert metrics["ann_vol"] == pytest.approx(0.0, abs=1e-12)
-
-
-def test_validation_time_factor_uses_timestamp_difference_not_daily_price_range():
-    day = pd.Timestamp("2022-01-03")
-    history = pd.DataFrame({"RB": [0.25]}, index=[pd.Timestamp("2021-12-31")])
-    panel = pd.DataFrame({
-        "trading_date": [day],
-        "symbol": ["RB"],
-        "ts_low": [0.9],
-        "ts_high": [0.2],
-        "highw": [120.0],
-        "loww": [80.0],
-    })
-
-    factor = engine._validation_time_factor(history, panel)
-
-    assert factor.loc[day, "RB"] == pytest.approx(0.7)
-    assert factor.loc[pd.Timestamp("2021-12-31"), "RB"] == pytest.approx(0.25)
-
+def test_annualized_metrics_and_sharpe_use_242_trading_days():
+    assert performance(pd.Series([0.01] * 242))["ann_return"] == pytest.approx(1.01 ** 242 - 1)
     varying = pd.Series([0.01, -0.005] * 121)
-    expected_sharpe = varying.mean() / varying.std(ddof=1) * np.sqrt(242)
-    assert sharpe_ratio(varying) == pytest.approx(expected_sharpe)
+    assert sharpe_ratio(varying) == pytest.approx(varying.mean() / varying.std(ddof=1) * np.sqrt(242))
+
 
 def test_performance_and_sharpe_tolerate_tiny_samples():
     for r in (pd.Series(dtype='float64'), pd.Series([0.01])):
-        m = performance(r)
-        assert set(METRIC_KEYS) <= set(m)
+        assert set(METRIC_KEYS) <= set(performance(r))
         assert np.isnan(sharpe_ratio(r))
+
+
+def test_drawdown_includes_starting_capital():
+    assert performance(pd.Series([-.10, .02]))['max_drawdown'] == pytest.approx(-.10)
+    assert max_drawdown([90.0, 95.0, 80.0, 120.0], 100.0) == pytest.approx(-0.2)
+
+
+def test_newey_west_t_matches_plain_t_without_autocorrelation_and_shrinks_with_it():
+    rng = np.random.default_rng(3)
+    white = rng.normal(0.001, 0.01, 5000)
+    plain = white.mean() / white.std(ddof=0) * np.sqrt(len(white))
+    assert newey_west_t(white, 10) == pytest.approx(plain, rel=0.1)
+    persistent = np.repeat(rng.normal(0.001, 0.01, 500), 10)
+    plain = persistent.mean() / persistent.std(ddof=0) * np.sqrt(len(persistent))
+    assert abs(newey_west_t(persistent, 10)) < abs(plain) * 0.6
+    assert np.isnan(newey_west_t([0.1, 0.2], 10))
+
 
 def test_pbo_separates_noise_from_a_real_edge():
     idx = pd.bdate_range('2016-01-01', periods=1200)
@@ -72,7 +67,7 @@ def test_pbo_separates_noise_from_a_real_edge():
         edge[0] += .002
         assert pbo_cscv(edge, 8)['pbo'] < .05
         noise_pbo.append(pbo_cscv(noise, 8)['pbo'])
-    assert .3 < np.mean(noise_pbo) < .7  # 纯噪声时样本内最好的方案在样本外大约一半时间排在中位数以下
+    assert .3 < np.mean(noise_pbo) < .7
     with pytest.raises(ValueError):
         pbo_cscv(noise, 7)
 
@@ -81,76 +76,121 @@ def test_deflated_sharpe_falls_with_more_trials():
     rng = np.random.default_rng(1)
     ret = pd.Series(rng.normal(.0006, .01, 1500))
     trials = rng.normal(0, .5, 50)
-    few = deflated_sharpe(ret, trials, 5)['dsr']
-    many = deflated_sharpe(ret, trials, 500)['dsr']
-    assert 0 <= many < few <= 1
-
-def test_drawdown_includes_starting_capital():
-    assert performance(pd.Series([-.10, .02]))['max_drawdown'] == pytest.approx(-.10)
+    assert 0 <= deflated_sharpe(ret, trials, 500)['dsr'] < deflated_sharpe(ret, trials, 5)['dsr'] <= 1
 
 
 def test_performance_plot_writes_nav_and_drawdown_chart(tmp_path):
     returns = pd.Series([0.02, -0.03, 0.01], index=pd.bdate_range("2024-01-02", periods=3))
     path = plot_performance(returns, tmp_path)
-    assert path == tmp_path / "performance.png"
-    assert path.is_file() and path.stat().st_size > 0
+    assert path == tmp_path / "performance.png" and path.stat().st_size > 0
 
 
-@pytest.mark.parametrize(
-    ("argument", "runner"),
-    [
-        ("--research", "run_integer_lot_research"),
-        ("--validation", "run_integer_lot_validation"),
-        ("--oos", "run_integer_lot_oos"),
-    ],
-)
-def test_standard_period_cli_uses_integer_lot_runner(monkeypatch, argument, runner):
-    called = []
-    monkeypatch.setattr(engine, runner, lambda **kwargs: called.append(runner))
-
-    engine.main([argument])
-
-    assert called == [runner]
-
-
-def test_validation_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
+def test_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
     ticks = pd.DataFrame({"symbol": ["RB"], "year": [2021], "tick": [1.0]})
     fees = pd.DataFrame({"symbol": ["RB"]})
-
     with pytest.raises(ValueError, match="拒绝静默剔除品种.*tick 缓存缺"):
-        engine._require_cost_coverage(["RB", "CU"], ticks, fees, "2022 验证")
+        engine._require_cost_coverage(["RB", "CU"], ticks, fees, "2022")
 
 
+@pytest.mark.parametrize(("argv", "window"), [
+    (["--research"], (2016, 2021, False, None)),
+    (["--research", "--by-year"], (2016, 2021, True, None)),
+    (["--validation"], (2022, 2022, False, None)),
+    (["--oos"], (2023, 2025, False, None)),
+    (["--oos", "--by-year"], (2023, 2025, True, None)),
+    (["--year", "2024"], (2024, 2024, False, None)),
+    (["--start", "2018", "--end", "2020"], (2018, 2020, False, None)),
+    (["按池宽1倍", "--research"], (2016, 2021, False, "按池宽1倍")),
+    (["--strategy", "入选平分1.5倍", "--year", "2019"], (2019, 2019, False, "入选平分1.5倍")),
+])
+def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
+    import research.market_clock_carry as driver
+
+    seen = []
+    monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False, book=None: seen.append(
+        (start, end, by_year, book)))
+    engine.main(argv)
+    assert seen == [window]
 
 
-
-
-
-
-def test_market_argument_is_forwarded(monkeypatch):
-    seen = {}
-
-    def grab(**kwargs):
-        seen.update(kwargs)
-
-    monkeypatch.setattr(engine, "run_integer_lot_research", grab)
+@pytest.mark.parametrize("argv", [
+    [], ["--start", "2018"], ["--year", "2019", "--by-year"], ["--research", "--strategy", "没有这条"],
+    ["按池宽1倍", "--strategy", "入选平分1倍", "--research"],
+])
+def test_cli_rejects_incomplete_or_unknown_arguments(argv):
     with pytest.raises(SystemExit):
-        engine.main(["--research", "--market", "index"])
-
-    engine.main(["--research"])
-    assert seen == {"market": "commodity"}
+        engine.main(argv)
 
 
-def test_oos_span_writes_the_ledger_before_loading(monkeypatch, tmp_path):
-    import research.market_clock_carry as span
-    from tfcta import config as C
+def _freeze_books(monkeypatch, tmp_path, books):
+    """把点名的几条复制成冻结版本，只在测试里用。"""
+    for book in books:
+        config = json.loads(book.CONFIG_PATH.read_text(encoding="utf-8"))
+        config.update(status="frozen", frozen_at="2026-10-21", chosen=config["parameters"],
+                      sample="冻结测试。不读 2026。")
+        path = tmp_path / book.CONFIG_PATH.name
+        path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(book, "CONFIG_PATH", path)
 
+
+def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypatch, tmp_path):
+    import research.market_clock_carry as driver
+    from strategies.market_clock_carry import BOOKS
+
+    book = BOOKS[2]                           # 任何一条没冻结，整批都不开
+    config = json.loads(book.CONFIG_PATH.read_text(encoding="utf-8"))
+    config = {k: v for k, v in config.items() if k not in ("frozen_at", "chosen")}
+    config.update(status="exploratory_predeclared", sample="不读取2022及2023年以后，不读 2026。")
+    path = tmp_path / "explore.json"
+    path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(book, "CONFIG_PATH", path)
+    monkeypatch.setattr(driver, "_load", lambda end: pytest.fail("没冻结不该读行情"))
+    for start, end in ((2022, 2022), (2024, 2024), (2023, 2025)):
+        ledger = tmp_path / f"ledger_{start}_{end}.jsonl"
+        with pytest.raises(C.HoldoutViolation, match="还没冻结"):
+            driver.run_span(start, end, ledger=ledger)
+        assert not ledger.exists()
+    with pytest.raises(C.HoldoutViolation, match="2026"):
+        driver.run_span(2026, 2026, ledger=tmp_path / "x.jsonl")
+
+
+def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatch, tmp_path):
+    import research.market_clock_carry as driver
+    from strategies.market_clock_carry import BOOKS
+
+    _freeze_books(monkeypatch, tmp_path, BOOKS)
     ledger = tmp_path / "ledger.jsonl"
+    seen = []
 
     def fake_load(end):
-        assert any(entry.get("status") == "opened" for entry in C.read_ledger(ledger))
-        raise RuntimeError(f"opened-before-load-{end}")
+        opened = [e for e in C.read_ledger(ledger) if e.get("status") == "opened"]
+        seen.append((opened[-1]["strategy"], opened[-1]["frozen_at"], opened[-1].get("oos_start")))
+        return object()
 
-    monkeypatch.setattr(span, "_load", fake_load)
-    with pytest.raises(RuntimeError, match="opened-before-load-2024"):
-        span.run_span(2024, 2024, ledger=ledger)
+    monkeypatch.setattr(driver, "_load", fake_load)
+    monkeypatch.setattr(driver, "_book", lambda *args, **kwargs: None)
+    driver.run_span(2024, 2024, ledger=ledger)
+    assert [name for name, _, _ in seen] == [f"{book.ID}_2024" for book in BOOKS]
+    assert all(frozen == "2026-10-21" and start == "2024-01-01" for _, frozen, start in seen)
+    driver.run_span(2022, 2022, ledger=ledger, book="按池宽1.5倍")
+    assert seen[-1][0] == "market_clock_pool_15_2022"
+
+
+def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monkeypatch, tmp_path):
+    import research.market_clock_carry as driver
+    from strategies.market_clock_carry import book_named
+
+    book = book_named("按池宽1倍")
+    _freeze_books(monkeypatch, tmp_path, [book])
+    monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
+    ledger = tmp_path / "ledger.jsonl"
+    C.append_ledger({"kind": "year_test", "status": "opened", "strategy": "market_clock_pool_2022"}, ledger)
+    monkeypatch.setattr(driver, "_load", lambda end: pytest.fail("没作废不该重读"))
+    with pytest.raises(C.HoldoutViolation, match="作废"):
+        driver.run_span(2022, 2022, ledger=ledger, book=book)
+    C.append_ledger({"kind": "void", "status": "void", "strategy": "market_clock_pool_2022"}, ledger)
+    monkeypatch.setattr(driver, "_load", lambda end: object())
+    monkeypatch.setattr(driver, "_book", lambda *args, **kwargs: None)
+    driver.run_span(2022, 2022, ledger=ledger, book=book)
+    last = C.read_ledger(ledger)[-1]
+    assert last["status"] == "finished" and "作废" in last["note"]

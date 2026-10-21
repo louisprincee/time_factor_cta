@@ -1,4 +1,4 @@
-"""分钟因子、日频因子、外部数据和因子装配。"""
+"""持续期与时间戳因子、日频因子缓存和装配。"""
 from __future__ import annotations
 
 import json
@@ -10,17 +10,6 @@ import pandas as pd
 
 from tfcta import config as C
 from tfcta.data import add_intraday_coords, find_shard, load_daily_bars, load_shard, read_frame, save_shard
-
-
-def tsmom_sign(close: pd.DataFrame, closew: pd.DataFrame,
-               window: int = 20) -> pd.DataFrame:
-    """过去 ``window`` 个交易日收益的符号：涨为 +1，跌为 −1。"""
-    w = int(window)
-    base = close.shift(w)
-    r = (closew - closew.shift(w)) / base.where(base > 0)
-    values = np.sign(r.to_numpy(dtype='float64'))
-    values[~np.isfinite(r.to_numpy(dtype='float64'))] = np.nan
-    return pd.DataFrame(values, index=close.index, columns=close.columns)
 
 
 # --------------------------------------------------------------------------

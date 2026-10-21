@@ -1,6 +1,5 @@
 import json
 from datetime import date
-from pathlib import Path
 import pandas as pd
 import pytest
 from tfcta import config as C

@@ -1,4 +1,4 @@
-"""分钟分片、交易时段、日收益、品种池和合成数据。"""
+"""分钟分片、交易时段、日线、换月表和逐年品种池。"""
 from __future__ import annotations
 
 import csv
@@ -613,7 +613,7 @@ def validation_universe() -> tuple[list[str], pd.DataFrame]:
     """2022 的池子，用第 2 步落盘的研究期逐年统计（即 2021 年）判定。"""
     path = C.UNIVERSE_DIR / 'yearly_stats.csv'
     if not path.exists():
-        raise FileNotFoundError(f"找不到 {path}，请先运行 step2_universe.py")
+        raise FileNotFoundError(f"找不到 {path}，请先运行 python src/tfcta/prepare/universe.py")
     stats = pd.read_csv(path)
     C.assert_no_holdout_dates(
         pd.to_datetime(stats['year'].astype(str) + '-01-01'), what='2022 品种池统计')

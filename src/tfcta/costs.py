@@ -88,10 +88,6 @@ def _read_fee_table(path, partition):
     return fill_close_today(table)
 
 
-def load_index_fees(partition="research"):
-    return _read_fee_table(index_fee_path(partition), partition)
-
-
 def load_fees(partition="research"):
     return _read_fee_table(fee_path(partition), partition)
 

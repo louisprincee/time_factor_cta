@@ -1,6 +1,6 @@
 # AGENTS.md — working rules for this repository
 
-Read this before changing anything. It reflects the repo on 2026-10-20.
+Read this before changing anything. It reflects the repo on 2026-10-21 (after the carry-book cleanup).
 If the code and this file disagree, trust the code, then update this file in the same change.
 
 ## 1. What the project is
@@ -32,19 +32,27 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 - Only 1 of 115 cells passes the full predeclared gate (t, 5/6 years, 4/6 sectors), and 0 are allowed to pair.
 - The GTJA factors on IF/IH/IC, 2016–2021: no single factor reaches |NW t| ≥ 2.
 
-**Retired four** (code and results deleted 2026-10-20; the write-up in `docs/四策略做法与表现.md` is the spec):
-- Four long-only rules, all built on the `ts_low − ts_high` tail: strictly above its own prior 250-day 80th percentile, with the 10-day trend sign, entry at the next open, held 5 days. `strategies/catalog.py` is empty. Those commands now run `market_clock_carry` on the research period only.
+The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them. `strategies/catalog.py` is empty.
 
-| Rule | Commodity Sharpe, research → OOS 2023–25 |
-|---|---|
-| `trend_ema3` | 0.81 → 0.08 |
-| `trend_high_atr` | 1.05 → 0.18 |
-| `trend_adx_range` | 1.06 → −1.06 |
-| `regime_two_leg` | 1.37 → −0.47 |
-
-- On index futures, research period only, the ranking reverses. See `docs/四策略做法与表现.md`.
-
-**Live book: `market_clock_carry`.** Five-factor market score must be positive today, and that name's main-versus-sub annualized roll yield lagged one trading day must be strictly positive. Next open, equal weight, gross cap 1, 10% drawdown halt for 10 trading days. Research 2016–21 is another look at that window (net Sharpe 1.36, alpha t 2.20). 2022 and 2023–2025 can be opened with `--validation`, `--oos`, `--year` or `--start/--end`; ledger first, and label the result "rule not fit on these years". `market_clock_sign_drop` and the day-sign comparison books were deleted on 2026-10-20.
+**Live research book: `market_clock_carry`** (`strategies/market_clock_carry/`, four JSON specs; write-up `docs/当日分数且展期为正.md`). **All four were frozen together on 2026-10-21** (`status: frozen`, `chosen == parameters`, ledger `kind: decision`). No 2022+ window has been opened with the frozen books yet.
+- **Signal.** At the close, the five-factor market score must be > 0, and that name's main-versus-sub `annualized_yield` lagged one trading day must be strictly > 0. Weight 1, otherwise 0.
+- **Execution.** On the next trading day's first bar (night open if there is a night session, else day open). Unchanged weight stays on; only the lot difference trades.
+- **Sizing.** Four books: `pool` (1 × gross × equity / pool width per selected name) or `selected` (gross split equally among selected names; when the selected count changes, every holding is re-split, `rebalance_on_count_change: true`), gross 1 or 1.5.
+- **Risk.** 10% drawdown → liquidate, halt 10 trading days.
+- **Roll yield.** RiceQuant `get_roll_yield(type="main_sub")`. `yield` = (main settlement − sub settlement) / sub settlement, verified against contract dailies on 3,840 research days (error 1e-17). 99.7% of rows have the main maturing before the sub; LR, JR, RI, RS, B, SF, PM, BB occasionally invert.
+- **Research 2016–21** (1 tick + fees), net Sharpe / beta / alpha / NW t:
+  - 按池宽1倍 1.36 / 0.25 / 3.7% / 2.22
+  - 入选平分1倍 1.19 / 0.50 / 5.5% / 1.74
+  - 按池宽1.5倍 1.36 / 0.38 / 5.6% / 2.23
+  - 入选平分1.5倍 1.22 / 0.73 / 8.7% / 1.80
+- **Signal tests** (`research/market_clock_carry_factors.py`):
+  - Timing: score>0 minus else, next-bar pool return +12.7bp/day, NW t 3.22, 6/6 years.
+  - Carry: cross-sectional IC 0.022, t 3.20, 5/6 years (2021 negative).
+  - Interaction: t 2.25.
+  - These numbers were seen in scratch before being declared.
+  - Deflated Sharpe at 100 trials is only 0.06–0.12; PBO 0.33. Do not call the research Sharpe evidence.
+- **2022:** one unfrozen 2022 open of `market_clock_carry` was voided in the ledger (8 pool symbols had no 2022 roll yield; old sizing). The data has since been downloaded.
+- 2024–2025 were not used to choose these rules.
 
 **Retired mainline: `market_clock_long`** (code and results deleted 2026-10-20; write-up remains in `docs/全市场时钟做法与表现.md`).
 - **Score.** The five report factors are z-scored on each symbol's own 250-day history, averaged per symbol, then averaged over the pool to give a market score.
@@ -63,15 +71,13 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 |---|---|---|---|---|---|---|---|
 | 2022 | +2.1% | 0.25 | −17.1% | +7.5% | 0.57 | −2.3% | 0.75 (Jun–Jul drawdown) |
 | 2023 | +4.0% | 0.81 | −4.7% | +3.8% | 0.42 | +2.3% | 0.28 |
-| 2024 | −4.65% | −0.83 | −10.1% | — | — | — | — |
-| 2025 | −1.53% | −0.54 | −3.2% | — | — | — | — |
 
-- Those four years were opened, then the commodity ledger was **cleared on 2026-10-20**. Clearing the file does not make the years unread.
+- 2022 and 2023 of that retired book were opened. 2024–2025 are not in this record; they stay closed.
 - **Finding behind it** (research period only): commodity time factors carry information only at the **market** level. The idiosyncratic and sector-rotation parts lose money after costs, and the slow volume factors are just sector bets.
 
 **Older work**, removed from the tree but recoverable from git history:
 - The morning-overreaction strategy (兴业 morning rule) failed 2022 and 2023.
-- The intraday slate failed 2023–25.
+- The intraday slate was removed. It is not a reason to open 2024–2025.
 - Lesson from both: research Sharpe of 1–1.5 has repeatedly collapsed to roughly 0 out of sample.
 
 ## 3. Data partitions and what is already spent (most important section)
@@ -80,23 +86,24 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 |---|---|---|---|
 | Warmup | 2015 | in research shards, not scored | same |
 | Research | 2016–2021 | `data/commodity/minute_shards/research/` | `data/index/minute_shards/research/` (IF/IH/IC) |
-| Validation | 2022 | `validation_2022/`; **seen, used for rule selection**. `market_clock_carry` may open it when asked. Not clean. A saved window is printed, not re-read | inside `holdout_locked/`; **unread** |
-| OOS | 2023–2025 | `holdout_locked/`; **consumed several times**, including `market_clock_long` 2023, 2024 and 2025 before the 2026-10-20 ledger reset. Sign-drop may open a year, a range, or 2023–2025 as one book only when the user asks in that turn. Label "rule not fit on these years" | **unread**, no ledger yet |
-| Forward | 2026-01-01..2026-10-08 | `data/commodity/data_min/future_*_20260101-20261008.txt`, not sharded; **never read** (user decision 2026-10-20) | — |
+| Validation | 2022 | `validation_2022/`; **seen by older books**, not clean | inside `holdout_locked/`; **unread** |
+| 2023 | 2023 | `holdout_locked/`; seen by older books, not clean | inside `holdout_locked/`; **unread** |
+| Clean OOS | 2024–2025 | `holdout_locked/`; **clean and closed** | **unread** |
+| Forward | 2026-01-01..2026-10-08 | `data/commodity/data_min/future_*_20260101-20261008.txt`, not sharded; **never read** | — |
 
 Rules:
-1. **Validation plan (user decision 2026-10-20).**
+1. **Sample lock (user decision 2026-10-21).**
    - A new commodity strategy must first pass its predeclared research-period gate and have an economic story. Only then is it frozen.
-   - Sign-drop supports one combined window, one year, and a start–end range, in-sample and later (`--research`, `--oos`, `--year`, `--start/--end`, plus `--by-year`).
-   - Those years' market data and other strategies' results have been seen before. Label the results "rule not fit on these years", not "clean OOS".
-   - Never read 2026 data.
+   - **Freeze gate (user decision 2026-10-21):** `run_span` refuses any window ending in 2022 or later unless every requested book's JSON is `status: frozen` with `frozen_at` and `chosen == parameters`. It refuses before writing the ledger or reading data.
+   - Once frozen, `--validation`, `--year Y` and `--oos [--by-year]` open a window. The ledger is written first: 2022 gets a `year_test` entry; 2023+ goes through `final_evaluation`, with `oos_start`, `frozen_at`, `chosen` and file hashes recorded.
+   - A window that is already opened or finished only prints its saved result. If the results are gone, append a `kind: void` entry with a reason before reopening.
+   - Do not run any 2022+ window unless the user asks for it in the same turn.
+   - Never read 2026. `run_span`, `load_through_year` and `roll_yield` raise before loading it. The `holdout_locked` roll-yield pickles contain rows through 2026-10-08; `roll_yield` drops everything after the window, and reads that partition only inside `final_evaluation`.
    - Never read index 2022+.
-   - Run an OOS or year command only when the user explicitly asks for that window in the same turn.
-   - Any window that touches 2022+ is ledgered first. If that window's result files already exist, print them and do not re-read. 2022 writes a `year_test` entry; 2023 and later go through `final_evaluation`.
 2. Research code must go through the guards in `src/tfcta/config.py`: `assert_research_only`, `assert_no_holdout_dates`, `HoldoutViolation`, and the `final_evaluation` context plus ledger. Do not weaken, bypass or monkeypatch them, and do not add an env var or flag that unlocks data.
-3. Anything tuned, selected or "fixed" after looking at commodity 2022 or 2023–25 is **in-sample** for those periods. Say so explicitly. Do not label it validation or OOS.
-4. A new hypothesis can only be tested cleanly on commodity 2016–2021 (research), on index 2022+ once frozen, or on 2026+ forward data. Name which one you are using.
-5. Before any test that uses external data (carry/roll_yield, warehouse, OI), verify that the partition covers the whole window. A truncated carry file once produced a fake pass.
+3. Anything tuned, selected or "fixed" after looking at commodity 2022 or 2023 is **in-sample** for those years. 2024–2025 were not used to choose the live book.
+4. A new hypothesis is first tested on commodity 2016–2021. Commodity 2024–2025 is opened only by an explicit `--year` or `--oos` in that turn. Never use 2026. Name which window you are using.
+5. Before any test that uses external data (carry/roll_yield, warehouse, OI), verify that the partition covers the whole window. A truncated carry file once produced a fake pass. `targets()` calls `require_carry_coverage`, which raises if a pool symbol-year has more than 5% missing roll yield.
 
 ## 4. Repository layout
 
@@ -104,20 +111,21 @@ Rules:
 src/tfcta/          library: config (paths, partitions, guards, factor signs), data (shards, universe,
                     rolls), factors, costs (fees, ticks, multipliers), prepare/ (sharding, ticks,
                     universe, factor caches), index/ (GTJA index factors)
-strategies/         one dir per strategy: __init__.py (ID, NAME, DETAIL, signal); frozen ones add load_config + <id>.json
-                    book.py = shared tail/ATR/ADX/entry_schedule; catalog.py is empty (the four rules live in the doc); research_catalog.py = exploratory
-backtest/engine.py  integer-lot ledger, performance / DSR / PBO metrics, research/validation/oos entry points, CLI
-backtest/index_market.py  index-futures data loading (day session only, IM pool rules)
-research/           predeclared studies (time_factor_screen, gtja_time, market_clock_carry); index_kline is only a chart utility
+strategies/         market_clock_carry/: signal, targets, roll yield, four Book specs (JSON); catalog.py is empty;
+                    research_catalog.py lists the four books
+backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, max_drawdown, newey_west_t,
+                    deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
+research/           market_clock_carry (spans, beta/alpha, ledger, freeze gate), market_clock_carry_factors
+                    (signal-level tests), time_factor_screen, gtja_time; index_kline is only a chart utility
 config/research/    predeclared JSON specs for research studies and exploratory strategies
 download/           RiceQuant downloaders (commodity minute/external/fees, index minute)
 tests/              pytest, synthetic data only (generator in tests/synthetic.py)
-docs/               the two reports + 全市场时钟做法与表现.md (mainline) + 四策略做法与表现.md (frozen four)
+docs/               the two reports + 当日分数且展期为正.md (why the live book) + 全市场时钟做法与表现.md (retired clock)
 data/, runs/        gitignored; data inputs and all outputs
 ```
 
 Outputs:
-- Strategy runs go to `runs/strategies/<id>/<commodity|index>/<research|validation|oos>/`. Each run writes `summary.csv`, `annual.csv`, `daily.csv`, `positions.csv` and `events.csv`, plus a `plots/` directory.
+- Strategy runs go to `runs/strategies/<id>/commodity/<research|oos|YYYY|YYYY-YYYY>/`. Each run writes `summary.csv`, `annual.csv`, `daily.csv`, `positions.csv` and `events.csv`, plus `plots/<name>/`.
 - Research studies go to `runs/research/<study>/` or `runs/index/<study>/`, with a `protocol.json`.
 
 ## 5. Environment and commands
@@ -128,15 +136,20 @@ Outputs:
 
 ```bash
 python -m pytest                                      # must stay green
-python -m backtest.engine --research                 # sign_drop, 2016–21, one book
-python -m backtest.engine --research --by-year        # each research year a fresh 1e8
-python -m backtest.engine --start 2018 --end 2020     # one book over a research span
-python -m backtest.engine --validation               # 2022, saved result if already opened
-python -m backtest.engine --oos                      # 2023–25 one book; only when the user asks
-python -m backtest.engine --year 2024                # one later year; only when the user asks
+python -m backtest.engine --research                 # 2016–21，不点名则四条都跑
+python -m backtest.engine 按池宽1倍 --research       # 只跑点名的那一条
+python -m backtest.engine --research --by-year        # 不点名则每年四条，各一本新的 1e8
+python -m backtest.engine --start 2018 --end 2020     # 研究区间；不点名则四条
+python -m backtest.engine --validation               # 2022；不点名则四条。先记台账。不是干净样本
+python -m backtest.engine --year 2023                # 单年；不点名则四条。先记台账
+python -m backtest.engine --oos                      # 2023–2025；不点名则四条。先记台账
+python -m backtest.engine --oos --by-year            # 2023、2024、2025 各一本；不点名则每年四条
+python -m research.market_clock_carry_factors       # signal-level tests, DSR, PBO
 python -m research.time_factor_screen
 python -m research.gtja_time
 ```
+
+Every 2022+ command above is refused for any book that is not frozen. The four live books are frozen, so only run those commands when the user asks for that window.
 
 `TFCTA_DATA_ROOT`, `TFCTA_RUNS_ROOT`, `TFCTA_CONFIG_DIR` and `TFCTA_MINUTE_DIR` redirect paths. Use them only for tests and reproduction checks.
 
@@ -146,7 +159,7 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
 
 1. **Predeclare.**
    - Write the hypothesis, parameters, sample and pass criteria in a JSON under `config/research/` or `strategies/<id>/<id>.json` **before** running.
-   - The `sample` text must state what is not read. The loaders check for it, for example `accept_lock` requires "不读 2023".
+   - The `sample` text must state what is not read. The loaders check for it: exploratory strategy specs need "不读取2022及2023年以后" and "不读 2026"; research configs need "不读 2022" and "不读 2026".
    - Code validates the JSON against its constants, so the two cannot drift silently.
 2. **No parameter sweeps for selection without accounting.**
    - If you test a grid, report every cell, the number of trials, and DSR/PBO where relevant (`deflated_sharpe` and `pbo_cscv` in `backtest/engine.py`).
@@ -158,17 +171,15 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
    - Slippage of 1 tick per side, using the prior year's estimated tick (`src/tfcta/costs.py`).
    - No 2-tick sensitivity is required (user decision 2026-10-20): report 1 tick plus fees.
    - Never use RiceQuant's current `tick_size` for history.
-   - Missing fee or tick data must raise, not silently skip a symbol or reuse stale values: `require_multipliers`, `fee_tables` (ffill ≤ 31 days), `slippage_tables` (ffill ≤ 1 year), NaN cost raises inside `simulate_integer_lots`, `_require_cost_coverage` for validation.
+   - Missing fee or tick data must raise, not silently skip a symbol or reuse stale values: `require_multipliers`, `fee_tables` (ffill ≤ 31 days), `slippage_tables` (ffill ≤ 1 year), NaN cost raises inside `simulate_target_lots`, `_require_cost_coverage` for the 2022 pool in `load_through_year`.
 5. **Timing:**
    - Signals use data known at the decision time. Close signals enter at the next tradable open.
    - External data such as carry is lagged one trading day.
    - Rolling thresholds and quantiles exclude the current day unless the spec says otherwise.
-6. **Freezing:**
-   - A strategy enters `catalog.py` only with `frozen_at` and `chosen == parameters`.
-   - Exploratory strategies go in `research_catalog.py` and are never allowed through OOS entry points.
+6. **Freezing:** a book is frozen when its JSON has `status: frozen`, `frozen_at` and `chosen == parameters`. Only the user freezes. Unfrozen books cannot open 2022+. Never edit a frozen JSON; a changed rule is a new book with a new ID.
 7. **Ledger:**
-   - Any OOS opening is written to the ledger first, via `final_evaluation`.
-   - A repeat requires an explicit rerun and a note.
+   - Any 2022+ opening is written to the ledger first.
+   - A repeat needs a `kind: void` entry with a reason first.
    - Abandoned strategies get a `kind="decision"` entry.
 
 ## 7. Known data and implementation pitfalls
@@ -185,26 +196,24 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
   - Index futures normalise over the day session only.
   - When you build a new clock, state which scope it uses.
 - **Warmup gaps:**
-  - The 250-day tail and ATR-median warmups mean there are no signals early on; index 2016 `trend_high_atr` has zero trades for this reason. That is warmup, not a bug.
-  - ADX NaN is neither "range" nor "trend".
+  - The 250-day rolling windows mean there are no signals early on. That is warmup, not a bug.
 - **Universe:** the year-y pool uses only year y−1 turnover and valid days (`screen_year`, `load_universe`). Check the symbol count after loading; a truncated fee file once shrank the pool to RB alone.
-- **Rolls:** the integer-lot ledger charges fees and slippage at roll, using the old dominant's prior close and the new dominant's open. It does not carry real contract settlement. Results are research estimates, not exchange-grade fills.
-- **Signed target ledger:** `simulate_integer_lots` is long-only. `simulate_target_lots` accepts weights from −3 to 3; negative weights are shorts. Fees, margin and exposure use the absolute lot size.
-- **Target execution:** a strategy with `EXECUTION = "target"` provides `targets(signed, bars, universe, index, columns)` and goes through `simulate_target_lots`.
-  - Weights run from 0 to `TARGET_CAP` = 3; equal-weight full is 1.
-  - Notional = weight × 1.5 × equity / pool width.
-  - Only the lot difference is traded, and lots are not resized while the weight stays the same. The whole book has one breaker.
-  - `ledger_inputs()` returns aligned ledger inputs for scripts that call the simulator directly.
+- **Rolls:** the target ledger charges fees and slippage at roll, using the old dominant's prior close and the new dominant's open. It does not carry real contract settlement. Results are research estimates, not exchange-grade fills.
+- **Target ledger (`simulate_target_lots`):**
+  - Weights run from −`TARGET_CAP` to `TARGET_CAP` (3); negative is short. The live books use 0/1.
+  - Notional = |weight| × gross × start-of-day equity / denominator. `budget_count="pool"` divides by pool width; `"selected"` divides by the number of pool names with a nonzero target, and re-splits every holding when that number changes.
+  - Lots are not resized while weight and count are unchanged. The whole book has one breaker.
+  - `熔断口径回撤` in `daily.csv` resets its peak when a halt ends. Reported max drawdown (`max_drawdown`) does not.
 - **No-night days:** about 100 of the 1460 research days have no night session (post-holiday days, and the 2020 night suspension). On those days the full-day `ts_low`/`ts_high` market mean shifts by roughly −0.23/+0.18 sd, because the normalisation grid is shorter.
-- **Year-test factors:** `load_market_clock_year` recomputes the five factors from 320 research days before 2022 onward. It asserts that the recomputed values equal the research cache on the last 60 research days. Keep `duration_factors`, `report_factors` and the cache on the same N250/M55 definition.
-- **Engine dispatch:** `_run_integer_lot_period` sends `EXECUTION = "target"` strategies to `targets()`/`simulate_target_lots`. Everything else must have the frozen-four signature `signal(trend, micro, high_vol, ranging, above_range)`.
+- **Year-test factors:** `load_through_year` recomputes the five factors from 320 research days before 2022 onward. It asserts that the recomputed values equal the research cache on the last 60 research days. Keep `duration_factors`, `report_factors` and the cache on the same N250/M55 definition.
+- **Flow:** `backtest.engine.main` maps switches to `research.market_clock_carry.run_span(start, end, by_year, book)`, which loads data, calls `strategies.market_clock_carry.targets(signed, universe, index, columns)`, runs `simulate_target_lots`, writes results with `write_results` and prints beta/alpha from `summarize`.
 
 ## 8. Coding conventions
 
 - Match the surrounding style.
   - Docstrings and comments are short and in **Chinese**. Identifiers are English. Output CSV column names are Chinese.
   - Comment density is low; comments explain "why" and sample boundaries.
-- Prefer extending existing modules (`factors.py`, `book.py`, `engine.py`, `costs.py`) over new files.
+- Prefer extending existing modules (`factors.py`, `engine.py`, `costs.py`) over new files.
   - Use one directory per strategy, with `__init__.py` plus `<id>.json`.
   - Delete dead code instead of leaving parallel versions. Git history is the archive.
 - No new dependencies beyond `requirements.txt` without asking: numpy, pandas, scipy, matplotlib, pyarrow, pytest.
@@ -218,7 +227,7 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
 2. If the change produces new numbers, write or adjust the predeclared spec first.
 3. Implement it, then add or adjust tests.
 4. Run `python -m pytest`. Run only the research-period entry point that the change needs.
-5. Update docs that describe changed behaviour or numbers: `README.md` (Chinese user manual), `backtest/README.md`, `strategies/README.md`, `docs/四策略做法与表现.md`. Update this file if rules or layout changed.
+5. Update docs that describe changed behaviour or numbers: `README.md` (Chinese user manual), `backtest/README.md`, `strategies/README.md`. Update this file if rules or layout changed.
 6. Report back with:
    - what changed;
    - which data partitions were read;

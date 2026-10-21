@@ -1,4 +1,4 @@
-"""四条尾部策略的实现已于 2026-10-20 删除。做法和当时的数字在 docs/四策略做法与表现.md。"""
+"""冻结名单。冻结状态写在各策略自己的 JSON 里，这里留空。"""
 from __future__ import annotations
 
 SELECTED: tuple = ()
