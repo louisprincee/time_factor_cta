@@ -29,7 +29,7 @@ def _bar(stamp, trading_date, price, high=None):
 
 
 def _session(trading_date, night_open, morning_open, later_high):
-    previous = pd.Timestamp(trading_date) - pd.Timedelta(days=1)
+    previous = pd.Timestamp(trading_date) - pd.Timedelta(1, unit="D")
     return [
         _bar(f"{previous:%Y-%m-%d} 21:01", trading_date, night_open),
         _bar(f"{trading_date} 09:01", trading_date, morning_open),

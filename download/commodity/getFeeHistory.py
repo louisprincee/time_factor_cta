@@ -13,7 +13,7 @@ from tfcta.costs import INDEX_MULTIPLIER, MULTIPLIER, fee_path, index_fee_path, 
 from tfcta.rq_auth import rqdata_credentials
 
 FIELDS = ["commission_type", "open_commission", "close_commission", "close_commission_today"]
-# 研究分区从 2013-10 起：米筐历史手续费大多从 2013-10 或 2014 年才有，2014–2015 熊市压力窗口要用
+# 研究分区从 2013-10 起：米筐历史手续费大多从 2013-10 或 2014 年才有
 WINDOWS = {"research": ("20131001", "20211231"), "validation_2022": ("20220101", "20221231"),
            "oos": ("20230101", "20251231")}
 

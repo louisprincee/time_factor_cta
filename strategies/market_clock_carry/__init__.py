@@ -114,7 +114,8 @@ def _own_history_z(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def market_score(signed: dict, universe: dict, index: pd.DatetimeIndex) -> pd.Series:
+def market_score(signed: dict, universe: dict, index: pd.DatetimeIndex,
+                 min_symbols: int = MIN_SYMBOLS) -> pd.Series:
     """收盘时已知的全市场分数。输入已乘事前方向，越大越看多。"""
     missing = [name for name in FACTORS if name not in signed]
     if missing:
@@ -134,7 +135,9 @@ def market_score(signed: dict, universe: dict, index: pd.DatetimeIndex) -> pd.Se
         mean = np.nanmean(stacked, axis=0)
     per_symbol = pd.DataFrame(np.where(count >= MIN_FACTORS, mean, np.nan), index=index, columns=columns)
     per_symbol = per_symbol.where(pool_mask(universe, index, columns))
-    enough = per_symbol.notna().sum(axis=1) >= MIN_SYMBOLS
+    if not isinstance(min_symbols, int) or isinstance(min_symbols, bool) or min_symbols < 1:
+        raise ValueError("市场分数的最少有效品种数必须是正整数")
+    enough = per_symbol.notna().sum(axis=1) >= min_symbols
     return per_symbol.mean(axis=1).where(enough)
 
 

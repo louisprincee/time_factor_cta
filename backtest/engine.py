@@ -734,13 +734,18 @@ def plot_performance(returns, out_dir, title="净值与最大回撤", series=Non
     nav = (1 + frame).cumprod()
     drawdown = nav / nav.cummax().clip(lower=1.0) - 1
     fig, (nav_axis, drawdown_axis) = plt.subplots(2, 1, figsize=(11, 7), sharex=True, height_ratios=[3, 1])
-    nav.plot(ax=nav_axis, lw=1.2)
+    dates = nav.index.to_numpy(dtype="datetime64[ns]")
+    for name in nav.columns:
+        nav_axis.plot(dates, nav[name].to_numpy(), label=name, lw=1.2)
     nav_axis.set_title(title)
     nav_axis.set_ylabel("净值")
     nav_axis.grid(alpha=0.3)
     nav_axis.legend(loc="upper left", fontsize=8)
-    drawdown.plot(ax=drawdown_axis, lw=1.0, legend=False)
-    drawdown_axis.fill_between(drawdown.index, drawdown.min(axis=1), 0, alpha=0.2)
+    for name in drawdown.columns:
+        drawdown_axis.plot(dates, drawdown[name].to_numpy(), lw=1.0)
+    drawdown_axis.fill_between(
+        dates, drawdown.min(axis=1).to_numpy(), 0, alpha=0.2
+    )
     drawdown_axis.set_ylabel("回撤")
     drawdown_axis.grid(alpha=0.3)
     fig.tight_layout()

@@ -111,6 +111,18 @@ def test_names_outside_the_year_pool_get_zero_weight():
     assert weights.loc[index.year == 2016, "S11"].eq(0.0).all()
 
 
+def test_market_score_can_use_a_fixed_small_instrument_pool():
+    index = pd.bdate_range("2015-01-01", periods=400)
+    symbols = ["IF", "IH", "IC"]
+    signed = _signed(index, symbols)
+    universe = {int(year): symbols for year in sorted(set(index.year))}
+    assert S.market_score(signed, universe, index).isna().all()
+    score = S.market_score(signed, universe, index, min_symbols=3)
+    assert score.notna().any()
+    with pytest.raises(ValueError, match="正整数"):
+        S.market_score(signed, universe, index, min_symbols=0)
+
+
 def test_carry_coverage_names_the_missing_symbol_year():
     index = pd.bdate_range("2021-01-04", periods=40)
     carry = pd.DataFrame(0.1, index=index, columns=["A", "B"])
