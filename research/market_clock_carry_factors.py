@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -19,6 +18,7 @@ from backtest.engine import (
 from research.market_clock_carry import pool_open_return, sectors, simulate, summarize
 from research.time_factor_screen import ols_hac
 from strategies import market_clock_carry as S
+from strategies.catalog import BOOKS
 from tfcta import config as C
 
 CONFIG_PATH = C.CONFIG_DIR / "research" / "market_clock_carry_factors.json"
@@ -140,21 +140,18 @@ def decomposition(data, alpha_lags):
     for case, decision in cases.items():
         target = decision.shift(1).fillna(0.0).where(pool, 0.0).reindex(
             index=inputs["index"], columns=inputs["columns"]).fillna(0.0)
-        for split in ("pool", "selected"):
-            book = SimpleNamespace(GROSS=1.0, GROSS_SPLIT=split)
-            daily, positions, _ = simulate(target, inputs, book)
-            label = f"{case}·{'按池宽' if split == 'pool' else '入选平分'}"
-            row, _ = summarize(label, daily, positions, market, inputs["adjusted_open_delta"], sectors())
-            rows.append({"条件": case, "分仓": split, **{k: row[k] for k in (
-                "净Sharpe", "年化净收益", "最大回撤", "相对池子beta", "相对池子年化alpha", "alpha_t",
-                "alpha为正年份", "年化成本占权益", "平均敞口倍数")}})
-            returns[label] = daily["净收益"].fillna(0.0)
+        daily, positions, _ = simulate(target, inputs, S.BOOK)
+        row, _ = summarize(case, daily, positions, market, inputs["adjusted_open_delta"], sectors())
+        rows.append({"条件": case, **{k: row[k] for k in (
+            "净Sharpe", "年化净收益", "最大回撤", "相对池子beta", "相对池子年化alpha", "alpha_t",
+            "alpha为正年份", "年化成本占权益", "平均敞口倍数")}})
+        returns[case] = daily["净收益"].fillna(0.0)
     return pd.DataFrame(rows), pd.DataFrame(returns)
 
 
 def book_returns(data):
     out = {}
-    for book in S.BOOKS:
+    for book in BOOKS:
         path = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "research" / "daily.csv"
         if not path.is_file():
             raise FileNotFoundError(f"{book.NAME} 还没有研究期结果，先跑 python -m backtest.engine --research")

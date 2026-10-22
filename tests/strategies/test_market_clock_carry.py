@@ -6,8 +6,7 @@ import pandas as pd
 import pytest
 
 from strategies import market_clock_carry as S
-from strategies.catalog import SELECTED
-from strategies.research_catalog import RESEARCH_EXPERIMENTS
+from strategies.catalog import BOOKS, book_named
 from tfcta import config as C
 
 
@@ -19,25 +18,20 @@ def _signed(index, symbols, seed=2):
     }
 
 
-def test_four_books_share_the_signal_and_differ_only_in_sizing():
-    assert [(book.ID, book.GROSS, book.GROSS_SPLIT) for book in S.BOOKS] == [
-        ("market_clock_pool", 1.0, "pool"),
-        ("market_clock_carry", 1.0, "selected"),
-        ("market_clock_pool_15", 1.5, "pool"),
-        ("market_clock_carry_15", 1.5, "selected"),
+def test_catalog_holds_the_two_frozen_books():
+    assert [(book.ID, book.NAME, book.GROSS) for book in BOOKS] == [
+        ("market_clock_pool", "按池宽1倍", 1.0),
+        ("market_clock_slow_short", "按池宽1倍加慢趋势空头", 1.0),
     ]
-    for book in S.BOOKS:
+    for book in BOOKS:
         parameters = book.load_config()["parameters"]
-        assert parameters["gross_exposure_limit"] == book.GROSS
-        assert parameters["gross_split"] == book.GROSS_SPLIT
-        assert parameters["rebalance_on_count_change"] is (book.GROSS_SPLIT == "selected")
+        assert parameters["gross_split"] == "pool" and parameters["rebalance_on_count_change"] is False
         assert parameters["roll_yield_lag_days"] == 1 and parameters["drawdown_breaker"] == 0.10
-    assert [item.ID for item in RESEARCH_EXPERIMENTS] == [book.ID for book in S.BOOKS]
-    assert SELECTED == ()
-    assert S.book_named("按池宽1倍").ID == "market_clock_pool"
-    assert S.book_named("market_clock_carry_15").NAME == "入选平分1.5倍"
-    with pytest.raises(ValueError):
-        S.book_named("没有这条")
+    assert book_named("按池宽1倍") is S.BOOK
+    assert book_named("market_clock_slow_short").NAME == "按池宽1倍加慢趋势空头"
+    for gone in ("没有这条", "入选平分1倍", "market_clock_pool_15", "market_clock_carry_five_factor_regime"):
+        with pytest.raises(ValueError):
+            book_named(gone)
 
 
 def _explore(config):
@@ -47,15 +41,15 @@ def _explore(config):
 
 
 def test_config_states_explore_or_frozen_and_nothing_else(tmp_path):
-    book = S.book_named("按池宽1倍")
+    book = S.BOOK
     frozen = json.loads(book.CONFIG_PATH.read_text(encoding="utf-8"))
     explore = _explore(frozen)
     cases = {
         "explore_with_frozen_at": {**explore, "frozen_at": "2026-10-21"},
         "frozen_without_chosen": {k: v for k, v in frozen.items() if k != "chosen"},
         "frozen_chosen_differs": {**frozen, "chosen": {**frozen["parameters"], "gross_exposure_limit": 2.0}},
-        "split_flag_wrong": {**frozen, "parameters": {**frozen["parameters"], "rebalance_on_count_change": True},
-                             "chosen": {**frozen["parameters"], "rebalance_on_count_change": True}},
+        "split_flag_wrong": {**frozen, "parameters": {**frozen["parameters"], "gross_split": "selected"},
+                             "chosen": {**frozen["parameters"], "gross_split": "selected"}},
         "reads_2026": {**frozen, "sample": "参数只在研究期上选。"},
         "unknown_status": {**frozen, "status": "draft"},
     }
@@ -63,23 +57,24 @@ def test_config_states_explore_or_frozen_and_nothing_else(tmp_path):
         path = tmp_path / f"{name}.json"
         path.write_text(json.dumps(broken, ensure_ascii=False), encoding="utf-8")
         with pytest.raises(ValueError):
-            S._load_config(path, book.ID, book.GROSS, book.GROSS_SPLIT)
+            S.check_config(json.loads(path.read_text(encoding="utf-8")), book.ID)
     for name, good in (("explore", explore), ("frozen", frozen)):
         path = tmp_path / f"{name}.json"
         path.write_text(json.dumps(good, ensure_ascii=False), encoding="utf-8")
-        assert S._load_config(path, book.ID, book.GROSS, book.GROSS_SPLIT)["status"] == good["status"]
+        assert S.check_config(json.loads(path.read_text(encoding="utf-8")), book.ID)["status"] == good["status"]
 
 
-def test_all_four_books_are_frozen_and_an_unfrozen_copy_refuses_later_windows(monkeypatch, tmp_path):
-    for book in S.BOOKS:
+def test_both_books_are_frozen_and_an_unfrozen_copy_refuses_later_windows(monkeypatch, tmp_path):
+    frozen_at = {"market_clock_pool": "2026-10-21", "market_clock_slow_short": "2026-10-22"}
+    for book in BOOKS:
         config = book.frozen()
-        assert config["frozen_at"] == "2026-10-21" and config["chosen"] == config["parameters"]
-    book = S.book_named("入选平分1倍")
-    path = tmp_path / "explore.json"
-    path.write_text(json.dumps(_explore(book.load_config()), ensure_ascii=False), encoding="utf-8")
-    monkeypatch.setattr(book, "CONFIG_PATH", path)
-    with pytest.raises(C.HoldoutViolation, match="还没冻结"):
-        book.frozen()
+        assert config["frozen_at"] == frozen_at[book.ID] and config["chosen"] == config["parameters"]
+    for book in BOOKS:
+        path = tmp_path / f"{book.ID}.json"
+        path.write_text(json.dumps(_explore(book.load_config()), ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(book, "CONFIG_PATH", path)
+        with pytest.raises(C.HoldoutViolation, match="还没冻结"):
+            book.frozen()
 
 
 def test_both_the_score_and_the_lagged_carry_must_be_positive():

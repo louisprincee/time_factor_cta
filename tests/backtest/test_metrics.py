@@ -101,7 +101,7 @@ def test_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
     (["--year", "2024"], (2024, 2024, False, None)),
     (["--start", "2018", "--end", "2020"], (2018, 2020, False, None)),
     (["按池宽1倍", "--research"], (2016, 2021, False, "按池宽1倍")),
-    (["--strategy", "入选平分1.5倍", "--year", "2019"], (2019, 2019, False, "入选平分1.5倍")),
+    (["--strategy", "按池宽1倍加慢趋势空头", "--year", "2019"], (2019, 2019, False, "按池宽1倍加慢趋势空头")),
 ])
 def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
     import research.market_clock_carry as driver
@@ -115,7 +115,7 @@ def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
 
 @pytest.mark.parametrize("argv", [
     [], ["--start", "2018"], ["--year", "2019", "--by-year"], ["--research", "--strategy", "没有这条"],
-    ["按池宽1倍", "--strategy", "入选平分1倍", "--research"],
+    ["按池宽1倍", "--strategy", "market_clock_slow_short", "--research"],
 ])
 def test_cli_rejects_incomplete_or_unknown_arguments(argv):
     with pytest.raises(SystemExit):
@@ -135,9 +135,9 @@ def _freeze_books(monkeypatch, tmp_path, books):
 
 def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypatch, tmp_path):
     import research.market_clock_carry as driver
-    from strategies.market_clock_carry import BOOKS
+    from strategies.catalog import BOOKS
 
-    book = BOOKS[2]                           # 任何一条没冻结，整批都不开
+    book = BOOKS[1]                           # 任何一条没冻结，整批都不开
     config = json.loads(book.CONFIG_PATH.read_text(encoding="utf-8"))
     config = {k: v for k, v in config.items() if k not in ("frozen_at", "chosen")}
     config.update(status="exploratory_predeclared", sample="不读取2022及2023年以后，不读 2026。")
@@ -156,7 +156,7 @@ def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypa
 
 def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatch, tmp_path):
     import research.market_clock_carry as driver
-    from strategies.market_clock_carry import BOOKS
+    from strategies.catalog import BOOKS
 
     _freeze_books(monkeypatch, tmp_path, BOOKS)
     ledger = tmp_path / "ledger.jsonl"
@@ -172,13 +172,17 @@ def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatc
     driver.run_span(2024, 2024, ledger=ledger)
     assert [name for name, _, _ in seen] == [f"{book.ID}_2024" for book in BOOKS]
     assert all(frozen == "2026-10-21" and start == "2024-01-01" for _, frozen, start in seen)
-    driver.run_span(2022, 2022, ledger=ledger, book="按池宽1.5倍")
-    assert seen[-1][0] == "market_clock_pool_15_2022"
+    driver.run_span(2022, 2022, ledger=ledger, book="按池宽1倍加慢趋势空头")
+    assert seen[-1][0] == "market_clock_slow_short_2022"
+    hashed = [e for e in C.read_ledger(ledger) if e.get("strategy") == "market_clock_slow_short_2022"][0]["sha256"]
+    assert len(hashed) == 3 and {
+        "strategies/market_clock_carry/__init__.py", "strategies/market_clock_slow_short/__init__.py",
+    } <= set(hashed)
 
 
 def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monkeypatch, tmp_path):
     import research.market_clock_carry as driver
-    from strategies.market_clock_carry import book_named
+    from strategies.catalog import book_named
 
     book = book_named("按池宽1倍")
     _freeze_books(monkeypatch, tmp_path, [book])

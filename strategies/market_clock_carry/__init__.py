@@ -1,7 +1,7 @@
 """收盘定权重，下一交易日第一根开盘成交。
 
 有夜盘时这一根是夜盘开盘，没有夜盘时是日盘开盘。夜盘算下一个交易日。
-四条共用一套信号，只差分仓方式和名义敞口上限，规格在同目录的四份 JSON。
+按池宽1倍（market_clock_pool）的规格在同目录 JSON，导入时跟代码核对。慢趋势空头那条复用这里的多头腿。
 """
 from __future__ import annotations
 
@@ -20,16 +20,15 @@ Z_MIN_PERIODS = 125
 Z_CLIP = 3.0
 MIN_FACTORS = 3
 MIN_SYMBOLS = 10
-ID = "market_clock_carry"
+GROSS = 1.0
 DRAWDOWN_LIMIT = 0.10
 HALT_DAYS = 10
 CARRY_MAX_MISSING = 0.05      # 池内某品种某年展期收益缺失超过 5% 就报错，不悄悄当成不入选
 ROLL_YIELD_ROOT = C.COMMODITY_DATA / "external_rqdata"
 
 
-def _load_config(path, strategy_id, gross, gross_split) -> dict:
-    """规格必须事先写明。探索期不能带冻结标记；冻结后 chosen 必须等于 parameters。"""
-    config = json.loads(Path(path).read_text(encoding="utf-8"))
+def check_config(config: dict, strategy_id: str) -> dict:
+    """规格必须事先写明。探索期不能带冻结标记；冻结后 chosen 必须等于 parameters。多头腿和账本口径与本模块一致。"""
     parameters = config.get("parameters") or {}
     sample = config.get("sample", "")
     status = config.get("status")
@@ -49,9 +48,9 @@ def _load_config(path, strategy_id, gross, gross_split) -> dict:
         or tuple(parameters.get("factors", ())) != FACTORS
         or parameters.get("roll_yield") != "annualized_yield"
         or parameters.get("roll_yield_lag_days") != 1
-        or parameters.get("gross_exposure_limit") != gross
-        or parameters.get("gross_split") != gross_split
-        or parameters.get("rebalance_on_count_change") is not (gross_split == "selected")
+        or parameters.get("gross_exposure_limit") != GROSS
+        or parameters.get("gross_split") != "pool"
+        or parameters.get("rebalance_on_count_change") is not False
         or parameters.get("drawdown_breaker") != DRAWDOWN_LIMIT
         or parameters.get("halt_days") != HALT_DAYS
     ):
@@ -60,22 +59,27 @@ def _load_config(path, strategy_id, gross, gross_split) -> dict:
 
 
 class Book:
-    """同一套信号。只差分仓方式和名义敞口上限。"""
+    """一条策略：规格、冻结检查、收盘决策。回测和台账在 research.market_clock_carry。"""
 
-    def __init__(self, strategy_id, name, gross, gross_split, filename):
-        self.ID = strategy_id
-        self.NAME = name
-        self.GROSS = gross
-        self.GROSS_SPLIT = gross_split
-        self.CONFIG_PATH = Path(__file__).with_name(filename)
-        sizing = "入选品种平分，入选数一变全部重新平分" if gross_split == "selected" else "按当年池宽分"
-        self.DETAIL = (
-            "五因子收盘分数大于0且滞后一日年化展期收益大于0的品种"
-            f"{sizing}{gross:g}倍名义敞口/下一交易日第一根开盘成交/权重不变则留仓/回撤10%清仓并停10个交易日"
-        )
+    ID = "market_clock_pool"
+    NAME = "按池宽1倍"
+    GROSS = GROSS
+    CONFIG_PATH = Path(__file__).with_name("market_clock_pool.json")
+    DETAIL = (
+        "五因子收盘分数大于0且滞后一日年化展期收益大于0的品种按当年池宽分1倍名义敞口"
+        "/下一交易日第一根开盘成交/权重不变则留仓/回撤10%清仓并停10个交易日"
+    )
+
+    @property
+    def FILES(self) -> list[Path]:
+        """打开 2022 及以后时记进台账的文件哈希。"""
+        return [Path(__file__), self.CONFIG_PATH]
+
+    def check(self, config: dict) -> dict:
+        return check_config(config, self.ID)
 
     def load_config(self) -> dict:
-        return _load_config(self.CONFIG_PATH, self.ID, self.GROSS, self.GROSS_SPLIT)
+        return self.check(json.loads(self.CONFIG_PATH.read_text(encoding="utf-8")))
 
     def frozen(self) -> dict:
         """冻结了才能打开 2022 及以后。没冻结直接拒绝，不写台账。"""
@@ -87,27 +91,8 @@ class Book:
             )
         return config
 
-
-BOOKS = (
-    Book("market_clock_pool", "按池宽1倍", 1.0, "pool", "market_clock_pool.json"),
-    Book(ID, "入选平分1倍", 1.0, "selected", "market_clock_carry.json"),
-    Book("market_clock_pool_15", "按池宽1.5倍", 1.5, "pool", "market_clock_pool_15.json"),
-    Book("market_clock_carry_15", "入选平分1.5倍", 1.5, "selected", "market_clock_carry_15.json"),
-)
-
-
-def book_named(name: str) -> Book:
-    """用策略 ID 或中文名取一条。"""
-    key = str(name).strip()
-    matches = [book for book in BOOKS if key in (book.ID, book.NAME)]
-    if len(matches) != 1:
-        known = "、".join(f"{book.NAME}（{book.ID}）" for book in BOOKS)
-        raise ValueError(f"没有这个策略 {name}。可选：{known}")
-    return matches[0]
-
-
-def load_config() -> dict:
-    return book_named(ID).load_config()
+    def targets(self, data, columns) -> pd.DataFrame:
+        return targets(data.factors.signed, data.universe, data.returns.index, columns)
 
 
 def pool_mask(universe: dict, index: pd.DatetimeIndex, columns) -> pd.DataFrame:
@@ -218,5 +203,5 @@ def targets(signed: dict, universe: dict, index: pd.DatetimeIndex, columns,
     return decision_weights(score, lagged).shift(1).fillna(0.0).where(pool, 0.0)
 
 
-for _book in BOOKS:
-    _book.load_config()
+BOOK = Book()
+BOOK.load_config()

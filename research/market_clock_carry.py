@@ -1,4 +1,4 @@
-"""当日分数且展期为正：按区间跑四本账，算相对池子的 beta 和 alpha，管 2022 及以后的台账。
+"""当日分数且展期为正：按区间跑两条冻结策略，算相对池子的 beta 和 alpha，管 2022 及以后的台账。
 
     python -m research.market_clock_carry          # 研究期 2016–2021
     python -m backtest.engine --research            # 同上，命令行入口
@@ -8,10 +8,8 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -21,6 +19,7 @@ from backtest.engine import (
     max_drawdown, newey_west_t, sharpe_ratio, simulate_target_lots, write_results,
 )
 from strategies import market_clock_carry as S
+from strategies.catalog import BOOKS, book_named
 from tfcta import config as C
 
 NW_LAGS = 10
@@ -98,7 +97,7 @@ def simulate(target, inputs, book):
         target, *(inputs[key] for key in keys), inputs["universe"], inputs["multipliers"],
         inputs["open_fee"], inputs["close_fee"], inputs["roll_close_fee"], inputs["slippage"],
         initial_capital=INITIAL_CAPITAL, margin_rate=MARGIN_RATE, exposure_limit=book.GROSS,
-        drawdown_limit=S.DRAWDOWN_LIMIT, halt_days=S.HALT_DAYS, budget_count=book.GROSS_SPLIT,
+        drawdown_limit=S.DRAWDOWN_LIMIT, halt_days=S.HALT_DAYS,
     )
 
 
@@ -117,7 +116,7 @@ def _load(end: int):
 def _book(data, years: tuple[int, ...], period, book) -> dict:
     inputs = ledger_inputs(data, years, pd.Timestamp(f"{max(years)}-12-31"))
     every = sorted({symbol for members in data.universe.values() for symbol in members})
-    target = S.targets(data.factors.signed, data.universe, data.returns.index, every).reindex(
+    target = book.targets(data, every).reindex(
         index=inputs["index"], columns=inputs["columns"]).fillna(0.0)
     daily, positions, events = simulate(target, inputs, book)
     summary, _ = write_results(period, book, daily, positions, events, inputs["symbols"])
@@ -170,16 +169,12 @@ def _show_saved(period, book) -> bool:
     return True
 
 
-def _hashes(paths) -> dict:
-    return {Path(p).name: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
-
-
 def _chosen(book):
     """点了名就只跑那一条。不点名时返回 None，调用方跑全部。"""
     if book is None:
         return None
     if isinstance(book, str):
-        return S.book_named(book)
+        return book_named(book)
     return book
 
 
@@ -193,7 +188,7 @@ def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None
         for year in range(start, end + 1):
             run_span(year, year, ledger=ledger, book=book)
         return
-    books = (book,) if book is not None else S.BOOKS
+    books = (book,) if book is not None else BOOKS
     period = _period_for(start, end)
     if end <= C.RESEARCH_END.year:
         data = _load(end)
@@ -224,7 +219,7 @@ def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None
                 f"{name} 在台账里已经打开过，但结果文件不在。要重跑先在台账里作废（追加 kind=void）并写明原因。"
             )
         config = configs[item.ID]
-        files = [Path(S.__file__), item.CONFIG_PATH]
+        files = item.FILES
         note = "重开，之前的结果已作废" if state == "void" else ""
 
         def run(item=item):
@@ -242,7 +237,7 @@ def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None
                 "run_at": datetime.now().isoformat(timespec="seconds"),
                 "strategy": name, "frozen_at": config["frozen_at"], "chosen": config["chosen"],
                 "test_start": f"{start}-01-01", "test_end": f"{end}-12-31",
-                "sha256": _hashes(files), "note": note,
+                "sha256": C.file_hashes(files), "note": note,
             }, ledger)
             run()
             kind = "year_test"

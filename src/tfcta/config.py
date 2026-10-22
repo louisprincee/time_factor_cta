@@ -210,6 +210,16 @@ def _sha256(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def file_hashes(paths) -> dict:
+    """台账里的文件哈希，键是相对仓库根的路径，两个 __init__.py 不会互相覆盖。"""
+    out = {}
+    for path in paths:
+        path = Path(path).resolve()
+        key = path.relative_to(PROJECT_ROOT).as_posix() if path.is_relative_to(PROJECT_ROOT) else path.name
+        out[key] = _sha256(path)
+    return out
+
+
 class final_evaluation:
     """唯一能打开 2023 年以后数据的入口。
 
@@ -240,7 +250,7 @@ class final_evaluation:
             "run_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "strategy": self.strategy, "chosen": self.spec["chosen"], "frozen_at": self.spec["frozen_at"],
             "oos_start": str(self.oos_start), "oos_end": str(self.oos_end),
-            "sha256": {Path(p).name: _sha256(p) for p in self.files}, "note": self.note,
+            "sha256": file_hashes(self.files), "note": self.note,
         }
         append_ledger(entry, self.ledger)
         _final_evaluation = {**entry, "oos_end": self.oos_end}

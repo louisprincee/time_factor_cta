@@ -1,4 +1,4 @@
-"""目标仓位整数手账本：只成交差额、换月、缺价、熔断、做空、入选平分。合成数据。"""
+"""目标仓位整数手账本：只成交差额、换月、缺价、熔断、做空、按池宽分。合成数据。"""
 import numpy as np
 import pandas as pd
 import pytest
@@ -30,6 +30,7 @@ def _inputs(weights, delta=0.0, fee=0.0, symbols=("CU",)):
         "open_fee": frame(float(fee)), "close_fee": frame(float(fee)),
         "roll_close_fee": frame(float(fee)), "slippage": frame(0.0),
         "initial_capital": 10_000.0, "margin_rate": 0.20, "exposure_limit": 1.0, "drawdown_limit": 0.20,
+        "halt_days": 10,
     }
     return targets, inputs
 
@@ -98,18 +99,11 @@ def test_inputs_must_share_the_target_index_and_columns():
         simulate_target_lots(targets, **inputs)
 
 
-def test_breaker_without_halt_days_waits_for_next_year():
-    targets, inputs = _inputs([1.0] * 5, delta=-30.0)
-    daily, _, events = simulate_target_lots(targets, **inputs)
-    assert "回撤熔断清仓触发" in set(events["事件"])
-    assert daily["持仓总手数"].iloc[-1] == 0 and daily["停止新开仓"].iloc[-1]
-
-
-def test_breaker_with_halt_days_pauses_then_reopens_and_true_drawdown_ignores_the_reset():
+def test_breaker_pauses_halt_days_then_reopens_and_true_drawdown_ignores_the_reset():
     targets, inputs = _inputs([0.0] + [1.0] * 15)
     inputs["adjusted_open_delta"].iloc[1, 0] = -20.0
     inputs["drawdown_limit"] = 0.15
-    daily, _, events = simulate_target_lots(targets, **inputs, halt_days=10)
+    daily, _, events = simulate_target_lots(targets, **inputs)
     assert "暂停 10 个交易日" in events.loc[events["事件"] == "回撤熔断清仓触发", "说明"].iloc[0]
     assert daily["停止新开仓"].iloc[2:12].all() and not bool(daily["停止新开仓"].iloc[12])
     assert daily["开仓笔数"].iloc[12] == 1
@@ -143,32 +137,15 @@ def test_weight_above_one_scales_the_pool_budget():
     assert positions["手数"].tolist() == [20, 20]               # 2 × 1.0 × 10000 / (100 × 10)
 
 
-def test_pool_budget_divides_by_pool_width_and_selected_by_names_with_a_target():
+def test_pool_budget_divides_by_pool_width():
     targets, inputs = _inputs({"CU": [0.0, 1.0, 1.0], "AL": [0.0, 0.0, 0.0]}, symbols=("CU", "AL"))
     _, pooled, _ = simulate_target_lots(targets, **inputs)
-    _, selected, _ = simulate_target_lots(targets, **inputs, budget_count="selected")
     assert pooled.loc[pooled["品种"] == "CU", "手数"].iloc[0] == 5      # 10000 / 2 / 1000
-    assert selected.loc[selected["品种"] == "CU", "手数"].iloc[0] == 10  # 10000 / 1 / 1000
-    assert selected.loc[selected["品种"] == "AL"].empty
+    assert pooled.loc[pooled["品种"] == "AL"].empty
 
 
-def test_selected_budget_resplits_every_holding_when_the_count_changes():
-    weights = {"CU": [1.0, 1.0, 1.0, 1.0], "AL": [0.0, 1.0, 1.0, 0.0]}
-    targets, inputs = _inputs(weights, symbols=("CU", "AL"))
-    daily, positions, events = simulate_target_lots(targets, **inputs, budget_count="selected")
-    lots = positions.pivot(index="交易日", columns="品种", values="手数").fillna(0)
-    # 一个入选时 CU 拿满 10 手；两个入选时各 5 手，CU 减 5；回到一个时 CU 再加回 10
-    assert lots["CU"].tolist() == [10, 5, 5, 10]
-    assert lots["AL"].tolist() == [0, 5, 5, 0]
-    assert daily["敞口倍数"].max() == pytest.approx(1.0)
-    pooled_daily, _, _ = simulate_target_lots(targets, **inputs)
-    assert pooled_daily["敞口倍数"].max() == pytest.approx(1.0)
-    assert list(events["事件"]) == ["开仓", "减仓", "开仓", "加仓", "平仓"]   # 同一天先 CU 后 AL
-
-
-def test_selected_budget_holds_when_neither_the_count_nor_the_weight_changes():
-    weights = {"CU": [1.0, 1.0, 1.0], "AL": [1.0, 1.0, 1.0]}
-    targets, inputs = _inputs(weights, delta=5.0, symbols=("CU", "AL"))
-    daily, _, _ = simulate_target_lots(targets, **inputs, budget_count="selected")
-    assert daily["开仓笔数"].tolist() == [2, 0, 0]
-    assert daily["平仓笔数"].sum() == 0
+def test_halt_days_must_be_a_positive_integer():
+    targets, inputs = _inputs([1.0, 1.0])
+    for bad in (0, 1.5, True, None):
+        with pytest.raises(ValueError, match="停牌天数"):
+            simulate_target_lots(targets, **{**inputs, "halt_days": bad})

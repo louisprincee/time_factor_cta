@@ -1,6 +1,6 @@
 """整数手数期货账本、绩效统计、行情装载和命令行入口。
 
-    python -m backtest.engine --research                     # 2016–2021，四条都跑
+    python -m backtest.engine --research                     # 2016–2021，两条都跑
     python -m backtest.engine 按池宽1倍 --research           # 只跑点名的一条
     python -m backtest.engine --research --by-year            # 每年一本新的 1 亿元账
     python -m backtest.engine --start 2018 --end 2020
@@ -8,7 +8,8 @@
     python -m backtest.engine --year 2024                     # 单年，冻结后才能打开，先记台账
     python -m backtest.engine --oos [--by-year]               # 2023–2025，冻结后才能打开，先记台账
 
-策略规则在 strategies/market_clock_carry，区间和台账在 research/market_clock_carry。不读 2026。
+策略规则在 strategies/market_clock_carry 和 strategies/market_clock_slow_short，名单在 strategies/catalog，
+区间和台账在 research/market_clock_carry。不读 2026。
 """
 from __future__ import annotations
 
@@ -66,18 +67,15 @@ def simulate_target_lots(
     margin_rate: float,
     exposure_limit: float,
     drawdown_limit: float,
-    halt_days: int | None = None,
-    budget_count: str = "pool",
+    halt_days: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """按目标仓位交易整数手，只成交目标与现有手数的差额。负权重做空。
 
     targets[t, s] 是 t 日开盘的目标权重（-TARGET_CAP..TARGET_CAP）。名义金额用权重的绝对值：
-    |权重| × 敞口上限 × 期初权益 / 分母。budget_count 为 pool 时分母是当年池宽，为 selected 时分母是当天目标权重非零的池内品种数；
-    selected 下入选品种数一变，所有持仓按新的份数重新平分，份数不变时不随权益调手数。
-    等权满仓、按池宽分时，每个品种的权重绝对值为 1。
+    |权重| × 敞口上限 × 期初权益 / 当年池宽。等权满仓时每个品种的权重绝对值为 1。
     手数与权重同号，盈亏 = 有符号手数 × 乘数 × 复权开盘变动。权重不变就继续持有，不因价格或权益变化调整手数。
     无开盘价或单价锁定代理当日不成交，次日重试。整本账一个峰值回撤熔断：触发后清仓。
-    halt_days 为空时停到下一个日历年；给出天数时停那么多个交易日（含触发日），恢复当日把峰值改成当时权益。
+    熔断后停 halt_days 个交易日（含触发日），恢复当日把峰值改成当时权益。
     """
     frames = {
         "open_price": open_price, "close_price": close_price,
@@ -100,10 +98,8 @@ def simulate_target_lots(
         raise ValueError("初始资金必须是正的有限数")
     if not 0 < margin_rate <= 1 or exposure_limit <= 0 or not 0 < drawdown_limit < 1:
         raise ValueError("保证金率、敞口上限或回撤熔断阈值无效")
-    if halt_days is not None and (not isinstance(halt_days, int) or isinstance(halt_days, bool) or halt_days < 1):
+    if not isinstance(halt_days, int) or isinstance(halt_days, bool) or halt_days < 1:
         raise ValueError("熔断停牌天数必须是正整数")
-    if budget_count not in ("pool", "selected"):
-        raise ValueError("预算分母只能是 pool 或 selected")
     for symbol in columns:
         multiplier = multipliers.get(symbol)
         if multiplier is None or not np.isfinite(multiplier) or multiplier <= 0:
@@ -112,7 +108,6 @@ def simulate_target_lots(
     high, low = adjusted_high.to_numpy(dtype="float64"), adjusted_low.to_numpy(dtype="float64")
     locked = np.isfinite(high) & np.isfinite(low) & np.isclose(high, low, rtol=0.0, atol=1e-10)
     lots, applied = dict.fromkeys(columns, 0), dict.fromkeys(columns, 0.0)
-    applied_slots = dict.fromkeys(columns, 0)
     contracts, pending_roll = dict.fromkeys(columns), set()
     last_price, last_close = dict.fromkeys(columns, np.nan), dict.fromkeys(columns, np.nan)
     equity = peak_equity = float(initial_capital)
@@ -141,18 +136,13 @@ def simulate_target_lots(
         year = int(day.year)
         cost = opened = closed = rolled = blocked = 0
         start_equity = equity
-        if halt_days is not None and i == halt_until_i:
+        if i == halt_until_i:
             peak_equity = equity
         peak_equity = max(peak_equity, equity)
         drawdown_at_open = equity / peak_equity - 1.0
         if previous_drawdown > -drawdown_limit and drawdown_at_open <= -drawdown_limit:
-            if halt_days is None:
-                halt_until_year = year + 1
-                pause = f"暂停至 {halt_until_year} 年"
-            else:
-                halt_until_i = i + halt_days
-                pause = f"暂停 {halt_days} 个交易日"
-            event(day, "回撤熔断清仓触发", detail=f"峰值回撤 {drawdown_at_open:.2%}；清仓并{pause}")
+            halt_until_i = i + halt_days
+            event(day, "回撤熔断清仓触发", detail=f"峰值回撤 {drawdown_at_open:.2%}；清仓并暂停 {halt_days} 个交易日")
         for symbol in columns:
             raw_open = open_price.at[day, symbol]
             if np.isfinite(raw_open) and raw_open > 0:
@@ -166,14 +156,7 @@ def simulate_target_lots(
             event(day, "保证金不足", detail="清仓")
         halted = year < halt_until_year or i < halt_until_i or margin_call
         members = universe.get(year, [])
-        member_set = set(members)
-        if budget_count == "selected":
-            slots = sum(
-                1 for symbol in columns
-                if symbol in member_set and float(targets.at[day, symbol]) != 0.0
-            )
-        else:
-            slots = len(members)
+        slots = len(members)
 
         for symbol in columns:
             raw_open = open_price.at[day, symbol]
@@ -186,9 +169,8 @@ def simulate_target_lots(
             if bool(rolls.at[day, symbol]) and lots[symbol]:
                 pending_roll.add(symbol)
             target = 0.0 if halted or symbol not in members else float(targets.at[day, symbol])
-            resplit = budget_count == "selected" and target != 0.0 and slots != applied_slots[symbol]
             if not tradable:
-                if (lots[symbol] and symbol in pending_roll) or target != applied[symbol] or resplit:
+                if (lots[symbol] and symbol in pending_roll) or target != applied[symbol]:
                     blocked += 1
                 continue
             raw_open = float(raw_open)
@@ -207,7 +189,7 @@ def simulate_target_lots(
                 contracts[symbol] = contract
                 pending_roll.discard(symbol)
                 rolled += 1
-            if target == applied[symbol] and not resplit and not (target == 0.0 and lots[symbol]):
+            if target == applied[symbol] and not (target == 0.0 and lots[symbol]):
                 continue
             want = 0
             if slots and target > 0.0:
@@ -287,7 +269,6 @@ def simulate_target_lots(
                     event(day, "不足一手", symbol, detail=f"目标权重 {target:.2f}")
             lots[symbol] = want
             applied[symbol] = target
-            applied_slots[symbol] = slots if target != 0.0 else 0
             if not want:
                 contracts[symbol] = None
                 pending_roll.discard(symbol)
@@ -854,7 +835,7 @@ def write_results(period, strategy, daily, positions, events, symbols, initial_c
 # --------------------------------------------------------------------------
 def main(argv=None):
     from research import market_clock_carry as driver  # driver 也导入本模块，延后导入避免循环
-    from strategies.market_clock_carry import book_named
+    from strategies.catalog import book_named
 
     parser = argparse.ArgumentParser(
         description="当日分数且展期为正的整数手数回测。研究期随时可跑；2022 及以后要先冻结，先记台账再读。不读 2026。"
@@ -869,7 +850,7 @@ def main(argv=None):
     parser.add_argument("--by-year", action="store_true", help="区间里每年一本新的 1 亿元账")
     parser.add_argument(
         "--strategy", default=None,
-        help="策略 ID 或中文名：按池宽1倍、入选平分1倍、按池宽1.5倍、入选平分1.5倍。不写就四条都跑。",
+        help="策略 ID 或中文名：按池宽1倍、按池宽1倍加慢趋势空头。不写就两条都跑。",
     )
     parser.add_argument("name", nargs="?", default=None, help="同 --strategy")
     args = parser.parse_args(argv)

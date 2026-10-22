@@ -1,0 +1,68 @@
+{
+  "id": "market_clock_slow_short",
+  "status": "frozen",
+  "declared_at": "2026-10-22",
+  "frozen_at": "2026-10-22",
+  "sample": "规则在 2026-10-22 研究期熊市应对检验里事先登记（商品 2016-01-01 至 2021-12-31，2015 只做预热），并在研究分片里的 2014-01-01 至 2015-12-31 熊市压力窗口上看过一次。冻结后 2022 及以后用 --validation、--year、--oos 打开，先记台账再读。多头腿就是按池宽1倍，它的 2022、2023、2024 已经打开过，所以这三年对本策略不干净；空头腿从没在 2022 及以后跑过。2025 没有打开过。不读 2026。",
+  "hypothesis": "多头腿同按池宽1倍：五因子收盘市场分数大于 0，并且该品种滞后一个交易日的主力对次主力年化展期收益严格大于 0，权重 +1。冻结多头赚的是全市场收弱之后的反弹和正展期品种的风险溢价，对单边下跌没有保护。所以在市场慢趋势向下时再加一条空头腿：品种自身趋势向下（时间序列动量）并且滞后一日展期收益为负（远月高于近月、库存宽松，carry），两者同时成立的品种权重 −1。品种自身趋势 = 60、120、250 个交易日收益符号的平均，收益 = (复权收盘_t − 复权收盘_{t−n}) / 原始收盘_{t−n}。市场慢趋势 = 池内等权收盘到收盘日收益累计 60、120、250 日后的符号平均，小于 0 记为熊市，窗口不足时不是熊市。全部在收盘 t 已知，下一交易日第一根开盘成交，有夜盘是夜盘开盘。两条腿都按当年池宽分 1 倍名义敞口，目标权重不变就继续持有，只成交手数差额。回撤 10% 清仓并停 10 个交易日。",
+  "parameters": {
+    "factors": [
+      "ts_low",
+      "ts_high",
+      "dfp_top3",
+      "ts_low_pm",
+      "ts_high_pm"
+    ],
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.0,
+    "gross_split": "pool",
+    "rebalance_on_count_change": false,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "short_trend_windows": [
+      60,
+      120,
+      250
+    ],
+    "short_rule": "symbol_trend < 0 and lagged annualized_yield < 0",
+    "short_weight": -1.0,
+    "bear_trend_windows": [
+      60,
+      120,
+      250
+    ],
+    "bear_rule": "market_trend < 0"
+  },
+  "chosen": {
+    "factors": [
+      "ts_low",
+      "ts_high",
+      "dfp_top3",
+      "ts_low_pm",
+      "ts_high_pm"
+    ],
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.0,
+    "gross_split": "pool",
+    "rebalance_on_count_change": false,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "short_trend_windows": [
+      60,
+      120,
+      250
+    ],
+    "short_rule": "symbol_trend < 0 and lagged annualized_yield < 0",
+    "short_weight": -1.0,
+    "bear_trend_windows": [
+      60,
+      120,
+      250
+    ],
+    "bear_rule": "market_trend < 0"
+  },
+  "costs": "历史手续费，按金额 ×1.01、按手数 +0.01 元；滑点为上一年估计 tick 每边 1 跳",
+  "prior_information": "冻结前已知，全部 1 跳加手续费、1 亿元新账。研究期 2016–2021（熊市应对检验里的 short_in_bear）：净 Sharpe 1.37、年化 7.8%、回撤 −5.7%、相对池子 beta 0.16、年化 alpha 5.5%（NW t 2.48），按池宽1倍是 1.36、7.2%、−5.7%、0.25、3.7%；研究期 20% 的日子是熊市，熊市日池子年化反而 +11.6%，所以研究期只说明保险不贵。同一检验里登记的兄弟变体：常开空头腿 1.10，熊市停多头开空头 1.12，波动降仓 1.42。熊市压力窗口 2014–2015（池子 −15.2%、−18.1%，品种池 11 和 17 个，99.8% 的日子是熊市）：本策略年化 +8.5%、Sharpe 1.45、回撤 −3.1%，按池宽1倍 −4.2%、−1.11、−11.5%，熊市停多头开空头 +12.1%，波动降仓 −3.7%。用户在 2026-10-22 看过这些结果后决定冻结这一条，选的是 short_in_bear 而不是压力窗口里更好的熊市停多头开空头。多头腿按池宽1倍 2022、2023、2024 已打开：净收益 +9.2%、+4.0%、−4.1%。对偶空头（分数 < 0 且展期 < 0）研究期失败，没有用。早期仓库里日频时序动量腿研究期 Sharpe 约 0.8、2022 约 −0.4。"
+}
