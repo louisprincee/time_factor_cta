@@ -1,6 +1,6 @@
 """整数手数期货账本、绩效统计、行情装载和命令行入口。
 
-    python -m backtest.engine --research                     # 2016–2021，两条都跑
+    python -m backtest.engine --research                     # 2016–2021，运行目录里所有已登记策略
     python -m backtest.engine 按池宽1倍 --research           # 只跑点名的一条
     python -m backtest.engine --research --by-year            # 每年一本新的 1 亿元账
     python -m backtest.engine --start 2018 --end 2020
@@ -855,7 +855,7 @@ def main(argv=None):
     parser.add_argument("--by-year", action="store_true", help="区间里每年一本新的 1 亿元账")
     parser.add_argument(
         "--strategy", default=None,
-        help="策略 ID 或中文名：按池宽1倍、按池宽1倍加慢趋势空头。不写就两条都跑。",
+        help="策略 ID 或中文名。不写则运行所有已登记策略，包括未冻结的研究期候选。",
     )
     parser.add_argument("name", nargs="?", default=None, help="同 --strategy")
     args = parser.parse_args(argv)

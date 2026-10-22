@@ -34,7 +34,7 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 
 `strategies/catalog.py` lists the two live books. The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them.
 
-**Live books (two, both frozen).** Write-up `docs/当日分数且展期为正.md`. Both books share these rules:
+**Live books (two, both frozen).** Write-up `docs/guide.md`. Both books share these rules:
 - Budget: |weight| × 1 × equity / pool width.
 - Risk: 10% drawdown → liquidate and halt 10 trading days.
 - Execution: on the next trading day's first bar (night open if there is a night session, else day open). Unchanged weight stays on; only the lot difference trades.
@@ -48,6 +48,9 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
    - On a bear day, a name gets weight −1 when both hold:
      - its own trend (mean sign of 60/120/250-day returns, (closew_t − closew_{t−n}) / close_{t−n}) is < 0;
      - its lagged carry is < 0.
+
+**Exploratory candidate (not frozen).** `market_clock_slow_short_15` reuses the slow-short rules and changes only each leg's pool-width budget from 1.0× to 1.5×. Its predeclared research-period comparison is in `strategies/market_clock_slow_short_15/market_clock_slow_short_15.json`; do not open 2022+ for it.
+
 
 - **OOS records reset (user decision 2026-10-22).** The commodity OOS ledger (`data/commodity/oos/ledger.jsonl`) and every 2022+ result folder were cleared.
   - Before the reset, 2022–2024 had been opened for the books of that time; 2025 had no recorded open.
@@ -132,7 +135,8 @@ src/tfcta/          library: config (paths, partitions, guards, factor signs), d
                     universe, factor caches), index/ (GTJA index factors)
 strategies/         market_clock_carry/: score, roll yield, carry coverage, Book base class, market_clock_pool.json;
                     market_clock_slow_short/: trend and bear helpers, short leg, market_clock_slow_short.json;
-                    catalog.py: BOOKS (the two live books) and book_named
+                    market_clock_slow_short_15/: 1.5x candidate;
+                    catalog.py: registered books and book_named
 backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, max_drawdown, newey_west_t,
                     deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
 research/           market_clock_carry (spans, beta/alpha, ledger, freeze gate), market_clock_carry_factors
@@ -141,7 +145,7 @@ research/           market_clock_carry (spans, beta/alpha, ledger, freeze gate),
 config/research/    predeclared JSON specs for research studies and exploratory strategies
 download/           RiceQuant downloaders (commodity minute/external/fees, index minute, index roll yield)
 tests/              pytest, synthetic data only (generator in tests/synthetic.py)
-docs/               the two reports + 当日分数且展期为正.md (why the two live books)
+docs/               the two broker reports + guide.md (strategy rules and research results)
 data/, runs/        gitignored; data inputs and all outputs
 ```
 
@@ -157,14 +161,14 @@ Outputs:
 
 ```bash
 python -m pytest                                      # must stay green
-python -m backtest.engine --research                 # 2016–21，不点名则两条都跑
+python -m backtest.engine --research                 # 2016–21，不点名则全部已登记策略都跑
 python -m backtest.engine 按池宽1倍 --research       # 只跑点名的那一条
 python -m backtest.engine --research --by-year        # 不点名则每年两条，各一本新的 1e8
-python -m backtest.engine --start 2018 --end 2020     # 研究区间；不点名则两条
-python -m backtest.engine --validation               # 2022；不点名则两条。先记台账。不是干净样本
-python -m backtest.engine --year 2023                # 单年；不点名则两条。先记台账
-python -m backtest.engine --oos                      # 2023–2025；不点名则两条。先记台账
-python -m backtest.engine --oos --by-year            # 2023、2024、2025 各一本；不点名则每年两条
+python -m backtest.engine --start 2018 --end 2020     # 研究区间；不点名则全部已登记策略
+python -m backtest.engine --validation               # 2022；须点名冻结策略。先记台账。不是干净样本
+python -m backtest.engine --year 2023                # 单年；须点名冻结策略。先记台账
+python -m backtest.engine --oos                      # 2023–2025；须点名冻结策略。先记台账
+python -m backtest.engine --oos --by-year            # 2023、2024、2025；须点名冻结策略
 python -m research.market_clock_carry_factors       # signal-level tests, DSR, PBO
 python -m research.index_market_clock                # both books on IF/IH/IC; needs index roll yield (not available)
 python -m research.time_factor_screen

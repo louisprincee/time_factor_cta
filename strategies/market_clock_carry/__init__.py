@@ -27,7 +27,7 @@ CARRY_MAX_MISSING = 0.05      # 池内某品种某年展期收益缺失超过 5%
 ROLL_YIELD_ROOT = C.COMMODITY_DATA / "external_rqdata"
 
 
-def check_config(config: dict, strategy_id: str) -> dict:
+def check_config(config: dict, strategy_id: str, expected_gross: float = GROSS) -> dict:
     """规格必须事先写明。探索期不能带冻结标记；冻结后 chosen 必须等于 parameters。多头腿和账本口径与本模块一致。"""
     parameters = config.get("parameters") or {}
     sample = config.get("sample", "")
@@ -48,7 +48,7 @@ def check_config(config: dict, strategy_id: str) -> dict:
         or tuple(parameters.get("factors", ())) != FACTORS
         or parameters.get("roll_yield") != "annualized_yield"
         or parameters.get("roll_yield_lag_days") != 1
-        or parameters.get("gross_exposure_limit") != GROSS
+        or parameters.get("gross_exposure_limit") != expected_gross
         or parameters.get("gross_split") != "pool"
         or parameters.get("rebalance_on_count_change") is not False
         or parameters.get("drawdown_breaker") != DRAWDOWN_LIMIT
@@ -76,7 +76,7 @@ class Book:
         return [Path(__file__), self.CONFIG_PATH]
 
     def check(self, config: dict) -> dict:
-        return check_config(config, self.ID)
+        return check_config(config, self.ID, self.GROSS)
 
     def load_config(self) -> dict:
         return self.check(json.loads(self.CONFIG_PATH.read_text(encoding="utf-8")))

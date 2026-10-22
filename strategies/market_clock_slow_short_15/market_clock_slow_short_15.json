@@ -1,0 +1,45 @@
+{
+  "id": "market_clock_slow_short_15",
+  "status": "exploratory_predeclared",
+  "declared_at": "2026-10-22",
+  "sample": "预先固定 1.5 倍敞口，只在商品 2016-01-01 至 2021-12-31 研究期比较，2015 只做预热。不读取2022及2023年以后，不读 2026。2022–2025 不参与筛选。",
+  "hypothesis": "在按池宽1倍加慢趋势空头的信号、执行、成本和风控完全不变时，将多头和空头每条合格持仓的名义预算由权益/池宽提高到 1.5×权益/池宽。检验提高预算是否增加净收益，同时评估风险、成本、熔断与风险调整收益；不调整信号或参数。",
+  "parameters": {
+    "factors": [
+      "ts_low",
+      "ts_high",
+      "dfp_top3",
+      "ts_low_pm",
+      "ts_high_pm"
+    ],
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.5,
+    "gross_split": "pool",
+    "rebalance_on_count_change": false,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "short_trend_windows": [
+      60,
+      120,
+      250
+    ],
+    "short_rule": "symbol_trend < 0 and lagged annualized_yield < 0",
+    "short_weight": -1.0,
+    "bear_trend_windows": [
+      60,
+      120,
+      250
+    ],
+    "bear_rule": "market_trend < 0"
+  },
+  "comparison": {
+    "baseline": "market_clock_slow_short, 商品 2016–2021 研究期",
+    "pass_criteria": [
+      "净 Sharpe 不低于 1 倍基准的 1.37",
+      "最大回撤不低于 -10% 熔断线",
+      "同时报告年化净收益、交易成本、熔断次数、最大敞口和年度结果"
+    ]
+  },
+  "costs": "与 1 倍基准相同：历史手续费按金额 ×1.01、按手数 +0.01 元；前一年估算 tick 每边 1 跳"
+}

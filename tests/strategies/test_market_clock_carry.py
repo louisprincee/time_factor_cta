@@ -5,7 +5,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from strategies import market_clock_carry as S
+from strategies import (
+    market_clock_carry as S,
+    market_clock_slow_short_15,
+)
+from strategies import market_clock_slow_short
 from strategies.catalog import BOOKS, book_named
 from tfcta import config as C
 
@@ -18,10 +22,11 @@ def _signed(index, symbols, seed=2):
     }
 
 
-def test_catalog_holds_the_two_frozen_books():
+def test_catalog_contains_two_frozen_books_and_one_exploratory_candidate():
     assert [(book.ID, book.NAME, book.GROSS) for book in BOOKS] == [
         ("market_clock_pool", "按池宽1倍", 1.0),
         ("market_clock_slow_short", "按池宽1倍加慢趋势空头", 1.0),
+        ("market_clock_slow_short_15", "按池宽1.5倍加慢趋势空头", 1.5),
     ]
     for book in BOOKS:
         parameters = book.load_config()["parameters"]
@@ -29,6 +34,11 @@ def test_catalog_holds_the_two_frozen_books():
         assert parameters["roll_yield_lag_days"] == 1 and parameters["drawdown_breaker"] == 0.10
     assert book_named("按池宽1倍") is S.BOOK
     assert book_named("market_clock_slow_short").NAME == "按池宽1倍加慢趋势空头"
+    candidate = book_named("按池宽1.5倍加慢趋势空头")
+    assert candidate is market_clock_slow_short_15.BOOK
+    assert candidate.load_config()["status"] == "exploratory_predeclared"
+    with pytest.raises(C.HoldoutViolation):
+        candidate.frozen()
     for gone in ("没有这条", "入选平分1倍", "market_clock_pool_15", "market_clock_carry_five_factor_regime"):
         with pytest.raises(ValueError):
             book_named(gone)
@@ -66,10 +76,11 @@ def test_config_states_explore_or_frozen_and_nothing_else(tmp_path):
 
 def test_both_books_are_frozen_and_an_unfrozen_copy_refuses_later_windows(monkeypatch, tmp_path):
     frozen_at = {"market_clock_pool": "2026-10-21", "market_clock_slow_short": "2026-10-22"}
-    for book in BOOKS:
+    frozen_books = (S.BOOK, market_clock_slow_short.BOOK)
+    for book in frozen_books:
         config = book.frozen()
         assert config["frozen_at"] == frozen_at[book.ID] and config["chosen"] == config["parameters"]
-    for book in BOOKS:
+    for book in frozen_books:
         path = tmp_path / f"{book.ID}.json"
         path.write_text(json.dumps(_explore(book.load_config()), ensure_ascii=False), encoding="utf-8")
         monkeypatch.setattr(book, "CONFIG_PATH", path)

@@ -1,11 +1,12 @@
 # 策略
 
-现在有两条，都已冻结，名单在 [`catalog.py`](catalog.py)。每条的 JSON 规格和代码在同目录，导入时互相核对，不一致就报错。
+当前有两条冻结策略和一条研究期候选，名单在 [`catalog.py`](catalog.py)。每条的 JSON 规格和代码在同目录，导入时互相核对，不一致就报错。
 
 | 策略 | ID | 目录 | 冻结 |
 |---|---|---|---|
 | 按池宽1倍 | market_clock_pool | [`market_clock_carry/`](market_clock_carry/) | 2026-10-21 |
 | 按池宽1倍加慢趋势空头 | market_clock_slow_short | [`market_clock_slow_short/`](market_clock_slow_short/) | 2026-10-22 |
+| 按池宽1.5倍加慢趋势空头（研究期候选） | market_clock_slow_short_15 | [`market_clock_slow_short_15/`](market_clock_slow_short_15/) | 未冻结 |
 
 ## 按池宽1倍
 
@@ -25,11 +26,16 @@
 
 成交、留仓、熔断和费用都和按池宽1倍一样。
 
-研究期数字、信号层检验和策略动机写在 [`docs/当日分数且展期为正.md`](../docs/当日分数且展期为正.md)。
+## 按池宽1.5倍加慢趋势空头（研究期候选）
+
+复用冻结策略的信号和风控，只把多头、空头每条合格持仓的名义预算都提高到 1.5 倍。候选尚未冻结，只能跑 2016–2021 研究期；预先登记的比较门槛和报告项见 [`market_clock_slow_short_15.json`](market_clock_slow_short_15/market_clock_slow_short_15.json)。
+
+策略动机、研究期结果和信号层检验见 [`docs/guide.md`](../docs/guide.md)。
 
 ```bash
-python -m backtest.engine --research                 # 2016–2021，不写名字两条都跑
+python -m backtest.engine --research                 # 2016–2021，不写名字运行所有已登记策略
 python -m backtest.engine 按池宽1倍 --research       # 只跑这一条
+python -m backtest.engine 按池宽1.5倍加慢趋势空头 --research  # 1.5倍研究期候选
 python -m backtest.engine --research --by-year
 python -m research.market_clock_carry_factors        # 信号层检验
 ```
@@ -40,4 +46,4 @@ JSON 里 `status: frozen`、写了 `frozen_at`、`chosen` 等于 `parameters` �
 
 ## 已删除
 
-入选平分1倍、按池宽1.5倍、入选平分1.5倍、五因子正展期熊市过滤、对偶空头和熊市应对比较脚本在 2026-10-22 删除；更早的只做多全市场时钟、四条尾部策略和展期 carry 探索也已删除。2022 年及以后的台账和结果已在 2026-10-22 清空，见 [`README.md`](../README.md) 的数据边界一节。
+旧的入选平分1倍、长多按池宽1.5倍、入选平分1.5倍、五因子正展期熊市过滤、对偶空头和熊市应对比较脚本在 2026-10-22 删除；当前慢趋势空头 1.5 倍候选是新登记的独立策略。更早的只做多全市场时钟、四条尾部策略和展期 carry 探索也已删除。2022 年及以后的台账和结果已在 2026-10-22 清空，见 [`README.md`](../README.md) 的数据边界一节。

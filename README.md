@@ -4,8 +4,8 @@
 
 - 按池宽1倍（`market_clock_pool`）：当天收盘的全市场时间因子分数大于 0，并且该品种滞后一日的展期收益大于 0，才做多，按当年池宽分 1 倍。代码在 [`strategies/market_clock_carry`](strategies/market_clock_carry/)，2026-10-21 冻结。
 - 按池宽1倍加慢趋势空头（`market_clock_slow_short`）：多头同上；池子 60/120/250 日慢趋势向下时，自身趋势向下且展期为负的品种做空。代码在 [`strategies/market_clock_slow_short`](strategies/market_clock_slow_short/)，2026-10-22 冻结。
-- 规则、仍保留的研究期结果和信号层检验在 [`docs/当日分数且展期为正.md`](docs/当日分数且展期为正.md)。
-- 策略原理、实现和研究局限的讲解版见 [`docs/guide.md`](docs/guide.md)。
+- 按池宽1.5倍加慢趋势空头（`market_clock_slow_short_15`）：复用慢趋势空头规则，只提高多空腿预算；未冻结，仅作 2016–2021 研究期候选。
+- 策略规则、实现、研究期结果和研究局限见 [`docs/guide.md`](docs/guide.md)。
 
 ## 环境
 
@@ -49,7 +49,7 @@ python download/commodity/getRiceQuantExternalData.py --datasets roll_yield --en
 
 ## 回测
 
-不写策略名时两条都跑，写了就只跑那一条，例如 `python -m backtest.engine 按池宽1倍 --research`。
+不写策略名时所有已登记策略都会跑（包括研究期候选），写了就只跑点名策略，例如 `python -m backtest.engine 按池宽1倍 --research`。由于 1.5 倍候选未冻结，打开 2022 年及以后时请明确点名已冻结策略。
 
 ```bash
 python -m backtest.engine --research                 # 2016–2021

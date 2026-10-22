@@ -8,7 +8,7 @@ import pandas as pd
 
 from backtest.engine import StudyData, ledger_inputs, load_roll_calendar, simulate_target_lots, write_results
 from research.market_clock_carry import pool_open_return, sectors, summarize
-from strategies.catalog import BOOKS
+from strategies.catalog import FROZEN_BOOKS
 from tfcta import config as C
 from tfcta.costs import fee_tables, load_fees, load_ticks, slippage_tables
 from tfcta.data import build_universe, load_universe
@@ -24,7 +24,7 @@ def load_protocol(path: Path = CONFIG_PATH) -> dict:
     protocol = json.loads(path.read_text(encoding="utf-8"))
     if (
         protocol.get("status") != "declared_reproduction_no_tuning"
-        or protocol.get("books") != [book.ID for book in BOOKS]
+        or protocol.get("books") != [book.ID for book in FROZEN_BOOKS]
         or "not be used for tuning" not in protocol.get("purpose", "")
         or protocol.get("universe", {}).get("expected_pool_widths") != {"2014": 11, "2015": 17}
     ):
@@ -100,7 +100,7 @@ def load_stress_data(protocol: dict) -> StudyData:
 
 def run() -> None:
     protocol = load_protocol()
-    for book in BOOKS:
+    for book in FROZEN_BOOKS:
         book.frozen()
         output = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "2014-2015"
         if (output / "summary.csv").exists():
@@ -109,7 +109,7 @@ def run() -> None:
     inputs = ledger_inputs(data, YEARS, END)
     market = pool_open_return(data, inputs["universe"], inputs["index"])
 
-    for book in BOOKS:
+    for book in FROZEN_BOOKS:
         targets = book.targets(data, inputs["symbols"]).reindex(
             index=inputs["index"], columns=inputs["columns"]
         ).fillna(0.0)

@@ -148,7 +148,7 @@ def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypa
     for start, end in ((2022, 2022), (2024, 2024), (2023, 2025)):
         ledger = tmp_path / f"ledger_{start}_{end}.jsonl"
         with pytest.raises(C.HoldoutViolation, match="还没冻结"):
-            driver.run_span(start, end, ledger=ledger)
+            driver.run_span(start, end, ledger=ledger, book=book)
         assert not ledger.exists()
     with pytest.raises(C.HoldoutViolation, match="2026"):
         driver.run_span(2026, 2026, ledger=tmp_path / "x.jsonl")

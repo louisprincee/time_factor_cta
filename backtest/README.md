@@ -12,7 +12,7 @@ python -m backtest.engine --year 2024                # 单年，冻结后
 python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 ```
 
-不写策略名时两条都跑，写了只跑那一条：`python -m backtest.engine 按池宽1倍 --research`，或 `--strategy 按池宽1倍加慢趋势空头 --year 2019`。名单在 `strategies/catalog.py`。只做商品。
+不写策略名时运行 `strategies/catalog.py` 中全部已登记策略，包括未冻结的研究期候选；写了策略名就只跑该策略：`python -m backtest.engine 按池宽1倍 --research`，或 `--strategy 按池宽1倍加慢趋势空头 --year 2019`。打开 2022 年及以后须明确点名已冻结策略。只做商品。
 
 2022 及以后：点到的策略里有任何一条没冻结，整批直接拒绝，不写台账也不读行情。冻结了就先写台账再读（2022 记 `year_test`，2023 起走 `final_evaluation`，都带冻结日期、`chosen` 和代码与规格文件的哈希）。台账里已经打开过的窗口只打印旧结果；结果文件丢了，要先追加一条 `kind: void` 并写原因才能重开。不读 2026。
 

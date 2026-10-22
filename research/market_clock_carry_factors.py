@@ -18,7 +18,7 @@ from backtest.engine import (
 from research.market_clock_carry import pool_open_return, sectors, simulate, summarize
 from research.time_factor_screen import ols_hac
 from strategies import market_clock_carry as S
-from strategies.catalog import BOOKS
+from strategies.catalog import FROZEN_BOOKS
 from tfcta import config as C
 
 CONFIG_PATH = C.CONFIG_DIR / "research" / "market_clock_carry_factors.json"
@@ -151,7 +151,7 @@ def decomposition(data, alpha_lags):
 
 def book_returns(data):
     out = {}
-    for book in BOOKS:
+    for book in FROZEN_BOOKS:
         path = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "research" / "daily.csv"
         if not path.is_file():
             raise FileNotFoundError(f"{book.NAME} 还没有研究期结果，先跑 python -m backtest.engine --research")

@@ -1,9 +1,21 @@
-"""现有的两条策略，都已冻结。冻结状态写在各自的 JSON 里；没冻结的策略只能跑研究期。"""
+"""登记策略目录；冻结策略与探索期候选统一供回测入口按名称选择。"""
 from __future__ import annotations
 
-from strategies import market_clock_carry, market_clock_slow_short
+from strategies import (
+    market_clock_carry,
+    market_clock_slow_short,
+    market_clock_slow_short_15,
+)
 
-BOOKS = (market_clock_carry.BOOK, market_clock_slow_short.BOOK)
+FROZEN_BOOKS = (
+    market_clock_carry.BOOK,
+    market_clock_slow_short.BOOK,
+)
+
+BOOKS = (
+    *FROZEN_BOOKS,
+    market_clock_slow_short_15.BOOK,
+)
 
 
 def book_named(name: str):

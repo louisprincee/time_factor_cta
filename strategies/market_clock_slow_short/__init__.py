@@ -68,6 +68,8 @@ def targets(signed: dict, bars: dict, universe: dict, index: pd.DatetimeIndex, c
 class Book(S.Book):
     ID = "market_clock_slow_short"
     NAME = "按池宽1倍加慢趋势空头"
+    BEAR_TREND_WINDOWS = TREND_WINDOWS
+    BEAR_RULE = "market_trend < 0"
     CONFIG_PATH = Path(__file__).with_name("market_clock_slow_short.json")
     DETAIL = (
         "多头同按池宽1倍；池子60/120/250日累计收益符号均值小于0时，"
@@ -80,14 +82,14 @@ class Book(S.Book):
         return [Path(S.__file__), Path(__file__), self.CONFIG_PATH]
 
     def check(self, config: dict) -> dict:
-        config = S.check_config(config, self.ID)
+        config = S.check_config(config, self.ID, self.GROSS)
         parameters = config["parameters"]
         if (
             parameters.get("short_trend_windows") != list(TREND_WINDOWS)
             or parameters.get("short_rule") != "symbol_trend < 0 and lagged annualized_yield < 0"
             or parameters.get("short_weight") != -1.0
-            or parameters.get("bear_trend_windows") != list(TREND_WINDOWS)
-            or parameters.get("bear_rule") != "market_trend < 0"
+            or parameters.get("bear_trend_windows") != list(self.BEAR_TREND_WINDOWS)
+            or parameters.get("bear_rule") != self.BEAR_RULE
         ):
             raise ValueError(f"{self.ID} 的空头腿登记与实现不一致")
         return config
