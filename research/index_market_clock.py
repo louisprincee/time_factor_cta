@@ -1,4 +1,4 @@
-"""把两条冻结商品策略按预登记口径迁移到 IF、IH、IC 研究期检验。"""
+"""按预登记口径把多头基线和慢趋势策略迁移到 IF、IH、IC 研究期检验。"""
 from __future__ import annotations
 
 import json
@@ -16,8 +16,7 @@ from backtest.engine import (
     sharpe_ratio,
     simulate_target_lots,
 )
-from strategies import market_clock_carry as S
-from strategies import market_clock_slow_short as T
+from strategies import market_clock_slow_short as S
 from tfcta import config as C
 from tfcta.costs import (
     INDEX_MULTIPLIER,
@@ -56,14 +55,14 @@ def load_protocol(path: Path = CONFIG_PATH) -> dict:
     if (
         protocol.get("status") != "declared_test_not_a_strategy"
         or protocol.get("instruments") != list(SYMBOLS)
-        or protocol.get("books") != [LONG_LEG.ID, T.BOOK.ID]
+        or protocol.get("books") != [LONG_LEG.ID, S.BOOK.ID]
         or "Do not read 2022" not in protocol.get("sample", "")
         or "or 2026" not in protocol.get("sample", "")
         or protocol.get("parameters", {}).get("factors") != list(FACTORS)
         or protocol.get("parameters", {}).get("factor_signs") != expected_signs
         or protocol.get("minimum_valid_instruments_for_market_score") != len(SYMBOLS)
     ):
-        raise ValueError("股指迁移研究登记与因子、样本边界或两条冻结策略不一致")
+        raise ValueError("股指迁移研究登记与因子、样本边界或当前策略不一致")
     return protocol
 
 
@@ -199,18 +198,18 @@ def _targets(index, bars, signed, carry):
         min_symbols=len(SYMBOLS),
     )
     lagged_carry = carry.reindex(index=index, columns=SYMBOLS).shift(1)
-    long_decision = S.decision_weights(score, lagged_carry)
+    long_decision = S.long_weights(score, lagged_carry)
     long_targets = long_decision.shift(1).fillna(0.0).where(pool, 0.0)
 
-    symbol_trend = T.symbol_trend(bars, SYMBOLS).reindex(index)
-    close_to_close = T.close_return(bars, SYMBOLS).reindex(index).where(pool)
+    symbol_trend = S.symbol_trend(bars, SYMBOLS).reindex(index)
+    close_to_close = S.close_return(bars, SYMBOLS).reindex(index).where(pool)
     market_daily = close_to_close.mean(axis=1)
-    bear = T.market_trend(market_daily).lt(0)
-    slow_decision = T.decision_weights(score, lagged_carry, symbol_trend, bear)
+    bear = S.market_trend(market_daily).lt(0)
+    slow_decision = S.decision_weights(score, lagged_carry, symbol_trend, bear)
     slow_targets = slow_decision.shift(1).fillna(0.0).where(pool, 0.0)
     return {
         LONG_LEG.ID: long_targets,
-        T.BOOK.ID: slow_targets,
+        S.BOOK.ID: slow_targets,
     }
 
 
@@ -245,7 +244,7 @@ def run() -> None:
     protocol = load_protocol()
     if (OUT / "summary.csv").exists():
         raise FileExistsError(f"股指迁移结果已存在，不重复运行：{OUT}")
-    T.BOOK.frozen()
+    S.BOOK.frozen()
 
     daily_index, bars, contracts, signed, ticks = _load_index_inputs()
     all_returns = (
@@ -276,7 +275,7 @@ def run() -> None:
 
     index_results = {}
     summaries, annual, positions, events = [], [], [], []
-    for book in (LONG_LEG, T.BOOK):
+    for book in (LONG_LEG, S.BOOK):
         target = targets[book.ID].reindex(index=returns.index, columns=SYMBOLS).fillna(0.0)
         daily, held, event_log = simulate_target_lots(
             target,

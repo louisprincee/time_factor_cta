@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from backtest.engine import StudyData, ledger_inputs, load_roll_calendar, simulate_target_lots, write_results
-from research.market_clock_carry import pool_open_return, sectors, summarize
+from research.market_clock_slow_short import pool_open_return, sectors, summarize
 from strategies.catalog import FROZEN_BOOKS, book_named
 from tfcta import config as C
 from tfcta.costs import fee_tables, load_fees, load_ticks, slippage_tables
@@ -18,8 +18,8 @@ CONFIG_PATH = C.CONFIG_DIR / "research" / "stress_2014_2015_reproduction.json"
 START = pd.Timestamp("2014-01-01")
 END = pd.Timestamp("2015-12-31")
 YEARS = (2014, 2015)
-# 2026-10-22 复现的两条；market_clock_pool 2026-10-23 删掉了，它的 2014–2015 结果留着，不能重跑
-REPRODUCED = ("market_clock_pool", "market_clock_slow_short")
+# 只重跑仍冻结的慢趋势策略；原多头书的历史复现结果不在本脚本重跑
+REPRODUCED = ("market_clock_slow_short",)
 
 
 def load_protocol(path: Path = CONFIG_PATH) -> dict:

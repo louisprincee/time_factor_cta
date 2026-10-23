@@ -1,7 +1,6 @@
 """整数手数期货账本、绩效统计、行情装载和命令行入口。
 
-    python -m backtest.engine --research                     # 2011–2021，运行目录里所有已登记策略
-    python -m backtest.engine 按池宽1倍 --research           # 只跑点名的一条
+    python -m backtest.engine --research                     # 2011–2021
     python -m backtest.engine --research --by-year            # 每年一本新的 1 亿元账
     python -m backtest.engine --start 2018 --end 2020
     python -m backtest.engine --start 2016 --end 2021        # 冻结时的研究期，结果在 2016-2021/
@@ -9,8 +8,7 @@
     python -m backtest.engine --year 2024                     # 单年，冻结后才能打开，先记台账
     python -m backtest.engine --oos [--by-year]               # 2023–2025，冻结后才能打开，先记台账
 
-策略规则在 strategies/market_clock_carry 和 strategies/market_clock_slow_short，名单在 strategies/catalog，
-区间和台账在 research/market_clock_carry。不读 2026。
+唯一的策略在 strategies/market_clock_slow_short，区间和台账在 research/market_clock_slow_short。不读 2026。
 """
 from __future__ import annotations
 
@@ -22,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from strategies.market_clock_carry import FACTORS
+from strategies.market_clock_slow_short import FACTORS
 from tfcta import config as C
 from tfcta.costs import (
     MULTIPLIER, contract_multiplier_overrides, fee_tables, load_fees, load_ticks, require_multipliers,
@@ -882,11 +880,10 @@ def write_results(period, strategy, daily, positions, events, symbols, initial_c
 # 命令行
 # --------------------------------------------------------------------------
 def main(argv=None):
-    from research import market_clock_carry as driver  # driver 也导入本模块，延后导入避免循环
-    from strategies.catalog import book_named
+    from research import market_clock_slow_short as driver  # driver 也导入本模块，延后导入避免循环
 
     parser = argparse.ArgumentParser(
-        description="当日分数且展期为正的整数手数回测。研究期随时可跑；2022 及以后要先冻结，先记台账再读。不读 2026。"
+        description="按池宽1倍加慢趋势空头的整数手数回测。研究期随时可跑；2022 及以后要先冻结，先记台账再读。不读 2026。"
     )
     period = parser.add_mutually_exclusive_group()
     period.add_argument("--research", action="store_true", help="2011–2021（2011–2015 品种池按同一门槛重建）")
@@ -896,21 +893,7 @@ def main(argv=None):
     period.add_argument("--start", type=int, help="区间起始年，和 --end 一起用；最早 2011（2016 以前只能在研究期里）")
     parser.add_argument("--end", type=int, help="区间结束年，和 --start 一起用")
     parser.add_argument("--by-year", action="store_true", help="区间里每年一本新的 1 亿元账")
-    parser.add_argument(
-        "--strategy", default=None,
-        help="策略 ID 或中文名。不写则运行所有已登记策略，包括未冻结的研究期候选。",
-    )
-    parser.add_argument("name", nargs="?", default=None, help="同 --strategy")
     args = parser.parse_args(argv)
-    given = [item for item in (args.strategy, args.name) if item]
-    if len(set(given)) > 1:
-        parser.error("策略名给了两次")
-    strategy = given[0] if given else None
-    if strategy is not None:
-        try:
-            book_named(strategy)
-        except ValueError as exc:
-            parser.error(str(exc))
     if (args.start is None) != (args.end is None):
         parser.error("--start 和 --end 要一起给")
     if args.start is not None:
@@ -927,7 +910,7 @@ def main(argv=None):
         parser.error("要指定 --research、--validation、--oos、--year 或 --start/--end")
     if args.by_year and window[0] == window[1]:
         parser.error("--by-year 需要跨年的区间")
-    driver.run_span(*window, by_year=args.by_year, book=strategy)
+    driver.run_span(*window, by_year=args.by_year)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-"""当日分数且展期为正：按区间跑两条冻结策略，算相对池子的 beta 和 alpha，管 2022 及以后的台账。
+"""按池宽1倍加慢趋势空头：按区间跑账本，算相对池子的 beta 和 alpha，管 2022 及以后的台账。
 
-    python -m research.market_clock_carry          # 研究期 2011–2021
+    python -m research.market_clock_slow_short     # 研究期 2011–2021
     python -m backtest.engine --research            # 同上，命令行入口
 
 研究期不写台账。2022 及以后：策略没冻结直接拒绝；冻结了先记台账再读；已经打开过的窗口只打印旧结果，
@@ -18,8 +18,7 @@ from backtest.engine import (
     INITIAL_CAPITAL, MARGIN_RATE, PERIODS, ledger_inputs, load_research, load_through_year,
     max_drawdown, newey_west_t, sharpe_ratio, simulate_target_lots, write_results,
 )
-from strategies import market_clock_carry as S
-from strategies.catalog import BOOKS, book_named
+from strategies import market_clock_slow_short as S
 from tfcta import config as C
 
 NW_LAGS = 10
@@ -173,83 +172,65 @@ def _show_saved(period, book) -> bool:
     return True
 
 
-def _chosen(book):
-    """点了名就只跑那一条。不点名时返回 None，调用方跑全部。"""
-    if book is None:
-        return None
-    if isinstance(book, str):
-        return book_named(book)
-    return book
-
-
-def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None) -> None:
+def run_span(start: int, end: int, by_year: bool = False, ledger=None) -> None:
     """一段年份一本账。2022 及以后要先冻结，先记台账再读；打开过的窗口只打印。"""
     start, end = int(start), int(end)
-    book = _chosen(book)
+    book = S.BOOK
     if start > end or start < C.EARLY_START.year or end > C.DEFAULT_OOS_END.year:
         raise C.HoldoutViolation(f"回测年份必须落在 {C.EARLY_START.year}–2025，收到 {start}–{end}。不读 2026。")
     if by_year and start != end:
         for year in range(start, end + 1):
-            run_span(year, year, ledger=ledger, book=book)
+            run_span(year, year, ledger=ledger)
         return
-    books = (book,) if book is not None else BOOKS
     period = _period_for(start, end)
     if end <= C.RESEARCH_END.year:
-        data = _load(end, start)
-        for item in books:
-            _book(data, tuple(range(start, end + 1)), period, item)
-            if period == "research":
-                out = C.RUNS_DIR / "research" / item.ID
-                out.mkdir(parents=True, exist_ok=True)
-                (out / "protocol.json").write_text(
-                    json.dumps(item.load_config(), ensure_ascii=False, indent=2), encoding="utf-8",
-                )
-        return
-    configs = {item.ID: item.frozen() for item in books}   # 任何一条没冻结，整批都不开、不记台账
-    for item in books:
-        name = _window_name(start, end, item)
-        state = _window_state(name, ledger)
-        if state in ("opened", "finished") and _show_saved(period, item):
-            if state == "opened":
-                C.append_ledger({
-                    "kind": "year_test" if end < C.STRICT_OOS_START.year else "final_evaluation",
-                    "status": "finished", "run_at": datetime.now().isoformat(timespec="seconds"),
-                    "strategy": name, "scored_start": start, "scored_end": end,
-                    "note": "结果文件已经在，没有重读行情。",
-                }, ledger)
-            continue
-        if state in ("opened", "finished"):
-            raise C.HoldoutViolation(
-                f"{name} 在台账里已经打开过，但结果文件不在。要重跑先在台账里作废（追加 kind=void）并写明原因。"
+        _book(_load(end, start), tuple(range(start, end + 1)), period, book)
+        if period == "research":
+            out = C.RUNS_DIR / "research" / book.ID
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "protocol.json").write_text(
+                json.dumps(book.load_config(), ensure_ascii=False, indent=2), encoding="utf-8",
             )
-        config = configs[item.ID]
-        files = item.FILES
-        note = "重开，之前的结果已作废" if state == "void" else ""
-
-        def run(item=item):
-            _book(_load(end), tuple(range(start, end + 1)), period, item)
-
-        if end >= C.STRICT_OOS_START.year:
-            spec = {"id": item.ID, "frozen_at": config["frozen_at"], "chosen": config["chosen"]}
-            with C.final_evaluation(spec, files, f"{end}-12-31", strategy=name, note=note,
-                                    ledger=ledger, oos_start=f"{max(start, C.STRICT_OOS_START.year)}-01-01"):
-                run()
-            kind = "final_evaluation"
-        else:
+        return
+    config = book.frozen()                     # 没冻结就不开、不记台账
+    name = _window_name(start, end, book)
+    state = _window_state(name, ledger)
+    if state in ("opened", "finished") and _show_saved(period, book):
+        if state == "opened":
             C.append_ledger({
-                "kind": "year_test", "status": "opened",
-                "run_at": datetime.now().isoformat(timespec="seconds"),
-                "strategy": name, "frozen_at": config["frozen_at"], "chosen": config["chosen"],
-                "test_start": f"{start}-01-01", "test_end": f"{end}-12-31",
-                "sha256": C.file_hashes(files), "note": note,
+                "kind": "year_test" if end < C.STRICT_OOS_START.year else "final_evaluation",
+                "status": "finished", "run_at": datetime.now().isoformat(timespec="seconds"),
+                "strategy": name, "scored_start": start, "scored_end": end,
+                "note": "结果文件已经在，没有重读行情。",
             }, ledger)
-            run()
-            kind = "year_test"
+        return
+    if state in ("opened", "finished"):
+        raise C.HoldoutViolation(
+            f"{name} 在台账里已经打开过，但结果文件不在。要重跑先在台账里作废（追加 kind=void）并写明原因。"
+        )
+    files = book.FILES
+    note = "重开，之前的结果已作废" if state == "void" else ""
+    if end >= C.STRICT_OOS_START.year:
+        spec = {"id": book.ID, "frozen_at": config["frozen_at"], "chosen": config["chosen"]}
+        with C.final_evaluation(spec, files, f"{end}-12-31", strategy=name, note=note,
+                                ledger=ledger, oos_start=f"{max(start, C.STRICT_OOS_START.year)}-01-01"):
+            _book(_load(end), tuple(range(start, end + 1)), period, book)
+        kind = "final_evaluation"
+    else:
         C.append_ledger({
-            "kind": kind, "status": "finished",
+            "kind": "year_test", "status": "opened",
             "run_at": datetime.now().isoformat(timespec="seconds"),
-            "strategy": name, "scored_start": start, "scored_end": end, "note": note,
+            "strategy": name, "frozen_at": config["frozen_at"], "chosen": config["chosen"],
+            "test_start": f"{start}-01-01", "test_end": f"{end}-12-31",
+            "sha256": C.file_hashes(files), "note": note,
         }, ledger)
+        _book(_load(end), tuple(range(start, end + 1)), period, book)
+        kind = "year_test"
+    C.append_ledger({
+        "kind": kind, "status": "finished",
+        "run_at": datetime.now().isoformat(timespec="seconds"),
+        "strategy": name, "scored_start": start, "scored_end": end, "note": note,
+    }, ledger)
 
 
 if __name__ == "__main__":

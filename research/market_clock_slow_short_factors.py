@@ -1,9 +1,9 @@
 """当日分数且展期为正的信号层检验：分数择时、展期截面 IC、两者叠加、账本分解和多重检验。只读研究期。
 
-    python -m research.market_clock_carry_factors
+    python -m research.market_clock_slow_short_factors
 
-规则在 config/research/market_clock_carry_factors.json，先登记后运行。不读 2022 及以后。
-结果写到 runs/research/market_clock_carry_factors/。
+规则在 config/research/market_clock_slow_short_factors.json，先登记后运行。不读 2022 及以后。
+结果写到 runs/research/market_clock_slow_short_factors/。
 """
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ import pandas as pd
 from backtest.engine import (
     PERIODS, deflated_sharpe, ledger_inputs, load_research, newey_west_t, pbo_cscv,
 )
-from research.market_clock_carry import pool_open_return, sectors, simulate, summarize
+from research.market_clock_slow_short import pool_open_return, sectors, simulate, summarize
 from research.time_factor_screen import ols_hac
-from strategies import market_clock_carry as S
+from strategies import market_clock_slow_short as S
 from strategies.catalog import FROZEN_BOOKS
 from tfcta import config as C
 
-CONFIG_PATH = C.CONFIG_DIR / "research" / "market_clock_carry_factors.json"
-OUT = C.RUNS_DIR / "research" / "market_clock_carry_factors"
+CONFIG_PATH = C.CONFIG_DIR / "research" / "market_clock_slow_short_factors.json"
+OUT = C.RUNS_DIR / "research" / "market_clock_slow_short_factors"
 YEARS = tuple(range(C.STUDY_START.year, C.RESEARCH_END.year + 1))
 
 

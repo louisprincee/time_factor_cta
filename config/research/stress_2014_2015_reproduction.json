@@ -3,7 +3,6 @@
   "status": "declared_reproduction_no_tuning",
   "sample": "Scored dates are commodity 2014-01-01 through 2015-12-31 from research shards only. 2012-2013 data is used only for prior-year pool construction and rolling warmup. 2016 and later are not scored; validation_2022, holdout_locked, and all 2026 data are not read.",
   "books": [
-    "market_clock_pool",
     "market_clock_slow_short"
   ],
   "universe": {

@@ -30,7 +30,7 @@ def _synthetic_inputs(days=520):
     return index, signed, bars, carry
 
 
-def test_protocol_declares_only_research_period_and_both_frozen_books():
+def test_protocol_declares_only_research_period_and_long_baseline_plus_current_book():
     protocol = load_protocol()
     assert protocol["status"] == "declared_test_not_a_strategy"
     assert protocol["instruments"] == list(SYMBOLS)

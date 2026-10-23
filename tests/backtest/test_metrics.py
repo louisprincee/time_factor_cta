@@ -93,29 +93,28 @@ def test_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
 
 
 @pytest.mark.parametrize(("argv", "window"), [
-    (["--research"], (2011, 2021, False, None)),
-    (["--research", "--by-year"], (2011, 2021, True, None)),
-    (["--validation"], (2022, 2022, False, None)),
-    (["--oos"], (2023, 2025, False, None)),
-    (["--oos", "--by-year"], (2023, 2025, True, None)),
-    (["--year", "2024"], (2024, 2024, False, None)),
-    (["--start", "2018", "--end", "2020"], (2018, 2020, False, None)),
-    (["按池宽1倍加三窗口趋势空头", "--research"], (2011, 2021, False, "按池宽1倍加三窗口趋势空头")),
-    (["--strategy", "按池宽1倍加慢趋势空头", "--year", "2019"], (2019, 2019, False, "按池宽1倍加慢趋势空头")),
+    (["--research"], (2011, 2021, False)),
+    (["--research", "--by-year"], (2011, 2021, True)),
+    (["--validation"], (2022, 2022, False)),
+    (["--oos"], (2023, 2025, False)),
+    (["--oos", "--by-year"], (2023, 2025, True)),
+    (["--year", "2024"], (2024, 2024, False)),
+    (["--start", "2018", "--end", "2020"], (2018, 2020, False)),
+    (["--year", "2019"], (2019, 2019, False)),
 ])
 def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
-    import research.market_clock_carry as driver
+    import research.market_clock_slow_short as driver
 
     seen = []
-    monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False, book=None: seen.append(
-        (start, end, by_year, book)))
+    monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False: seen.append(
+        (start, end, by_year)))
     engine.main(argv)
     assert seen == [window]
 
 
 @pytest.mark.parametrize("argv", [
-    [], ["--start", "2018"], ["--year", "2019", "--by-year"], ["--research", "--strategy", "没有这条"],
-    ["按池宽1倍加三窗口趋势空头", "--strategy", "market_clock_slow_short", "--research"], ["按池宽1倍", "--research"],
+    [],     ["--start", "2018"], ["--year", "2019", "--by-year"], ["--research", "--strategy", "没有这条"],
+    ["按池宽1倍加慢趋势空头", "--research"],
 ])
 def test_cli_rejects_incomplete_or_unknown_arguments(argv):
     with pytest.raises(SystemExit):
@@ -134,10 +133,10 @@ def _freeze_books(monkeypatch, tmp_path, books):
 
 
 def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypatch, tmp_path):
-    import research.market_clock_carry as driver
+    import research.market_clock_slow_short as driver
     from strategies.catalog import BOOKS
 
-    book = BOOKS[1]                           # 任何一条没冻结，整批都不开
+    book = BOOKS[0]
     config = json.loads(book.CONFIG_PATH.read_text(encoding="utf-8"))
     config = {k: v for k, v in config.items() if k not in ("frozen_at", "chosen")}
     config.update(status="exploratory_predeclared", sample="不读取2022及2023年以后，不读 2026。")
@@ -148,14 +147,14 @@ def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypa
     for start, end in ((2022, 2022), (2024, 2024), (2023, 2025)):
         ledger = tmp_path / f"ledger_{start}_{end}.jsonl"
         with pytest.raises(C.HoldoutViolation, match="还没冻结"):
-            driver.run_span(start, end, ledger=ledger, book=book)
+            driver.run_span(start, end, ledger=ledger)
         assert not ledger.exists()
     with pytest.raises(C.HoldoutViolation, match="2026"):
         driver.run_span(2026, 2026, ledger=tmp_path / "x.jsonl")
 
 
 def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatch, tmp_path):
-    import research.market_clock_carry as driver
+    import research.market_clock_slow_short as driver
     from strategies.catalog import BOOKS
 
     _freeze_books(monkeypatch, tmp_path, BOOKS)
@@ -170,18 +169,18 @@ def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatc
     monkeypatch.setattr(driver, "_load", fake_load)
     monkeypatch.setattr(driver, "_book", lambda *args, **kwargs: None)
     driver.run_span(2024, 2024, ledger=ledger)
-    assert [name for name, _, _ in seen] == [f"{book.ID}_2024" for book in BOOKS]
+    assert [name for name, _, _ in seen] == [f"{BOOKS[0].ID}_2024"]
     assert all(frozen == "2026-10-21" and start == "2024-01-01" for _, frozen, start in seen)
-    driver.run_span(2022, 2022, ledger=ledger, book="按池宽1倍加慢趋势空头")
+    driver.run_span(2022, 2022, ledger=ledger)
     assert seen[-1][0] == "market_clock_slow_short_2022"
     hashed = [e for e in C.read_ledger(ledger) if e.get("strategy") == "market_clock_slow_short_2022"][0]["sha256"]
-    assert len(hashed) == 3 and {
-        "strategies/market_clock_carry/__init__.py", "strategies/market_clock_slow_short/__init__.py",
+    assert len(hashed) == 2 and {
+        "strategies/market_clock_slow_short/__init__.py",
     } <= set(hashed)
 
 
 def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monkeypatch, tmp_path):
-    import research.market_clock_carry as driver
+    import research.market_clock_slow_short as driver
     from strategies.catalog import book_named
 
     book = book_named("按池宽1倍加慢趋势空头")
@@ -191,26 +190,26 @@ def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monk
     C.append_ledger({"kind": "year_test", "status": "opened", "strategy": "market_clock_slow_short_2022"}, ledger)
     monkeypatch.setattr(driver, "_load", lambda end: pytest.fail("没作废不该重读"))
     with pytest.raises(C.HoldoutViolation, match="作废"):
-        driver.run_span(2022, 2022, ledger=ledger, book=book)
+        driver.run_span(2022, 2022, ledger=ledger)
     C.append_ledger({"kind": "void", "status": "void", "strategy": "market_clock_slow_short_2022"}, ledger)
     monkeypatch.setattr(driver, "_load", lambda end: object())
     monkeypatch.setattr(driver, "_book", lambda *args, **kwargs: None)
-    driver.run_span(2022, 2022, ledger=ledger, book=book)
+    driver.run_span(2022, 2022, ledger=ledger)
     last = C.read_ledger(ledger)[-1]
     assert last["status"] == "finished" and "作废" in last["note"]
 
 
 def test_research_span_can_start_in_2011_but_not_earlier_or_across_2022(monkeypatch, tmp_path):
-    import research.market_clock_carry as driver
+    import research.market_clock_slow_short as driver
 
     monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
     seen = []
     monkeypatch.setattr(driver, "_load", lambda end, start=None: seen.append((start, end)) or object())
     monkeypatch.setattr(driver, "_book", lambda data, years, period, item: seen.append((years[0], years[-1], period)))
-    driver.run_span(2011, 2021, book="按池宽1倍加慢趋势空头")
+    driver.run_span(2011, 2021)
     assert seen == [(2011, 2021), (2011, 2021, "research")]
     with pytest.raises(C.HoldoutViolation, match="2011"):
-        driver.run_span(2010, 2021, book="按池宽1倍加慢趋势空头")
+        driver.run_span(2010, 2021)
     monkeypatch.undo()
     with pytest.raises(ValueError, match="2016 年以前"):
         driver._load(2022, 2011)

@@ -2,11 +2,8 @@
 
 根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-两条策略，都已冻结，只差熊市判断：
-
-- 按池宽1倍加慢趋势空头（`market_clock_slow_short`，2026-10-22 冻结）：当天收盘的全市场时间因子分数大于 0、并且该品种滞后一日展期收益大于 0 的做多；池子 60/120/250 日慢趋势向下时，自身趋势向下且展期为负的品种做空。代码在 [`strategies/market_clock_slow_short`](strategies/market_clock_slow_short/)。
-- 按池宽1倍加三窗口趋势空头（`market_clock_slow_short_fast3`，2026-10-23 冻结）：同上，熊市判断换成池子 20/60/120 日，入熊和出熊更快。代码在 [`strategies/market_clock_slow_short_fast3`](strategies/market_clock_slow_short_fast3/)。
-- 两条共用的多头腿在 [`strategies/market_clock_carry`](strategies/market_clock_carry/)，它自己不是策略。
+- 当前只保留一条已冻结策略：按池宽1倍加慢趋势空头（`market_clock_slow_short`，2026-10-22 冻结）。多头和空头逻辑、因子与展期收益处理都合并在 [`strategies/market_clock_slow_short`](strategies/market_clock_slow_short/)。
+- 熊市和品种自身趋势共用 `TREND_WINDOWS = (60, 120, 250)`，并与冻结规格交叉校验。
 - 策略规则、实现、研究期结果和研究局限见 [`docs/guide.md`](docs/guide.md)。
 
 ## 环境
@@ -29,7 +26,7 @@ conda activate factor-mining
 | 2025 | 2025 | `holdout_locked/`；台账清空前没有打开记录 | 同上 |
 | 前推 | 2026-01-01 起 | `data/commodity/data_min/` 里单独下载的 2026 文件，未分片，不读 | — |
 
-研究代码读到 2022 年及以后会抛 `HoldoutViolation`。策略冻结之后才能打开 2022 及以后（两条都已冻结），打开前先写台账：2022 记一条 `year_test`，2023 起通过 `final_evaluation`。台账在 `data/commodity/oos/ledger.jsonl`，作废记录用 `kind: void`。不读 2026。
+研究代码读到 2022 年及以后会抛 `HoldoutViolation`。策略冻结之后才能打开 2022 及以后，打开前先写台账：2022 记一条 `year_test`，2023 起通过 `final_evaluation`。台账在 `data/commodity/oos/ledger.jsonl`，作废记录用 `kind: void`。不读 2026。
 
 2026-10-22 按用户决定清空了商品 OOS 台账（`data/commodity/oos/ledger.jsonl`）和 2022 年及以后的结果文件。清空前，2022–2024 已经为当时的策略打开过，2025 没有打开记录。空台账不让任何年份变干净：2022–2024 重跑只算复现。台账空了以后，`--validation`、`--year`、`--oos` 会重新读数据、写新台账，不会只打印旧结果。
 
@@ -51,7 +48,7 @@ python download/commodity/getRiceQuantExternalData.py --datasets roll_yield --en
 
 ## 回测
 
-不写策略名时两条都跑，写了就只跑点名的那条，例如 `python -m backtest.engine 按池宽1倍加慢趋势空头 --research`。
+当前只有一条策略，运行时不需策略名。
 
 ```bash
 python -m backtest.engine --research                 # 2011–2021
@@ -82,10 +79,8 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 ```bash
 python -m research.time_factor_screen          # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
 python -m research.gtja_time                   # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
-python -m research.market_clock_carry_factors  # 当前策略的分数择时、展期截面 IC、叠加、账本分解、紧缩 Sharpe 和 PBO
-python -m research.index_market_clock          # 多头腿和慢趋势空头迁移到 IF / IH / IC 研究期；缺股指展期收益，目前跑不了
-python -m research.slow_short_leg              # 慢趋势空头腿的信号检验，2011–2015，不扣成本；已跑过一次，拒绝重跑
-python -m research.market_bear_regimes         # 五种熊市判断规则对照事后熊市区间，2011–2021，另跑扣成本账本
+python -m research.market_clock_slow_short_factors  # 当前策略的信号检验；是已看过的研究期诊断
+python -m research.index_market_clock              # 慢趋势策略及多头基线迁移到 IF / IH / IC；缺股指展期收益，目前跑不了
 python -m research.index_kline                 # IF / IH / IC 研究期日 K 线图
 ```
 

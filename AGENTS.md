@@ -1,6 +1,6 @@
 # AGENTS.md — working rules for this repository
 
-Read this before changing anything. It reflects the repo on 2026-10-23 (two live books: `market_clock_slow_short` and `market_clock_slow_short_fast3`).
+Read this before changing anything. It reflects the repo on 2026-10-23 (one live book: `market_clock_slow_short`).
 If the code and this file disagree, trust the code, then update this file in the same change.
 
 ## 1. What the project is
@@ -32,25 +32,20 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 - Only 1 of 115 cells passes the full predeclared gate (t, 5/6 years, 4/6 sectors), and 0 are allowed to pair.
 - The GTJA factors on IF/IH/IC, 2016–2021: no single factor reaches |NW t| ≥ 2.
 
-`strategies/catalog.py` lists the two live books. The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them.
+`strategies/catalog.py` lists the one live book. The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them.
 
-**Live books (two, both frozen, user decision 2026-10-23).** Write-up `docs/guide.md`. Both books share these rules:
-- Long leg (`strategies/market_clock_carry/`, a library with no book of its own): at the close, the five-factor market score must be > 0, and that name's main-versus-sub `annualized_yield` lagged one trading day must be strictly > 0. Weight +1.
+**Live book (frozen 2026-10-22).** Write-up `docs/guide.md`. The single strategy combines these two legs:
+- Long leg: at the close, the five-factor market score must be > 0, and that name's main-versus-sub `annualized_yield` lagged one trading day must be strictly > 0. Weight +1.
 - Short leg, only on bear days: a name gets weight −1 when its own trend (mean sign of 60/120/250-day returns, (closew_t − closew_{t−n}) / close_{t−n}) is < 0 and its lagged carry is < 0.
 - Budget: |weight| × 1 × equity / pool width. A name is never in both legs on the same day (long needs carry > 0, short carry < 0).
 - Risk: 10% drawdown → liquidate and halt 10 trading days.
 - Execution: on the next trading day's first bar (night open if there is a night session, else day open). Unchanged weight stays on; only the lot difference trades.
 
-The two books differ only in the bear rule, the mean sign of the pool's equal-weight close-to-close return summed over the windows being < 0:
-1. **按池宽1倍加慢趋势空头, `market_clock_slow_short`** (`strategies/market_clock_slow_short/`, frozen 2026-10-22): windows 60/120/250. It needs 250 days of history, so 2011 has no bear days.
-2. **按池宽1倍加三窗口趋势空头, `market_clock_slow_short_fast3`** (`strategies/market_clock_slow_short_fast3/`, frozen 2026-10-23): windows 20/60/120.
-   - **Chosen post hoc.** It was proposed after the 5-rule bear comparison and three ledger window variants, all on 2011–2021, and its predeclared bar (Sharpe not below the slow book in both windows) failed. The user froze it anyway, to keep both speeds.
-   - Against ex-post bears it enters about 17 days earlier and exits about 44 days earlier (medians), but switches 15×/yr vs 9×.
-   - Daily returns correlate 0.87 with the slow book.
-   - **When 2025 is opened, evaluate each book against its own bar. Do not use 2025 to pick a winner.**
+The market bear rule and symbol short rule share `TREND_WINDOWS = (60, 120, 250)` in `strategies/market_clock_slow_short/__init__.py`. Both frozen JSON window fields are checked against this constant. The 2011–2021 research window begins scoring on 2011-01-14; the bear trend needs 250 days, so 2011 has no bear days.
 
 **Deleted 2026-10-23** (ledger `kind: decision` holds their 2011–21 and 2016–21 numbers):
-- 按池宽1倍 `market_clock_pool`, frozen 2026-10-21. Its JSON is gone and its code is now the shared long leg; its 2014–2015 reproduction results are kept.
+- 按池宽1倍 `market_clock_pool`, frozen 2026-10-21. Its standalone book was removed; its long signal is part of `market_clock_slow_short`.
+- 按池宽1倍加三窗口趋势空头 `market_clock_slow_short_fast3`, frozen 2026-10-23. Its comparative research numbers below are historical only; do not list or run it as a current book.
 - The 1.5x candidate `market_clock_slow_short_15`.
 - The four-window candidate `market_clock_slow_short_fast` (20/60/120/250).
 
@@ -102,7 +97,7 @@ The two books differ only in the bear rule, the mean sign of the pool's equal-we
     - short leg always on: 1.10;
     - stop long and go short in a bear: 1.12;
     - vol de-risking: 1.42.
-- **Signal tests** (`research/market_clock_carry_factors.py`):
+- **Signal tests** (`research/market_clock_slow_short_factors.py`, formerly `market_clock_carry_factors.py`):
   - Timing: score>0 minus else, next-bar pool return +12.7bp/day, NW t 3.22, 6/6 years.
   - Carry: cross-sectional IC 0.022, t 3.20, 5/6 years (2021 negative).
   - Interaction: t 2.25.
@@ -169,7 +164,7 @@ The two books differ only in the bear rule, the mean sign of the pool's equal-we
 | Partition | Dates | Commodity | Index |
 |---|---|---|---|
 | Warmup | 2010 | in research shards; factor warmup only | — |
-| Research | 2011–2021 | `data/commodity/minute_shards/research/`. **User decision 2026-10-23:** books score from 2011; 2011–2015 pools are rebuilt; SHFE fees before 2013-10-08 are backfilled (§2). 2016–2021 is the window the two books were frozen on | `data/index/minute_shards/research/` (IF/IH/IC), 2016–2021; 2015 warmup |
+| Research | 2011–2021 | `data/commodity/minute_shards/research/`. **User decision 2026-10-23:** the book scores from 2011; 2011–2015 pools are rebuilt; SHFE fees before 2013-10-08 are backfilled (§2). 2016–2021 is the window the live book was frozen on | `data/index/minute_shards/research/` (IF/IH/IC), 2016–2021; 2015 warmup |
 | Validation | 2022 | `validation_2022/`; opened before the 2026-10-22 ledger reset, not clean | inside `holdout_locked/`; **unread** |
 | 2023 | 2023 | `holdout_locked/`; opened before the reset, not clean | inside `holdout_locked/`; **unread** |
 | 2024 | 2024 | `holdout_locked/`; opened before the reset, not clean | **unread** |
@@ -196,15 +191,12 @@ Rules:
 src/tfcta/          library: config (paths, partitions, guards, factor signs), data (shards, universe,
                     rolls), factors, costs (fees, ticks, multipliers), prepare/ (sharding, ticks,
                     universe, factor caches), index/ (GTJA index factors)
-strategies/         market_clock_carry/: shared long leg (score, roll yield, carry coverage, check_config, Book base class), no book;
-                    market_clock_slow_short/: trend and bear helpers, short leg, market_clock_slow_short.json;
-                    market_clock_slow_short_fast3/: 20/60/120 bear windows, market_clock_slow_short_fast3.json;
-                    catalog.py: FROZEN_BOOKS / BOOKS (the two live books) and book_named
+strategies/         market_clock_slow_short/: full strategy (long and short legs, factors, carry, trend), frozen JSON;
+                    catalog.py: FROZEN_BOOKS / BOOKS (the one live book) and book_named
 backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, max_drawdown, newey_west_t,
                     deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
-research/           market_clock_carry (spans, beta/alpha, ledger, freeze gate), slow_short_leg (2011–2015 short-leg
-                    signal test, run once), market_bear_regimes (five bear rules, 2011–2021), market_clock_carry_factors
-                    (signal-level tests), index_market_clock (both books on IF/IH/IC, research period),
+research/           market_clock_slow_short (spans, beta/alpha, ledger, freeze gate), market_clock_slow_short_factors
+                    (signal-level diagnostics), index_market_clock (long-leg baseline and slow-short on IF/IH/IC),
                     time_factor_screen, gtja_time; index_kline is only a chart utility
 config/research/    predeclared JSON specs for research studies and exploratory strategies
 download/           RiceQuant downloaders (commodity minute/external/fees, index minute, index roll yield)
@@ -228,16 +220,14 @@ python -m pytest                                      # must stay green
 python -m backtest.engine --research                 # 2011–21，不点名则全部已登记策略都跑
 python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期，结果在 2016-2021/；信号层检验的紧缩夏普读这里
 python -m backtest.engine 按池宽1倍加慢趋势空头 --research   # 只跑点名的那一条
-python -m backtest.engine --research --by-year        # 不点名则每年两条，各一本新的 1e8
+python -m backtest.engine --research --by-year        # 每年一本新的 1e8
 python -m backtest.engine --start 2018 --end 2020     # 研究区间；不点名则全部已登记策略
 python -m backtest.engine --validation               # 2022；须点名冻结策略。先记台账。不是干净样本
 python -m backtest.engine --year 2023                # 单年；须点名冻结策略。先记台账
 python -m backtest.engine --oos                      # 2023–2025；须点名冻结策略。先记台账
 python -m backtest.engine --oos --by-year            # 2023、2024、2025；须点名冻结策略
-python -m research.market_clock_carry_factors       # signal-level tests, DSR, PBO
-python -m research.index_market_clock                # both books on IF/IH/IC; needs index roll yield (not available)
-python -m research.slow_short_leg                    # short-leg signal test 2011–2015; already run, refuses a rerun
-python -m research.market_bear_regimes               # five bear rules vs ex-post bears, 2011–2021, plus costed books
+python -m research.market_clock_slow_short_factors  # signal-level diagnostics, DSR, PBO; already seen
+python -m research.index_market_clock                # long-leg baseline and slow-short on IF/IH/IC; index roll yield unavailable
 python -m research.time_factor_screen
 python -m research.gtja_time
 ```
@@ -300,7 +290,7 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
   - `熔断口径回撤` in `daily.csv` resets its peak when a halt ends. Reported max drawdown (`max_drawdown`) does not.
 - **No-night days:** about 100 of the 1460 research days have no night session (post-holiday days, and the 2020 night suspension). On those days the full-day `ts_low`/`ts_high` market mean shifts by roughly −0.23/+0.18 sd, because the normalisation grid is shorter.
 - **Year-test factors:** `load_through_year` recomputes the five factors from 320 research days before 2022 onward. It asserts that the recomputed values equal the research cache on the last 60 research days. Keep `duration_factors`, `report_factors` and the cache on the same N250/M55 definition.
-- **Flow:** `backtest.engine.main` maps switches to `research.market_clock_carry.run_span(start, end, by_year, book)`, which loads data, calls `book.targets(data, columns)` on each book from `strategies.catalog.BOOKS`, runs `simulate_target_lots`, writes results with `write_results` and prints beta/alpha from `summarize`.
+- **Flow:** `backtest.engine.main` maps switches to `research.market_clock_slow_short.run_span(start, end, by_year, book)`, which loads data, calls the selected `book.targets(data, columns)` from `strategies.catalog.BOOKS`, runs `simulate_target_lots`, writes results with `write_results` and prints beta/alpha from `summarize`.
 
 ## 8. Coding conventions
 

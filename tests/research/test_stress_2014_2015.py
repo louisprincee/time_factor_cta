@@ -8,7 +8,7 @@ from tfcta import config as C
 def test_protocol_is_locked_to_frozen_books_and_recorded_pool_widths():
     protocol = load_protocol()
     assert protocol["status"] == "declared_reproduction_no_tuning"
-    assert protocol["books"] == ["market_clock_pool", "market_clock_slow_short"]
+    assert protocol["books"] == ["market_clock_slow_short"]
     assert protocol["universe"]["expected_pool_widths"] == {"2014": 11, "2015": 17}
 
 
