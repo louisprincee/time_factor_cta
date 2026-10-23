@@ -1,9 +1,9 @@
-"""唯一冻结策略的注册表。"""
+"""当前冻结策略的注册表。"""
 from __future__ import annotations
 
-from strategies import market_clock_slow_short
+from strategies import market_clock_slow_short_20_60_120
 
-FROZEN_BOOKS = (market_clock_slow_short.BOOK,)
+FROZEN_BOOKS = (market_clock_slow_short_20_60_120.BOOK,)
 BOOKS = FROZEN_BOOKS
 
 

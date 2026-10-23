@@ -15,9 +15,9 @@ import pandas as pd
 from backtest.engine import (
     PERIODS, deflated_sharpe, ledger_inputs, load_research, newey_west_t, pbo_cscv,
 )
-from research.market_clock_slow_short import pool_open_return, sectors, simulate, summarize
+from research.market_clock_slow_short_20_60_120 import pool_open_return, sectors, simulate, summarize
 from research.time_factor_screen import ols_hac
-from strategies import market_clock_slow_short as S
+from strategies import market_clock_slow_short_20_60_120 as S
 from strategies.catalog import FROZEN_BOOKS
 from tfcta import config as C
 

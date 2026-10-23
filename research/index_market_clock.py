@@ -16,7 +16,7 @@ from backtest.engine import (
     sharpe_ratio,
     simulate_target_lots,
 )
-from strategies import market_clock_slow_short as S
+from strategies import market_clock_slow_short_20_60_120 as S
 from tfcta import config as C
 from tfcta.costs import (
     INDEX_MULTIPLIER,
@@ -60,6 +60,7 @@ def load_protocol(path: Path = CONFIG_PATH) -> dict:
         or "or 2026" not in protocol.get("sample", "")
         or protocol.get("parameters", {}).get("factors") != list(FACTORS)
         or protocol.get("parameters", {}).get("factor_signs") != expected_signs
+        or protocol.get("parameters", {}).get("short_trend_windows") != list(S.TREND_WINDOWS)
         or protocol.get("minimum_valid_instruments_for_market_score") != len(SYMBOLS)
     ):
         raise ValueError("股指迁移研究登记与因子、样本边界或当前策略不一致")

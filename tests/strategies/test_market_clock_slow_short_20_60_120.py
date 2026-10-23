@@ -1,11 +1,11 @@
-"""慢趋势空头：趋势只用过去收盘、熊市才开空头腿、多头腿同按池宽1倍、规格与代码一致。合成数据。"""
+"""市场趋势策略：趋势只用过去收盘、熊市才开空头腿、多头腿同按池宽1倍。合成数据。"""
 import json
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from strategies import market_clock_slow_short as T
+from strategies import market_clock_slow_short_20_60_120 as T
 
 
 def _bars(index, symbols, drift=-0.001, seed=0):
@@ -25,7 +25,7 @@ def test_symbol_trend_uses_only_past_closes_and_needs_the_longest_window():
     index = pd.bdate_range("2015-01-01", periods=300)
     bars = _bars(index, ["A", "B"])
     trend = T.symbol_trend(bars, ["A", "B"])
-    assert trend.iloc[:250].isna().all().all()
+    assert trend.iloc[:120].isna().all().all()
     assert set(np.unique(trend.dropna().to_numpy())) <= {-1.0, -1 / 3, 1 / 3, 1.0}
     later = {k: v.copy() for k, v in bars.items()}
     for frame in later.values():
@@ -33,10 +33,10 @@ def test_symbol_trend_uses_only_past_closes_and_needs_the_longest_window():
     pd.testing.assert_frame_equal(trend.iloc[:-1], T.symbol_trend(later, ["A", "B"]).iloc[:-1])
 
 
-def test_market_trend_is_negative_in_a_steady_decline_and_missing_before_250_days():
+def test_market_trend_is_negative_in_a_steady_decline_and_missing_before_120_days():
     daily = pd.Series(-0.001, index=pd.bdate_range("2015-01-01", periods=300))
     trend = T.market_trend(daily)
-    assert trend.iloc[:249].isna().all() and trend.iloc[-1] == -1.0
+    assert trend.iloc[:119].isna().all() and trend.iloc[-1] == -1.0
 
 
 def test_short_leg_needs_bear_trend_and_negative_carry_and_long_leg_is_unchanged():
@@ -76,9 +76,9 @@ def test_targets_use_only_the_previous_close():
 
 def test_config_must_match_the_short_leg_and_is_frozen(tmp_path):
     config = T.BOOK.frozen()
-    assert config["frozen_at"] == "2026-10-22" and config["chosen"] == config["parameters"]
-    assert "不读 2026" in config["sample"] and "2022、2023、2024 已经打开过" in config["sample"]
-    for key, value in (("short_trend_windows", [20, 60, 120]), ("bear_trend_windows", [20, 60, 120]),
+    assert config["frozen_at"] == "2026-10-23" and config["chosen"] == config["parameters"]
+    assert "不读 2026" in config["sample"] and "2022–2024" in config["sample"]
+    for key, value in (("short_trend_windows", [10, 20, 30]), ("bear_trend_windows", [10, 20, 30]),
                        ("bear_rule", "market_trend <= 0"),
                        ("short_weight", -0.5), ("gross_exposure_limit", 1.5)):
         broken = {**config, "parameters": {**config["parameters"], key: value}}
@@ -89,6 +89,6 @@ def test_config_must_match_the_short_leg_and_is_frozen(tmp_path):
 
 def test_frozen_trend_windows_are_shared_by_symbol_and_market_rules():
     config = T.BOOK.load_config()["parameters"]
-    assert T.TREND_WINDOWS == (60, 120, 250)
+    assert T.TREND_WINDOWS == (20, 60, 120)
     assert config["short_trend_windows"] == list(T.TREND_WINDOWS)
     assert config["bear_trend_windows"] == list(T.TREND_WINDOWS)

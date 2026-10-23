@@ -1,8 +1,8 @@
-"""按池宽1倍加慢趋势空头（market_clock_slow_short），仓库里唯一的策略。规格在同目录 JSON，导入时跟代码核对。
+"""按池宽1倍加三窗口趋势空头（market_clock_slow_short_20_60_120）。规格在同目录 JSON，导入时跟代码核对。
 
 收盘定权重，下一交易日第一根开盘成交；有夜盘时这一根是夜盘开盘，没有夜盘时是日盘开盘，夜盘算下一个交易日。
 多头腿：五因子收盘市场分数 > 0 且该品种滞后一日年化展期收益 > 0，权重 +1。
-空头腿：市场慢趋势 < 0（熊市）的日子，品种自身趋势 < 0 且滞后一日展期收益 < 0，权重 −1。空头腿不用时间因子，
+空头腿：市场趋势 < 0（熊市）的日子，品种自身趋势 < 0 且滞后一日展期收益 < 0，权重 −1。空头腿不用时间因子，
 因为对偶空头研究期失败，分数的信息只在多头一侧。两条腿都按当年池宽分 1 倍名义敞口；一个品种同一天只会在一条腿上。
 """
 from __future__ import annotations
@@ -27,8 +27,8 @@ DRAWDOWN_LIMIT = 0.10
 HALT_DAYS = 10
 CARRY_MAX_MISSING = 0.05      # 池内某品种某年展期收益缺失超过 5% 就报错，不悄悄当成不入选
 ROLL_YIELD_ROOT = C.COMMODITY_DATA / "external_rqdata"
-# 改了窗口就会和冻结规格不一致；规则变了是新 ID 的新策略
-TREND_WINDOWS = (60, 120, 250)
+# 趋势参数变化使用独立 ID，避免复用旧策略的结果与台账。
+TREND_WINDOWS = (20, 60, 120)
 SHORT_RULE = "symbol_trend < 0 and lagged annualized_yield < 0"
 BEAR_RULE = "market_trend < 0"
 
@@ -132,7 +132,7 @@ def close_return(bars: dict, columns) -> pd.DataFrame:
 
 
 def symbol_trend(bars: dict, columns, windows=TREND_WINDOWS) -> pd.DataFrame:
-    """各窗口（默认 60、120、250 日）收益符号的平均；任一窗口缺失则为缺失。"""
+    """各窗口收益符号的平均；任一窗口缺失则为缺失。"""
     close, closew = bars["close"].reindex(columns=columns), bars["closew"].reindex(columns=columns)
     signs = []
     for window in windows:
@@ -143,7 +143,7 @@ def symbol_trend(bars: dict, columns, windows=TREND_WINDOWS) -> pd.DataFrame:
 
 
 def market_trend(daily: pd.Series, windows=TREND_WINDOWS) -> pd.Series:
-    """池子日收益累计各窗口（默认 60、120、250 日）后的符号平均；任一窗口不足则为缺失。"""
+    """池子日收益累计各窗口后的符号平均；任一窗口不足则为缺失。"""
     signs = [np.sign(daily.rolling(window, min_periods=window).sum()) for window in windows]
     return sum(signs) / len(signs)
 
@@ -166,7 +166,7 @@ def decision_weights(score: pd.Series, carry: pd.DataFrame, trend: pd.DataFrame,
 
 def targets(signed: dict, bars: dict, universe: dict, index: pd.DatetimeIndex, columns,
             carry: pd.DataFrame | None = None, bear_windows=TREND_WINDOWS) -> pd.DataFrame:
-    """收盘决策后移到下一交易日第一根开盘。市场慢趋势只用 index 上的池内日收益。
+    """收盘决策后移到下一交易日第一根开盘。市场趋势只用 index 上的池内日收益。
     给了 carry 就用它（测试用），否则读展期收益并核对覆盖。bear_windows 只给研究比较用，账本用冻结的窗口。"""
     columns = pd.Index(columns)
     pool = pool_mask(universe, index, columns)
@@ -218,15 +218,15 @@ def check_config(config: dict, strategy_id: str) -> dict:
 
 
 class Book:
-    """这条策略：规格、冻结检查、收盘决策。回测和台账在 research.market_clock_slow_short。"""
+    """这条策略：规格、冻结检查、收盘决策。回测和台账在对应的 research 模块。"""
 
-    ID = "market_clock_slow_short"
-    NAME = "按池宽1倍加慢趋势空头"
+    ID = "market_clock_slow_short_20_60_120"
+    NAME = "按池宽1倍加三窗口趋势空头"
     GROSS = GROSS
-    CONFIG_PATH = Path(__file__).with_name("market_clock_slow_short.json")
+    CONFIG_PATH = Path(__file__).with_name("market_clock_slow_short_20_60_120.json")
     DETAIL = (
-        "多头同按池宽1倍；池子60/120/250日累计收益符号均值小于0时，"
-        "品种自身60/120/250日收益符号均值小于0且滞后一日年化展期收益小于0的做空1份"
+        "多头同按池宽1倍；池子20/60/120日累计收益符号均值小于0时，"
+        "品种自身20/60/120日收益符号均值小于0且滞后一日年化展期收益小于0的做空1份"
         "/两腿都按当年池宽分1倍名义敞口/下一交易日第一根开盘成交/权重不变则留仓/回撤10%清仓并停10个交易日"
     )
 

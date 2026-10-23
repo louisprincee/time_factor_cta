@@ -34,7 +34,8 @@ def test_protocol_declares_only_research_period_and_long_baseline_plus_current_b
     protocol = load_protocol()
     assert protocol["status"] == "declared_test_not_a_strategy"
     assert protocol["instruments"] == list(SYMBOLS)
-    assert protocol["books"] == ["market_clock_pool", "market_clock_slow_short"]
+    assert protocol["books"] == ["market_clock_pool", "market_clock_slow_short_20_60_120"]
+    assert protocol["parameters"]["short_trend_windows"] == [20, 60, 120]
     assert protocol["minimum_valid_instruments_for_market_score"] == 3
 
 

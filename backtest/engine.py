@@ -8,7 +8,7 @@
     python -m backtest.engine --year 2024                     # 单年，冻结后才能打开，先记台账
     python -m backtest.engine --oos [--by-year]               # 2023–2025，冻结后才能打开，先记台账
 
-唯一的策略在 strategies/market_clock_slow_short，区间和台账在 research/market_clock_slow_short。不读 2026。
+唯一当前策略在 strategies/market_clock_slow_short_20_60_120，区间和台账在 research/market_clock_slow_short_20_60_120。不读 2026。
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from strategies.market_clock_slow_short import FACTORS
+from strategies.market_clock_slow_short_20_60_120 import FACTORS
 from tfcta import config as C
 from tfcta.costs import (
     MULTIPLIER, contract_multiplier_overrides, fee_tables, load_fees, load_ticks, require_multipliers,
@@ -821,6 +821,7 @@ def write_results(period, strategy, daily, positions, events, symbols, initial_c
         events = events.copy()
         events.insert(0, "策略", label)
     returns = daily["净收益"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    metrics = performance(returns)
     summary = {
         "策略": label,
         "参数": strategy.DETAIL,
@@ -829,9 +830,10 @@ def write_results(period, strategy, daily, positions, events, symbols, initial_c
         "名义敞口上限": float(strategy.GROSS),
         "保证金率假设": MARGIN_RATE,
         "累计净收益": float(daily["权益"].iloc[-1] / initial_capital - 1.0),
-        "年化收益": performance(returns)["ann_return"],
+        "年化收益": metrics["ann_return"],
         "Sharpe": sharpe_ratio(returns),
         "最大回撤": max_drawdown(daily["权益"], initial_capital),
+        "Calmar比率": metrics["calmar"],
         "期末权益": float(daily["权益"].iloc[-1]),
         "最大名义敞口倍数": float(daily["敞口倍数"].max()),
         "最大保证金权益占用": float(daily["保证金权益占用"].max()),
@@ -846,11 +848,13 @@ def write_results(period, strategy, daily, positions, events, symbols, initial_c
         if part.empty:
             continue
         opening = float(part["期初权益"].iloc[0])
+        annual_metrics = performance(part["净收益"].fillna(0.0))
         annual_rows.append({
             "策略": label,
             "年份": year,
             "净收益": float(part["权益"].iloc[-1] / opening - 1.0),
             "Sharpe": sharpe_ratio(part["净收益"].fillna(0.0)),
+            "Calmar比率": annual_metrics["calmar"],
             "期末权益": float(part["权益"].iloc[-1]),
             "年度内最大回撤": max_drawdown(part["权益"], opening),
             "开仓笔数": int(part["开仓笔数"].sum()),
@@ -880,10 +884,10 @@ def write_results(period, strategy, daily, positions, events, symbols, initial_c
 # 命令行
 # --------------------------------------------------------------------------
 def main(argv=None):
-    from research import market_clock_slow_short as driver  # driver 也导入本模块，延后导入避免循环
+    from research import market_clock_slow_short_20_60_120 as driver  # 延后导入避免循环
 
     parser = argparse.ArgumentParser(
-        description="按池宽1倍加慢趋势空头的整数手数回测。研究期随时可跑；2022 及以后要先冻结，先记台账再读。不读 2026。"
+        description="按池宽1倍加三窗口趋势空头的整数手数回测。研究期随时可跑；2022 及以后要先冻结，先记台账再读。不读 2026。"
     )
     period = parser.add_mutually_exclusive_group()
     period.add_argument("--research", action="store_true", help="2011–2021（2011–2015 品种池按同一门槛重建）")

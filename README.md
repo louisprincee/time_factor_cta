@@ -2,8 +2,8 @@
 
 根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-- 当前只保留一条已冻结策略：按池宽1倍加慢趋势空头（`market_clock_slow_short`，2026-10-22 冻结）。多头和空头逻辑、因子与展期收益处理都合并在 [`strategies/market_clock_slow_short`](strategies/market_clock_slow_short/)。
-- 熊市和品种自身趋势共用 `TREND_WINDOWS = (60, 120, 250)`，并与冻结规格交叉校验。
+- 当前只保留一条已冻结策略：按池宽1倍加三窗口趋势空头（`market_clock_slow_short_20_60_120`，2026-10-23 冻结）。多头和空头逻辑、因子与展期收益处理都在 [`strategies/market_clock_slow_short_20_60_120`](strategies/market_clock_slow_short_20_60_120/)。
+- 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。窗口是用户在看过同规则研究结果后选定的，不是新的样本外验证。
 - 策略规则、实现、研究期结果和研究局限见 [`docs/guide.md`](docs/guide.md)。
 
 ## 环境
@@ -80,7 +80,7 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 python -m research.time_factor_screen          # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
 python -m research.gtja_time                   # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
 python -m research.market_clock_slow_short_factors  # 当前策略的信号检验；是已看过的研究期诊断
-python -m research.index_market_clock              # 慢趋势策略及多头基线迁移到 IF / IH / IC；缺股指展期收益，目前跑不了
+python -m research.index_market_clock              # 当前策略迁移到 IF / IH / IC；缺股指展期收益，目前跑不了
 python -m research.index_kline                 # IF / IH / IC 研究期日 K 线图
 ```
 

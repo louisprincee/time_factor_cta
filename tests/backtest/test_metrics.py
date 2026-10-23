@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,39 @@ def test_metrics_hand_values():
     assert m['ret_risk'] == pytest.approx(ann / vol)
     assert m['win_rate'] == pytest.approx(0.5)
     assert m['max_drawdown'] == pytest.approx(1.045 / 1.1 - 1)
+    assert m['calmar'] == pytest.approx(m['ann_return'] / abs(m['max_drawdown']))
+
+
+def test_write_results_includes_calmar_in_summary_and_annual_csv(monkeypatch, tmp_path):
+    dates = pd.to_datetime(["2019-01-02", "2019-01-03"])
+    returns = pd.Series([0.10, -0.05], index=dates)
+    equity = 100_000_000.0 * (1.0 + returns).cumprod()
+    daily = pd.DataFrame({
+        "净收益": returns,
+        "权益": equity,
+        "期初权益": equity.shift(1).fillna(100_000_000.0),
+        "敞口倍数": [0.5, 0.5],
+        "保证金权益占用": [0.1, 0.1],
+        "开仓笔数": [1, 0],
+        "平仓笔数": [0, 1],
+        "换月笔数": [0, 0],
+        "受阻委托数": [0, 0],
+    })
+    monkeypatch.setattr(C, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(engine, "plot_performance", lambda *args, **kwargs: None)
+    strategy = SimpleNamespace(NAME="测试策略", DETAIL="合成数据", GROSS=1.0, ID="test")
+
+    summary, annual = engine.write_results(
+        2019, strategy, daily, pd.DataFrame(), pd.DataFrame(), []
+    )
+
+    expected_calmar = performance(returns)["calmar"]
+    assert summary["Calmar比率"] == pytest.approx(expected_calmar)
+    assert annual[0]["Calmar比率"] == pytest.approx(expected_calmar)
+    saved_summary = pd.read_csv(tmp_path / "strategies" / "test" / "commodity" / "2019" / "summary.csv")
+    saved_annual = pd.read_csv(tmp_path / "strategies" / "test" / "commodity" / "2019" / "annual.csv")
+    assert saved_summary.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
+    assert saved_annual.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
 
 
 def test_annualized_metrics_and_sharpe_use_242_trading_days():
@@ -103,7 +137,7 @@ def test_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
     (["--year", "2019"], (2019, 2019, False)),
 ])
 def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
-    import research.market_clock_slow_short as driver
+    import research.market_clock_slow_short_20_60_120 as driver
 
     seen = []
     monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False: seen.append(
@@ -114,7 +148,7 @@ def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
 
 @pytest.mark.parametrize("argv", [
     [],     ["--start", "2018"], ["--year", "2019", "--by-year"], ["--research", "--strategy", "没有这条"],
-    ["按池宽1倍加慢趋势空头", "--research"],
+    ["按池宽1倍加三窗口趋势空头", "--research"],
 ])
 def test_cli_rejects_incomplete_or_unknown_arguments(argv):
     with pytest.raises(SystemExit):
@@ -133,7 +167,7 @@ def _freeze_books(monkeypatch, tmp_path, books):
 
 
 def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypatch, tmp_path):
-    import research.market_clock_slow_short as driver
+    import research.market_clock_slow_short_20_60_120 as driver
     from strategies.catalog import BOOKS
 
     book = BOOKS[0]
@@ -154,7 +188,7 @@ def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypa
 
 
 def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatch, tmp_path):
-    import research.market_clock_slow_short as driver
+    import research.market_clock_slow_short_20_60_120 as driver
     from strategies.catalog import BOOKS
 
     _freeze_books(monkeypatch, tmp_path, BOOKS)
@@ -172,26 +206,26 @@ def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatc
     assert [name for name, _, _ in seen] == [f"{BOOKS[0].ID}_2024"]
     assert all(frozen == "2026-10-21" and start == "2024-01-01" for _, frozen, start in seen)
     driver.run_span(2022, 2022, ledger=ledger)
-    assert seen[-1][0] == "market_clock_slow_short_2022"
-    hashed = [e for e in C.read_ledger(ledger) if e.get("strategy") == "market_clock_slow_short_2022"][0]["sha256"]
+    assert seen[-1][0] == f"{BOOKS[0].ID}_2022"
+    hashed = [e for e in C.read_ledger(ledger) if e.get("strategy") == f"{BOOKS[0].ID}_2022"][0]["sha256"]
     assert len(hashed) == 2 and {
-        "strategies/market_clock_slow_short/__init__.py",
+        "strategies/market_clock_slow_short_20_60_120/__init__.py",
     } <= set(hashed)
 
 
 def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monkeypatch, tmp_path):
-    import research.market_clock_slow_short as driver
+    import research.market_clock_slow_short_20_60_120 as driver
     from strategies.catalog import book_named
 
-    book = book_named("按池宽1倍加慢趋势空头")
+    book = book_named("按池宽1倍加三窗口趋势空头")
     _freeze_books(monkeypatch, tmp_path, [book])
     monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
     ledger = tmp_path / "ledger.jsonl"
-    C.append_ledger({"kind": "year_test", "status": "opened", "strategy": "market_clock_slow_short_2022"}, ledger)
+    C.append_ledger({"kind": "year_test", "status": "opened", "strategy": f"{book.ID}_2022"}, ledger)
     monkeypatch.setattr(driver, "_load", lambda end: pytest.fail("没作废不该重读"))
     with pytest.raises(C.HoldoutViolation, match="作废"):
         driver.run_span(2022, 2022, ledger=ledger)
-    C.append_ledger({"kind": "void", "status": "void", "strategy": "market_clock_slow_short_2022"}, ledger)
+    C.append_ledger({"kind": "void", "status": "void", "strategy": f"{book.ID}_2022"}, ledger)
     monkeypatch.setattr(driver, "_load", lambda end: object())
     monkeypatch.setattr(driver, "_book", lambda *args, **kwargs: None)
     driver.run_span(2022, 2022, ledger=ledger)
@@ -200,7 +234,7 @@ def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monk
 
 
 def test_research_span_can_start_in_2011_but_not_earlier_or_across_2022(monkeypatch, tmp_path):
-    import research.market_clock_slow_short as driver
+    import research.market_clock_slow_short_20_60_120 as driver
 
     monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
     seen = []

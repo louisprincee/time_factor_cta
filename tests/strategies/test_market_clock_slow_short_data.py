@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from strategies import market_clock_slow_short as S
+from strategies import market_clock_slow_short_20_60_120 as S
 from strategies.catalog import BOOKS, FROZEN_BOOKS, book_named
 from tfcta import config as C
 
@@ -23,10 +23,10 @@ def _bars(index, symbols):
     return {"close": close, "closew": close - 50.0}
 
 
-def test_catalog_contains_only_the_frozen_slow_short_book():
+def test_catalog_contains_only_the_frozen_three_window_book():
     assert BOOKS == FROZEN_BOOKS == (S.BOOK,)
     assert (S.BOOK.ID, S.BOOK.NAME, S.BOOK.GROSS, S.TREND_WINDOWS) == (
-        "market_clock_slow_short", "按池宽1倍加慢趋势空头", 1.0, (60, 120, 250),
+        "market_clock_slow_short_20_60_120", "按池宽1倍加三窗口趋势空头", 1.0, (20, 60, 120),
     )
     parameters = S.BOOK.load_config()["parameters"]
     assert parameters["short_trend_windows"] == list(S.TREND_WINDOWS)
@@ -35,9 +35,19 @@ def test_catalog_contains_only_the_frozen_slow_short_book():
     assert parameters["roll_yield_lag_days"] == 1 and parameters["drawdown_breaker"] == 0.10
     assert book_named(S.BOOK.ID) is S.BOOK
     assert book_named(S.BOOK.NAME) is S.BOOK
-    for removed in ("market_clock_pool", "market_clock_slow_short_fast3", "按池宽1倍加三窗口趋势空头"):
+    for removed in ("market_clock_pool", "market_clock_slow_short", "market_clock_slow_short_fast3"):
         with pytest.raises(ValueError):
             book_named(removed)
+
+
+def test_current_trend_helpers_warm_up_on_the_120_day_window():
+    index = pd.bdate_range("2010-01-01", periods=130)
+    daily = pd.Series(0.01, index=index)
+    close = pd.DataFrame({"A": np.arange(100.0, 230.0)}, index=index)
+    bars = {"close": close, "closew": close}
+
+    assert S.market_trend(daily).first_valid_index() == index[119]
+    assert S.symbol_trend(bars, ["A"])["A"].first_valid_index() == index[120]
 
 
 def _explore(config):
