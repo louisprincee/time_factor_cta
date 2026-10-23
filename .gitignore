@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_tmp/
+.mypy_cache/
+.ruff_cache/
+
+.env
+.env.*
+config/rqdata.env
+*.pem
+*.key
+
+# 原始分钟数据、分片和研究产物体积很大，不进仓库
+/data/
+/runs/
+.DS_Store
+
+# 本地编辑器配置
+.vscode/
