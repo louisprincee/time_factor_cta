@@ -149,3 +149,26 @@ def test_halt_days_must_be_a_positive_integer():
     for bad in (0, 1.5, True, None):
         with pytest.raises(ValueError, match="停牌天数"):
             simulate_target_lots(targets, **{**inputs, "halt_days": bad})
+
+
+def test_old_contract_multiplier_drives_pnl_and_a_roll_to_a_bigger_lot_keeps_notional():
+    # 旧合约每手 5，新合约每手 10：1 万元、价格 100 → 先 20 手；换月后名义不变改成 10 手
+    targets, inputs = _inputs([1.0, 1.0, 1.0, 1.0], delta=1.0, fee=0.001)
+    inputs["contract_codes"].iloc[:2, 0] = "CU1207"
+    inputs["contract_codes"].iloc[2:, 0] = "CU1208"
+    inputs["rolls"].iloc[2, 0] = True
+    daily, positions, events = simulate_target_lots(
+        targets, **inputs, contract_multipliers={"CU": {"CU1207": 5.0}})
+    assert positions["手数"].tolist() == [20, 20, 10, 10]
+    assert positions["合约乘数"].tolist() == [5.0, 5.0, 10.0, 10.0]
+    assert daily["毛盈亏"].tolist() == pytest.approx([100.0, 100.0, 100.0, 100.0])   # 名义 1 万 × 1%
+    roll = events[events["事件"] == "换月"].iloc[0]
+    assert "乘数 5 -> 10" in roll["说明"] and "20 -> 10" in roll["说明"]
+    # 换月：旧 20 手 × 5 平仓，新 10 手 × 10 开仓，各 0.1% 名义
+    assert daily["交易费用"].iloc[2] == pytest.approx(20 * 5 * 100 * 0.001 + 10 * 10 * 100 * 0.001)
+
+
+def test_contract_multiplier_overrides_must_be_positive():
+    targets, inputs = _inputs([1.0, 1.0])
+    with pytest.raises(ValueError, match="合约乘数"):
+        simulate_target_lots(targets, **inputs, contract_multipliers={"CU": {"CU2002": 0.0}})

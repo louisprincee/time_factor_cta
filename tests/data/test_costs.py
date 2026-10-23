@@ -82,3 +82,50 @@ def test_load_fees_applies_known_historical_close_today_repair(tmp_path, monkeyp
 
     assert loaded.close_commission_today.tolist() == [6.0, 6.0]
     assert loaded.close_today_filled.tolist() == [True, False]
+
+
+def test_contract_multiplier_follows_the_contract_not_the_symbol():
+    from tfcta.costs import MULTIPLIER, contract_multiplier, contract_multiplier_overrides
+
+    assert contract_multiplier("RU", "RU1205") == 5.0 and contract_multiplier("RU", "RU1207") == 5.0
+    assert contract_multiplier("RU", "RU1208") == MULTIPLIER["RU"] == 10
+    assert contract_multiplier("FU", "FU1812") == 50.0 and contract_multiplier("FU", "FU1901") == 10
+    assert contract_multiplier("PB", "PB1308") == 25.0 and contract_multiplier("PB", "PB1309") == 5
+    assert contract_multiplier("CU", "CU1105") == 5 and contract_multiplier("RU", None) == 10
+    assert contract_multiplier_overrides("RU", ["RU1205", "RU1209", "RU1205"]) == {"RU1205": 5.0}
+
+
+def test_by_volume_fee_uses_the_fee_rows_contract_multiplier():
+    from tfcta.costs import fee_tables
+
+    dates = pd.bdate_range("2012-04-02", periods=4)
+    table = pd.DataFrame({
+        "symbol": "RU", "trading_date": dates, "contract": ["RU1205", "RU1205", "RU1209", "RU1209"],
+        "commission_type": "by_volume", "open_commission": 3.0, "close_commission": 3.0,
+        "close_commission_today": 3.0,
+    })
+    prices = pd.DataFrame({"RU": 100.0}, index=dates)
+    opened, _, rolled = fee_tables(table, prices)
+    assert opened["RU"].tolist() == pytest.approx([3.01 / 500, 3.01 / 500, 3.01 / 1000, 3.01 / 1000])
+    assert rolled["RU"].iloc[2] == pytest.approx(3.01 / 500)      # 换月当天平的是旧 5 吨合约
+
+
+def test_shfe_fee_backfill_copies_the_first_rate_back_to_2011_and_nothing_else(tmp_path, monkeypatch):
+    table = pd.DataFrame({
+        "symbol": ["CU", "CU", "M"], "contract": ["CU1312", "CU1312", "M1405"],
+        "trading_date": pd.to_datetime(["2013-10-08", "2013-10-09", "2013-10-08"]),
+        "commission_type": ["by_money", "by_money", "by_volume"], "open_commission": [5e-5, 5e-5, 1.5],
+        "close_commission": [5e-5, 5e-5, 1.5], "close_commission_today": [0.0, 0.0, 0.75],
+    })
+    table.to_csv(tmp_path / "fee_history.csv", index=False)
+    monkeypatch.setattr(C, "RESEARCH_OUT_DIR", tmp_path)
+    loaded = load_fees("research")
+    cu = loaded[loaded.symbol == "CU"]
+    assert cu.trading_date.min() == pd.Timestamp("2011-01-03")          # 2011-01-01 后第一个工作日
+    early = cu[cu.trading_date < pd.Timestamp("2013-10-08")]
+    assert early.open_commission.eq(5e-5).all() and early.contract.isna().all()
+    assert loaded[loaded.symbol == "M"].trading_date.tolist() == [pd.Timestamp("2013-10-08")]
+    bad = table.assign(trading_date=pd.to_datetime(["2013-10-09", "2013-10-10", "2013-10-08"]))
+    bad.to_csv(tmp_path / "fee_history.csv", index=False)
+    with pytest.raises(ValueError, match="回填假设"):
+        load_fees("research")

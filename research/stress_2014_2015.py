@@ -8,7 +8,7 @@ import pandas as pd
 
 from backtest.engine import StudyData, ledger_inputs, load_roll_calendar, simulate_target_lots, write_results
 from research.market_clock_carry import pool_open_return, sectors, summarize
-from strategies.catalog import FROZEN_BOOKS
+from strategies.catalog import FROZEN_BOOKS, book_named
 from tfcta import config as C
 from tfcta.costs import fee_tables, load_fees, load_ticks, slippage_tables
 from tfcta.data import build_universe, load_universe
@@ -18,13 +18,15 @@ CONFIG_PATH = C.CONFIG_DIR / "research" / "stress_2014_2015_reproduction.json"
 START = pd.Timestamp("2014-01-01")
 END = pd.Timestamp("2015-12-31")
 YEARS = (2014, 2015)
+# 2026-10-22 复现的两条；market_clock_pool 2026-10-23 删掉了，它的 2014–2015 结果留着，不能重跑
+REPRODUCED = ("market_clock_pool", "market_clock_slow_short")
 
 
 def load_protocol(path: Path = CONFIG_PATH) -> dict:
     protocol = json.loads(path.read_text(encoding="utf-8"))
     if (
         protocol.get("status") != "declared_reproduction_no_tuning"
-        or protocol.get("books") != [book.ID for book in FROZEN_BOOKS]
+        or protocol.get("books") != list(REPRODUCED)
         or "not be used for tuning" not in protocol.get("purpose", "")
         or protocol.get("universe", {}).get("expected_pool_widths") != {"2014": 11, "2015": 17}
     ):
@@ -100,7 +102,12 @@ def load_stress_data(protocol: dict) -> StudyData:
 
 def run() -> None:
     protocol = load_protocol()
-    for book in FROZEN_BOOKS:
+    frozen = {book.ID for book in FROZEN_BOOKS}
+    removed = [name for name in protocol["books"] if name not in frozen]
+    if removed:
+        raise ValueError(f"这些策略已删掉，压力窗口复现不能重跑：{removed}；已有结果在 runs/strategies/<id>/commodity/2014-2015/")
+    books = [book_named(name) for name in protocol["books"]]
+    for book in books:
         book.frozen()
         output = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "2014-2015"
         if (output / "summary.csv").exists():
@@ -109,7 +116,7 @@ def run() -> None:
     inputs = ledger_inputs(data, YEARS, END)
     market = pool_open_return(data, inputs["universe"], inputs["index"])
 
-    for book in FROZEN_BOOKS:
+    for book in books:
         targets = book.targets(data, inputs["symbols"]).reindex(
             index=inputs["index"], columns=inputs["columns"]
         ).fillna(0.0)
@@ -122,7 +129,7 @@ def run() -> None:
             inputs["universe"], inputs["multipliers"],
             inputs["open_fee"], inputs["close_fee"], inputs["roll_close_fee"], inputs["slippage"],
             initial_capital=100_000_000.0, margin_rate=0.20, exposure_limit=book.GROSS,
-            drawdown_limit=0.10, halt_days=10,
+            drawdown_limit=0.10, halt_days=10, contract_multipliers=inputs["contract_multipliers"],
         )
         summary, _ = write_results((YEARS[0], YEARS[-1]), book, daily, positions, events, inputs["symbols"])
         market_series = market.reindex(daily.index).fillna(0.0)

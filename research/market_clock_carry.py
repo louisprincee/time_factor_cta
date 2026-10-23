@@ -1,6 +1,6 @@
 """当日分数且展期为正：按区间跑两条冻结策略，算相对池子的 beta 和 alpha，管 2022 及以后的台账。
 
-    python -m research.market_clock_carry          # 研究期 2016–2021
+    python -m research.market_clock_carry          # 研究期 2011–2021
     python -m backtest.engine --research            # 同上，命令行入口
 
 研究期不写台账。2022 及以后：策略没冻结直接拒绝；冻结了先记台账再读；已经打开过的窗口只打印旧结果，
@@ -98,15 +98,19 @@ def simulate(target, inputs, book):
         inputs["open_fee"], inputs["close_fee"], inputs["roll_close_fee"], inputs["slippage"],
         initial_capital=INITIAL_CAPITAL, margin_rate=MARGIN_RATE, exposure_limit=book.GROSS,
         drawdown_limit=S.DRAWDOWN_LIMIT, halt_days=S.HALT_DAYS,
+        contract_multipliers=inputs["contract_multipliers"],
     )
 
 
-def _load(end: int):
+def _load(end: int, start: int | None = None):
     end = int(end)
     if end > C.DEFAULT_OOS_END.year:
         raise C.HoldoutViolation("不读 2026")
+    early = start is not None and int(start) < C.STUDY_START.year
+    if early and end > C.RESEARCH_END.year:
+        raise ValueError("2016 年以前起算的区间只能在研究期里，不能跨到 2022 及以后")
     if end <= C.RESEARCH_END.year:
-        data = load_research(1.0)
+        data = load_research(1.0, first_year=int(start) if early else None)
         if data.returns.empty or data.returns.index.max() >= pd.Timestamp(C.HOLDOUT_START):
             raise C.HoldoutViolation("研究数据越过 2021")
         return data
@@ -135,7 +139,7 @@ def _book(data, years: tuple[int, ...], period, book) -> dict:
 
 
 def _period_for(start: int, end: int):
-    if (start, end) == (C.STUDY_START.year, C.RESEARCH_END.year):
+    if (start, end) == (C.EARLY_START.year, C.RESEARCH_END.year):
         return "research"
     if (start, end) == (C.STRICT_OOS_START.year, C.DEFAULT_OOS_END.year):
         return "oos"
@@ -182,8 +186,8 @@ def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None
     """一段年份一本账。2022 及以后要先冻结，先记台账再读；打开过的窗口只打印。"""
     start, end = int(start), int(end)
     book = _chosen(book)
-    if start > end or start < C.STUDY_START.year or end > C.DEFAULT_OOS_END.year:
-        raise C.HoldoutViolation(f"回测年份必须落在 2016–2025，收到 {start}–{end}。不读 2026。")
+    if start > end or start < C.EARLY_START.year or end > C.DEFAULT_OOS_END.year:
+        raise C.HoldoutViolation(f"回测年份必须落在 {C.EARLY_START.year}–2025，收到 {start}–{end}。不读 2026。")
     if by_year and start != end:
         for year in range(start, end + 1):
             run_span(year, year, ledger=ledger, book=book)
@@ -191,7 +195,7 @@ def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None
     books = (book,) if book is not None else BOOKS
     period = _period_for(start, end)
     if end <= C.RESEARCH_END.year:
-        data = _load(end)
+        data = _load(end, start)
         for item in books:
             _book(data, tuple(range(start, end + 1)), period, item)
             if period == "research":
@@ -249,4 +253,4 @@ def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None
 
 
 if __name__ == "__main__":
-    run_span(C.STUDY_START.year, C.RESEARCH_END.year)
+    run_span(C.EARLY_START.year, C.RESEARCH_END.year)

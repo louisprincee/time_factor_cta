@@ -1,7 +1,8 @@
 """收盘定权重，下一交易日第一根开盘成交。
 
 有夜盘时这一根是夜盘开盘，没有夜盘时是日盘开盘。夜盘算下一个交易日。
-按池宽1倍（market_clock_pool）的规格在同目录 JSON，导入时跟代码核对。慢趋势空头那条复用这里的多头腿。
+这里是两条慢趋势空头策略共用的多头腿：五因子市场分数、展期收益、规格核对和 Book 基类。
+只做多的按池宽1倍（market_clock_pool）2026-10-23 删掉，本模块不再有自己的策略和 JSON。
 """
 from __future__ import annotations
 
@@ -59,16 +60,14 @@ def check_config(config: dict, strategy_id: str, expected_gross: float = GROSS) 
 
 
 class Book:
-    """一条策略：规格、冻结检查、收盘决策。回测和台账在 research.market_clock_carry。"""
+    """策略基类：规格、冻结检查、收盘决策。子类给出 ID、NAME、CONFIG_PATH、DETAIL 和 targets。
+    回测和台账在 research.market_clock_carry。"""
 
-    ID = "market_clock_pool"
-    NAME = "按池宽1倍"
+    ID: str
+    NAME: str
     GROSS = GROSS
-    CONFIG_PATH = Path(__file__).with_name("market_clock_pool.json")
-    DETAIL = (
-        "五因子收盘分数大于0且滞后一日年化展期收益大于0的品种按当年池宽分1倍名义敞口"
-        "/下一交易日第一根开盘成交/权重不变则留仓/回撤10%清仓并停10个交易日"
-    )
+    CONFIG_PATH: Path
+    DETAIL: str
 
     @property
     def FILES(self) -> list[Path]:
@@ -92,7 +91,7 @@ class Book:
         return config
 
     def targets(self, data, columns) -> pd.DataFrame:
-        return targets(data.factors.signed, data.universe, data.returns.index, columns)
+        raise NotImplementedError
 
 
 def pool_mask(universe: dict, index: pd.DatetimeIndex, columns) -> pd.DataFrame:
@@ -205,6 +204,3 @@ def targets(signed: dict, universe: dict, index: pd.DatetimeIndex, columns,
     lagged = carry.reindex(index=index, columns=columns).shift(1)
     return decision_weights(score, lagged).shift(1).fillna(0.0).where(pool, 0.0)
 
-
-BOOK = Book()
-BOOK.load_config()

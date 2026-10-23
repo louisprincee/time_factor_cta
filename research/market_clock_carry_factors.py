@@ -140,7 +140,7 @@ def decomposition(data, alpha_lags):
     for case, decision in cases.items():
         target = decision.shift(1).fillna(0.0).where(pool, 0.0).reindex(
             index=inputs["index"], columns=inputs["columns"]).fillna(0.0)
-        daily, positions, _ = simulate(target, inputs, S.BOOK)
+        daily, positions, _ = simulate(target, inputs, FROZEN_BOOKS[0])   # 只借它的 1 倍敞口，目标是各条件自己的
         row, _ = summarize(case, daily, positions, market, inputs["adjusted_open_delta"], sectors())
         rows.append({"条件": case, **{k: row[k] for k in (
             "净Sharpe", "年化净收益", "最大回撤", "相对池子beta", "相对池子年化alpha", "alpha_t",
@@ -152,9 +152,9 @@ def decomposition(data, alpha_lags):
 def book_returns(data):
     out = {}
     for book in FROZEN_BOOKS:
-        path = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "research" / "daily.csv"
+        path = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "2016-2021" / "daily.csv"   # 信号层检验只看 2016–2021
         if not path.is_file():
-            raise FileNotFoundError(f"{book.NAME} 还没有研究期结果，先跑 python -m backtest.engine --research")
+            raise FileNotFoundError(f"{book.NAME} 还没有 2016–2021 结果，先跑 python -m backtest.engine --start 2016 --end 2021")
         daily = pd.read_csv(path, parse_dates=["交易日"]).set_index("交易日")
         out[book.NAME] = daily["净收益"].fillna(0.0)
     return pd.DataFrame(out)

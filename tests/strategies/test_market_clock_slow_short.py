@@ -83,3 +83,30 @@ def test_config_must_match_the_short_leg_and_is_frozen(tmp_path):
         broken["chosen"] = broken["parameters"]
         with pytest.raises(ValueError):
             T.BOOK.check(json.loads(json.dumps(broken)))
+
+
+def test_three_window_book_only_changes_the_bear_windows():
+    from strategies import market_clock_slow_short_fast3 as F3
+
+    assert F3.BOOK.BEAR_TREND_WINDOWS == (20, 60, 120) and T.BOOK.BEAR_TREND_WINDOWS == (60, 120, 250)
+    config = F3.BOOK.frozen()
+    assert config["frozen_at"] == "2026-10-23" and config["parameters"]["bear_trend_windows"] == [20, 60, 120]
+    assert {k: v for k, v in config["parameters"].items() if k != "bear_trend_windows"} == {
+        k: v for k, v in T.BOOK.load_config()["parameters"].items() if k != "bear_trend_windows"}
+    assert len(F3.BOOK.FILES) == 3
+    short = pd.Series(-0.001, index=pd.bdate_range("2015-01-01", periods=130))
+    assert T.market_trend(short, (20, 60, 120)).iloc[-1] == -1.0 and np.isnan(T.market_trend(short).iloc[-1])
+    index = pd.bdate_range("2015-01-01", periods=420)
+    symbols = [f"S{i:02d}" for i in range(12)]
+    universe = {int(year): symbols for year in sorted(set(index.year))}
+    signed, bars = _signed(index, symbols), _bars(index, symbols, drift=-0.0005)
+    carry = pd.DataFrame(np.where(np.arange(12) % 2, -0.1, 0.1), index=symbols).T
+    carry = pd.DataFrame(np.repeat(carry.to_numpy(), len(index), axis=0), index=index, columns=symbols)
+    fast = T.targets(signed, bars, universe, index, symbols, carry=carry, bear_windows=(20, 60, 120))
+    pool = S.pool_mask(universe, index, symbols)
+    daily = T.close_return(bars, symbols).where(pool).mean(axis=1)
+    bear = T.market_trend(daily, (20, 60, 120)).lt(0)
+    expected = T.decision_weights(S.market_score(signed, universe, index), carry.shift(1),
+                                  T.symbol_trend(bars, symbols), bear).shift(1).fillna(0.0).where(pool, 0.0)
+    pd.testing.assert_frame_equal(fast, expected)
+    pd.testing.assert_frame_equal(fast.clip(lower=0.0), S.targets(signed, universe, index, symbols, carry=carry))

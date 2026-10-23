@@ -1,4 +1,4 @@
-"""按池宽1倍加慢趋势空头：多头腿就是 market_clock_pool，市场慢趋势向下时再加一条趋势加展期的空头腿。
+"""按池宽1倍加慢趋势空头：多头腿在 strategies.market_clock_carry，市场慢趋势向下时再加一条趋势加展期的空头腿。
 
 空头腿不用时间因子（对偶空头研究期失败，分数的信息只在多头一侧），用品种自身趋势向下且滞后一日展期收益为负。
 两条腿都按当年池宽分 1 倍名义敞口；一个品种同一天只会在一条腿上（多头要展期 > 0，空头要展期 < 0）。
@@ -34,15 +34,15 @@ def symbol_trend(bars: dict, columns) -> pd.DataFrame:
     return sum(signs) / len(signs)
 
 
-def market_trend(daily: pd.Series) -> pd.Series:
-    """池子日收益累计 60、120、250 日后的符号平均；任一窗口不足则为缺失。"""
-    signs = [np.sign(daily.rolling(window, min_periods=window).sum()) for window in TREND_WINDOWS]
+def market_trend(daily: pd.Series, windows=TREND_WINDOWS) -> pd.Series:
+    """池子日收益累计各窗口（默认 60、120、250 日）后的符号平均；任一窗口不足则为缺失。"""
+    signs = [np.sign(daily.rolling(window, min_periods=window).sum()) for window in windows]
     return sum(signs) / len(signs)
 
 
 def decision_weights(score: pd.Series, carry: pd.DataFrame, trend: pd.DataFrame,
                      bear: pd.Series) -> pd.DataFrame:
-    """收盘决策。carry 已滞后一天。多头同 market_clock_pool；熊市（缺失当作不是）时趋势和展期都为负的做空。"""
+    """收盘决策。carry 已滞后一天。多头同 strategies.market_clock_carry.decision_weights；熊市（缺失当作不是）时趋势和展期都为负的做空。"""
     long_side = S.decision_weights(score, carry)
     short_side = -(trend.reindex_like(long_side).lt(0) & carry.reindex_like(long_side).lt(0)).astype(float)
     bear = bear.reindex(long_side.index).eq(True)
@@ -50,7 +50,7 @@ def decision_weights(score: pd.Series, carry: pd.DataFrame, trend: pd.DataFrame,
 
 
 def targets(signed: dict, bars: dict, universe: dict, index: pd.DatetimeIndex, columns,
-            carry: pd.DataFrame | None = None) -> pd.DataFrame:
+            carry: pd.DataFrame | None = None, bear_windows=TREND_WINDOWS) -> pd.DataFrame:
     """收盘决策后移到下一交易日第一根开盘。市场慢趋势只用 index 上的池内日收益。"""
     columns = pd.Index(columns)
     pool = S.pool_mask(universe, index, columns)
@@ -61,7 +61,7 @@ def targets(signed: dict, bars: dict, universe: dict, index: pd.DatetimeIndex, c
     score = S.market_score(signed, universe, index).reindex(index)
     trend = symbol_trend(bars, columns).reindex(index)
     daily = close_return(bars, columns).reindex(index).where(pool).mean(axis=1)
-    bear = market_trend(daily).lt(0)
+    bear = market_trend(daily, bear_windows).lt(0)
     return decision_weights(score, lagged, trend, bear).shift(1).fillna(0.0).where(pool, 0.0)
 
 
@@ -95,7 +95,8 @@ class Book(S.Book):
         return config
 
     def targets(self, data, columns) -> pd.DataFrame:
-        return targets(data.factors.signed, data.factors.bars, data.universe, data.returns.index, columns)
+        return targets(data.factors.signed, data.factors.bars, data.universe, data.returns.index, columns,
+                       bear_windows=self.BEAR_TREND_WINDOWS)
 
 
 BOOK = Book()

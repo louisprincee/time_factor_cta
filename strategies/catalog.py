@@ -1,21 +1,14 @@
-"""登记策略目录；冻结策略与探索期候选统一供回测入口按名称选择。"""
+"""现有的两条策略，都已冻结：一慢一快两种熊市判断，同一个多头腿和空头品种条件。冻结状态写在各自的 JSON 里。"""
 from __future__ import annotations
 
-from strategies import (
-    market_clock_carry,
-    market_clock_slow_short,
-    market_clock_slow_short_15,
-)
+from strategies import market_clock_slow_short, market_clock_slow_short_fast3
 
 FROZEN_BOOKS = (
-    market_clock_carry.BOOK,
     market_clock_slow_short.BOOK,
+    market_clock_slow_short_fast3.BOOK,
 )
 
-BOOKS = (
-    *FROZEN_BOOKS,
-    market_clock_slow_short_15.BOOK,
-)
+BOOKS = FROZEN_BOOKS
 
 
 def book_named(name: str):

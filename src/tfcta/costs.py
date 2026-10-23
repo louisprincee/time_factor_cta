@@ -26,6 +26,40 @@ MULTIPLIER: dict[str, float] = {
 }
 INDEX_MULTIPLIER = {symbol: MULTIPLIER[symbol] for symbol in ("IF", "IH", "IC", "IM")}
 
+# 合约乘数改过的品种：(首个合约 yymm, 末个合约 yymm, 乘数)，2010 年以后的合约，2026-10-23 用米筐 instruments 逐合约核对。
+# RU1208 起 10 吨，此前 5 吨；FU1202–FU1812 是 50 吨的旧合约；PB1109–PB1308 是 25 吨的旧合约。
+CONTRACT_MULTIPLIER_RANGES: dict[str, tuple[tuple[int, int, float], ...]] = {
+    "RU": ((1001, 1207, 5.0),),
+    "FU": ((1202, 1812, 50.0),),
+    "PB": ((1109, 1308, 25.0),),
+}
+
+
+def contract_multiplier(symbol, contract) -> float:
+    """这张合约的乘数：落在改动区间里的用区间值，否则用品种现行乘数。"""
+    base = float(MULTIPLIER[symbol])
+    if not isinstance(contract, str) or not contract.startswith(symbol):
+        return base
+    digits = contract[len(symbol):]
+    if len(digits) != 4 or not digits.isdigit():
+        return base
+    yymm = int(digits)
+    for first, last, value in CONTRACT_MULTIPLIER_RANGES.get(symbol, ()):
+        if first <= yymm <= last:
+            return float(value)
+    return base
+
+
+def contract_multiplier_overrides(symbol, contracts) -> dict[str, float]:
+    """这些合约里乘数不等于品种现行乘数的，供账本按持有合约取乘数。"""
+    base = float(MULTIPLIER[symbol])
+    out = {}
+    for contract in set(contracts):
+        value = contract_multiplier(symbol, contract)
+        if value != base:
+            out[contract] = value
+    return out
+
 def require_multipliers(symbols):
     """点名的品种必须有乘数；缺了就停，不跳过。"""
     missing = sorted({s for s in symbols if s not in MULTIPLIER})
@@ -39,7 +73,7 @@ def commission_rate(kind, value, price, base, multiplier):
     value_a = np.atleast_1d(np.asarray(value, dtype=float))
     price_a = np.atleast_1d(np.asarray(price, dtype=float))
     base_a = np.atleast_1d(np.asarray(base, dtype=float))
-    notional = base_a * float(multiplier)
+    notional = base_a * np.asarray(multiplier, dtype=float)
     money = kind_a == "by_money"
     volume = kind_a == "by_volume"
     valid = (money | volume) & np.isfinite(price_a) & np.isfinite(value_a) & (notional > 0)
@@ -89,7 +123,30 @@ def _read_fee_table(path, partition):
 
 
 def load_fees(partition="research"):
-    return _read_fee_table(fee_path(partition), partition)
+    table = _read_fee_table(fee_path(partition), partition)
+    return backfill_shfe_fees(table) if partition == "research" else table
+
+
+# 米筐的上期所历史手续费从 2013-10-08 才有。用户 2026-10-23 决定：2011-01-01 到 2013-10-07 用每个品种
+# 在米筐的第一条费率（2013-10-08）往前沿用。这是假设，不是历史费率；大商所 2010 年起有真实费率，不受影响。
+SHFE_FEE_FIRST = pd.Timestamp("2013-10-08")
+SHFE_FEE_BACKFILL_FROM = pd.Timestamp(C.EARLY_START)
+SHFE_FEE_BACKFILL_SYMBOLS = ("AG", "AL", "AU", "CU", "RB", "RU", "ZN")
+
+
+def backfill_shfe_fees(table):
+    """给上期所品种补 SHFE_FEE_BACKFILL_FROM 到第一条费率前一天的每个工作日，费率等于第一条。"""
+    parts = [table]
+    days = pd.bdate_range(SHFE_FEE_BACKFILL_FROM, SHFE_FEE_FIRST - pd.Timedelta(1, unit="D"))
+    for symbol in SHFE_FEE_BACKFILL_SYMBOLS:
+        sub = table[table.symbol == symbol].sort_values("trading_date")
+        if sub.empty:
+            continue                      # 文件里没有这个品种，用到时 fee_tables 会报缺
+        if sub.trading_date.iloc[0] != SHFE_FEE_FIRST:
+            raise ValueError(f"{symbol} 的第一条手续费不在 {SHFE_FEE_FIRST.date()}，上期所回填假设不成立，先核对")
+        first = sub.iloc[[0]]
+        parts.append(first.loc[first.index.repeat(len(days))].assign(trading_date=days, contract=np.nan))
+    return pd.concat(parts, ignore_index=True).sort_values(["symbol", "trading_date"]).reset_index(drop=True)
 
 
 def load_index_fees(partition="research"):
@@ -139,12 +196,14 @@ def fee_tables(table, prices):
             raise ValueError(f"手续费缓存 {symbol} 日期重复")
         # 只向后沿用不超过 FEE_MAX_STALE 的旧费率，从不回填；文件中途断档时成交会报错
         q = sub.reindex(prices.index, method="ffill", tolerance=FEE_MAX_STALE)
-        mult = MULTIPLIER[symbol]
+        # 按手数收费要换成名义比例，乘数用这一行费率对应的合约（RU 等改过乘数的品种）
+        mult = np.array([contract_multiplier(symbol, c) for c in q["contract"]], dtype=float)
         opened[symbol] = commission_rate(q.commission_type, q.open_commission, prices[symbol], prices[symbol], mult)
         closed[symbol] = commission_rate(q.commission_type, q.close_commission, prices[symbol], prices[symbol], mult)
         # The previous dominant rate is only substituted when contract changes.
         old = q.shift(1).where(q.contract.ne(q.contract.shift(1)), q)
-        roll_closed[symbol] = commission_rate(old.commission_type, old.close_commission, prices[symbol], prices[symbol], mult)
+        old_mult = np.array([contract_multiplier(symbol, c) for c in old["contract"]], dtype=float)
+        roll_closed[symbol] = commission_rate(old.commission_type, old.close_commission, prices[symbol], prices[symbol], old_mult)
     return opened, closed, roll_closed
 
 TICK_MIN_SHARE = 0.01

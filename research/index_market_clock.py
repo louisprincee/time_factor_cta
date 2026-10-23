@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -37,6 +38,8 @@ from tfcta.factors import (
 )
 
 CONFIG_PATH = C.CONFIG_DIR / "research" / "index_market_clock_transfer.json"
+# 登记时的只做多书 market_clock_pool 已在 2026-10-23 删掉；它就是两条空头策略共用的多头腿，这里按多头腿单独算
+LONG_LEG = SimpleNamespace(ID="market_clock_pool", NAME="按池宽1倍（多头腿）", GROSS=S.GROSS)
 OUT = C.RUNS_DIR / "index" / "market_clock_transfer"
 SYMBOLS = ("IF", "IH", "IC")
 FACTORS = ("ts_low", "ts_high", "dfp_top3", "ts_low_pm", "ts_high_pm")
@@ -53,7 +56,7 @@ def load_protocol(path: Path = CONFIG_PATH) -> dict:
     if (
         protocol.get("status") != "declared_test_not_a_strategy"
         or protocol.get("instruments") != list(SYMBOLS)
-        or protocol.get("books") != [S.BOOK.ID, T.BOOK.ID]
+        or protocol.get("books") != [LONG_LEG.ID, T.BOOK.ID]
         or "Do not read 2022" not in protocol.get("sample", "")
         or "or 2026" not in protocol.get("sample", "")
         or protocol.get("parameters", {}).get("factors") != list(FACTORS)
@@ -206,7 +209,7 @@ def _targets(index, bars, signed, carry):
     slow_decision = T.decision_weights(score, lagged_carry, symbol_trend, bear)
     slow_targets = slow_decision.shift(1).fillna(0.0).where(pool, 0.0)
     return {
-        S.BOOK.ID: long_targets,
+        LONG_LEG.ID: long_targets,
         T.BOOK.ID: slow_targets,
     }
 
@@ -242,7 +245,6 @@ def run() -> None:
     protocol = load_protocol()
     if (OUT / "summary.csv").exists():
         raise FileExistsError(f"股指迁移结果已存在，不重复运行：{OUT}")
-    S.BOOK.frozen()
     T.BOOK.frozen()
 
     daily_index, bars, contracts, signed, ticks = _load_index_inputs()
@@ -274,7 +276,7 @@ def run() -> None:
 
     index_results = {}
     summaries, annual, positions, events = [], [], [], []
-    for book in (S.BOOK, T.BOOK):
+    for book in (LONG_LEG, T.BOOK):
         target = targets[book.ID].reindex(index=returns.index, columns=SYMBOLS).fillna(0.0)
         daily, held, event_log = simulate_target_lots(
             target,

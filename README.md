@@ -2,9 +2,11 @@
 
 根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-- 按池宽1倍（`market_clock_pool`）：当天收盘的全市场时间因子分数大于 0，并且该品种滞后一日的展期收益大于 0，才做多，按当年池宽分 1 倍。代码在 [`strategies/market_clock_carry`](strategies/market_clock_carry/)，2026-10-21 冻结。
-- 按池宽1倍加慢趋势空头（`market_clock_slow_short`）：多头同上；池子 60/120/250 日慢趋势向下时，自身趋势向下且展期为负的品种做空。代码在 [`strategies/market_clock_slow_short`](strategies/market_clock_slow_short/)，2026-10-22 冻结。
-- 按池宽1.5倍加慢趋势空头（`market_clock_slow_short_15`）：复用慢趋势空头规则，只提高多空腿预算；未冻结，仅作 2016–2021 研究期候选。
+两条策略，都已冻结，只差熊市判断：
+
+- 按池宽1倍加慢趋势空头（`market_clock_slow_short`，2026-10-22 冻结）：当天收盘的全市场时间因子分数大于 0、并且该品种滞后一日展期收益大于 0 的做多；池子 60/120/250 日慢趋势向下时，自身趋势向下且展期为负的品种做空。代码在 [`strategies/market_clock_slow_short`](strategies/market_clock_slow_short/)。
+- 按池宽1倍加三窗口趋势空头（`market_clock_slow_short_fast3`，2026-10-23 冻结）：同上，熊市判断换成池子 20/60/120 日，入熊和出熊更快。代码在 [`strategies/market_clock_slow_short_fast3`](strategies/market_clock_slow_short_fast3/)。
+- 两条共用的多头腿在 [`strategies/market_clock_carry`](strategies/market_clock_carry/)，它自己不是策略。
 - 策略规则、实现、研究期结果和研究局限见 [`docs/guide.md`](docs/guide.md)。
 
 ## 环境
@@ -20,7 +22,7 @@ conda activate factor-mining
 | 分区 | 日期 | 商品 | 股指 |
 |---|---|---|---|
 | 预热 | 2015 | 研究分片里，不计分 | 研究分片里，不计分 |
-| 研究期 | 2016–2021 | `data/commodity/minute_shards/research/` | `data/index/minute_shards/research/`，IF / IH / IC |
+| 研究期 | 2011–2021 | `data/commodity/minute_shards/research/`；用户 2026-10-23 决定账本从 2011 起算，2011–2015 品种池按同一门槛重建，2010 只做因子预热。2016–2021 是冻结时用的研究期 | `data/index/minute_shards/research/`，IF / IH / IC，2016–2021 |
 | 2022 | 2022 | `validation_2022/`；台账清空前已打开过，不是干净样本 | 锁在 `holdout_locked/`，不读 |
 | 2023 | 2023 | `holdout_locked/`；台账清空前已打开过，不是干净样本 | 同上 |
 | 2024 | 2024 | `holdout_locked/`；台账清空前已打开过，不是干净样本 | 同上 |
@@ -49,10 +51,11 @@ python download/commodity/getRiceQuantExternalData.py --datasets roll_yield --en
 
 ## 回测
 
-不写策略名时所有已登记策略都会跑（包括研究期候选），写了就只跑点名策略，例如 `python -m backtest.engine 按池宽1倍 --research`。由于 1.5 倍候选未冻结，打开 2022 年及以后时请明确点名已冻结策略。
+不写策略名时两条都跑，写了就只跑点名的那条，例如 `python -m backtest.engine 按池宽1倍加慢趋势空头 --research`。
 
 ```bash
-python -m backtest.engine --research                 # 2016–2021
+python -m backtest.engine --research                 # 2011–2021
+python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期
 python -m backtest.engine --research --by-year       # 每年一本新的 1 亿元账
 python -m backtest.engine --start 2018 --end 2020
 python -m backtest.engine --validation               # 2022，冻结后
@@ -80,7 +83,9 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 python -m research.time_factor_screen          # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
 python -m research.gtja_time                   # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
 python -m research.market_clock_carry_factors  # 当前策略的分数择时、展期截面 IC、叠加、账本分解、紧缩 Sharpe 和 PBO
-python -m research.index_market_clock          # 两条冻结策略迁移到 IF / IH / IC 研究期；缺股指展期收益，目前跑不了
+python -m research.index_market_clock          # 多头腿和慢趋势空头迁移到 IF / IH / IC 研究期；缺股指展期收益，目前跑不了
+python -m research.slow_short_leg              # 慢趋势空头腿的信号检验，2011–2015，不扣成本；已跑过一次，拒绝重跑
+python -m research.market_bear_regimes         # 五种熊市判断规则对照事后熊市区间，2011–2021，另跑扣成本账本
 python -m research.index_kline                 # IF / IH / IC 研究期日 K 线图
 ```
 
