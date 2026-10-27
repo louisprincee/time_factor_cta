@@ -1,7 +1,9 @@
 # AGENTS.md — working rules for this repository
 
-Read this before changing anything. It reflects the repo on 2026-10-23 (one live book: `market_clock_slow_short_20_60_120`).
+Read this before changing anything. It reflects the repo on 2026-10-26 (one live book: `market_clock_slow_short_20_60_120`).
 If the code and this file disagree, trust the code, then update this file in the same change.
+
+**Research sample default (user decision 2026-10-26):** New commodity experiments, data pulls, and backtests default to the full 2011–2021 research window. For a comparable IF/IH/IC index panel, the research calendar starts on 2015-04-16, when all three are listed; exclude IM. Actual scored dates still depend on available data and required factor warmup; declare and report those limits. Existing preregistered results retain their original sample labels.
 
 ## 1. What the project is
 
@@ -21,16 +23,15 @@ Where they conflict:
 - On max-volume/turnover timing the two reports point opposite ways. `FACTOR_SIGNS` in `src/tfcta/config.py` holds our fixed priors.
 - **Signs are priors.** Never flip them based on research-period returns.
 
-Factor code lives in `src/tfcta/factors.py`. Key functions: `duration_series`, `dfp_factors`, `timestamp_factors`, `report_factors`, `rolling_threshold`. The GTJA index variants are in `src/tfcta/index/gtja_time.py`.
+Factor code lives in `src/tfcta/factors.py`. Key functions: `duration_series`, `dfp_factors`, `timestamp_factors`, `report_factors`, `rolling_threshold`.
 
 ## 2. Where the research stands (do not re-discover this)
 
 Be honest about this in every report. Nothing in this repo is a proven deployable edge yet; the mainline is being tested year by year.
 
-**Factor screens** (`research/time_factor_screen.py`, `research/gtja_time.py`, outputs in `runs/research/`, `runs/index/`):
+**Factor screens** (`research/time_factor_screen.py`, outputs in `runs/research/`):
 - On commodities, `ts_low`, `ts_low − ts_high` and `dfp_*` have cross-sectional t > 3 at the close decision.
 - Only 1 of 115 cells passes the full predeclared gate (t, 5/6 years, 4/6 sectors), and 0 are allowed to pair.
-- The GTJA factors on IF/IH/IC, 2016–2021: no single factor reaches |NW t| ≥ 2.
 
 `strategies/catalog.py` lists the one live book. The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them.
 
@@ -44,12 +45,12 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 The market bear rule and symbol short rule share `TREND_WINDOWS = (20, 60, 120)` in `strategies/market_clock_slow_short_20_60_120/__init__.py`. Both frozen JSON window fields are checked against this constant. Scoring begins on 2011-01-14; 2010 is factor warmup only.
 
 - **OOS records reset (user decision 2026-10-22).** The commodity OOS ledger (`data/commodity/oos/ledger.jsonl`) and every 2022+ result folder were cleared.
-  - Before the reset, 2022–2024 had been opened and seen; 2025 had no recorded open.
-  - An empty ledger does not make any year clean. Treat 2022–2024 as seen; rerunning them is only a reproduction.
+  - **User decision 2026-10-26: 2022–2025 is the out-of-sample window for the current strategy, which has never been run on it. Do not open any 2022+ window until the user says to start OOS.**
   - With the ledger empty, `--validation`, `--year` and `--oos` read the data again and write new entries; they no longer just print an old result.
 
 - **Roll yield.** RiceQuant `get_roll_yield(type="main_sub")`. `yield` = (main settlement − sub settlement) / sub settlement, verified against contract dailies on 3,840 research days (error 1e-17). 99.7% of rows have the main maturing before the sub; LR, JR, RI, RS, B, SF, PM, BB occasionally invert.
 - **Research window (user decision 2026-10-23): `--research` is now 2011–2021.**
+  - **User decision 2026-10-26:** commodity research defaults to 2011–2021. The comparable IF/IH/IC index research calendar starts 2015-04-16, the first date all three instruments are listed; exclude IM. A later first scored date is allowed only where data coverage or predeclared factor warmup requires it; document the reason. Existing index transfer results retain their original 2016–2021 scored sample.
   - Pools for 2011–2015 are rebuilt with the same one-prior-year screen (`load_research(first_year=2011)`); the rebuilt 2015 must equal the stored 2015. Widths are 11/10/12/11/17, versus 22–37 from 2016.
   - Scoring starts 2011-01-14, the first day all five factors exist; 2010 is factor warmup only. The trend windows are 20/60/120 days.
   - Fees: DCE has real RiceQuant fees from 2010 (downloaded 2026-10-23). SHFE fees exist only from 2013-10-08. For 2011-01-01..2013-10-07, AG/AL/AU/CU/RB/RU/ZN reuse their 2013-10-08 rate (`backfill_shfe_fees`, user decision). This is an assumption: setting that stretch to ×0 or ×2 moves 2011–2013 annual net returns by < 0.2 pt.
@@ -71,25 +72,97 @@ The market bear rule and symbol short rule share `TREND_WINDOWS = (20, 60, 120)`
   - Carry: cross-sectional IC 0.022, t 3.20, 5/6 years (2021 negative).
   - Interaction: t 2.25.
   - These numbers were seen in scratch before being declared.
-  - Deflated Sharpe at 100 trials (2016–2021): 0.04; PBO over the 7 ledger series is 0.48. Do not call the research Sharpe evidence.
 - **Market-score sector diagnostic** (2016–2021, no costs, report only, run 2026-10-23). The user decided not to split by sector, so the script, spec and test were deleted; results and the predeclared spec are in `runs/research/market_score_sectors/`.
   - A sector-balanced score (sector means, then an equal-weight mean across sectors) is 12.6bp/day, t 3.27, versus the frozen score's 12.7bp, t 3.22. Their correlation is 0.98.
   - Sector-own scores add nothing once the market score is controlled: t 0.2–1.25 in every sector.
   - The market score times 黑色 (t 3.67, 6/6 years) and 化工 (t 2.84, 6/6). It does not time 农产品 (t 0.61) and is weak on 有色 (t 1.52).
   - No single sector drives it: dropping a sector leaves t 2.2–3.4. Dropping 贵金属 costs the most (t 2.18).
   - This confirms the market-level finding. Do not build sector-split scores. Dropping 农产品 would be a post-hoc selection.
-- **Index transfer test** (`research/index_market_clock.py`, `config/research/index_market_clock_transfer.json`): IF/IH/IC, 2016–2021, fixed three-name pool (`market_score(min_symbols=3)`). Not run: RiceQuant `get_roll_yield` returns None for IF/IH/IC, so the required data partition is unavailable. This is not independent validation.
+- **Carry normalisation (checked 2026-10-26).** RiceQuant `annualized_yield` already equals `yield × 365 / |maturity gap in days|` (error < 1e-15, with maturities in `data/commodity/external_rqdata/contract_maturity.csv`), so it is already divided by the contract-month gap.
+  - Only the 492 rows (0.41%) where the main matures *after* the sub keep the "main − sub" sign, which there means far above near.
+  - Inside the pool this flips 9 lagged symbol-days (M and Y, 2011). The frozen book keeps `annualized_yield`.
+- **Mechanism study** (`research/market_clock_mechanism.py`, `config/research/market_clock_mechanism.json`, 2011–2021, run 2026-10-26). Results are in `runs/research/market_clock_mechanism/`, plots in `plots/`.
+  - **Components** (each its own 1e8 book, 1 tick + fees):
+
+    | Book | Sharpe | Annual | Positive years |
+    |---|---|---|---|
+    | full | 1.03 | 5.6% | 11/11 |
+    | long leg | 0.63 | 2.8% | 8/11 |
+    | short leg | 0.58 | 2.6% | 7/11 |
+    | carry>0 only | 0.71 | 5.3% (beta 0.51) | 7/11 |
+    | score>0 only | −0.14 | — | 7/11 |
+    | whole pool | 0.18 | — | 6/11 |
+
+    The two legs take turns. The short leg earns +7% to +11% a year in 2011–2015 and loses 0–2% in 2016–2021. The long leg is the reverse. The full book's stability is diversification between them, not a stable single signal.
+  - **The score is a close-location proxy.** Its daily correlation with the pool's mean close location ((closew − loww)/(highw − loww)) is −0.925, and −0.65 with the same-day pool return. Score timing over 2011–2021 is +7.7bp/day (t 2.56). Adding close location drops it to +0.3bp (t 0.06); same-day return alone leaves +5.6bp (t 1.48); range leaves it unchanged. Close location alone predicts the next-bar pool return with t −3.42 and a negative slope in 11/11 years. It is market level only: the cross-sectional IC is t −0.91. **The time-of-day content adds nothing beyond "the market closed near its low".** The effect is a robust market-level short-term reversal, not a time-dimension effect.
+  - **Range.** The pool's mean range predicts the next-bar pool return with t 2.24, positive in 7/11 years. It is ~uncorrelated with the score (0.05) and has no cross-sectional effect.
+  - **Liquidity proxies from minute bars** (Abdi–Ranaldo spread, tick-rule volume imbalance). On score>0 days the tail imbalance is far more negative (t −30), which is mechanical. Timing is no stronger on illiquid days (interaction t −0.26), and tail imbalance has no predictive power of its own (t −0.24). **The liquidity-provision story is not supported by these proxies.** An L1 tick pilot (5 symbols, 2016–2021) is sized but not run.
+- **Close-location mechanism** (`research/close_location_mechanism.py`, `config/research/close_location_mechanism.json`, run 2026-10-26). Results are in `runs/research/close_location_mechanism/`.
+  - Commodities 2011–2021, market level.
+  - L1 pilot: RB/CU/M/TA/I main contracts 2016–2021, 7,305 contract-days of tick data. `download/commodity/getTickL1Close.py` stores only daily close-window summaries in `data/commodity/external_rqdata/l1_close/`.
+  - **Bid-ask bounce is rejected.**
+    - The reversal sits in the next day's session (−32bp per unit CLV, t −4.2, 11/11 years). The close→next-open gap moves the other way (t 1.9).
+    - CLV from tick mid-quotes predicts exactly as CLV from trade prices does (t −2.63 vs −2.68).
+    - Close-vs-mid is 1.1bp against a 19bp Q1–Q5 effect.
+  - **Information is not supported.** The reversal is stronger, not weaker, on heavy volume.
+  - **Liquidity / price pressure is partly supported.**
+    - On low-close days the last 30 minutes have wider spreads relative to the day (t 12.1), thinner L1 depth (t −2.4) and net selling (t −15.8; partly mechanical).
+    - The reversal is larger in high-vol (t −2.9 vs −1.3) and high-volume (t −3.1 vs −1.3) states, but neither interaction is significant (t ≈ −1.1 to −1.2).
+    - It is one-sided: the lowest CLV quintile is +8.9bp (t 2.4); the highest is −4.6bp (n.s.).
+  - **Not a flow-compensation story.** Signed tail flow continues rather than reverses (t +2.4 with CLV in the regression), while CLV gets stronger (t −3.5). What reverts is price displacement beyond the flow, consistent with transient impact in a thin book.
+  - **Indistinguishable:** close vs minute VWAP (≈ the settlement price) correlates 0.88 with CLV.
+  - **Follow-ups (`--followup`, run 2026-10-26) do not confirm a flow mechanism:**
+    - *Scaling with tail liquidity.* The CLV slope does not get steeper when the tail spread widens or depth thins. L1 interactions have the wrong sign (t +0.9, +1.4), and so does the minute Amihud proxy on the full pool (t +1.7).
+    - *Proxy quality.* The minute proxy barely tracks L1 (rank corr −0.06 with the spread ratio, −0.31 with depth), so it cannot stand in for L1.
+    - *Open interest.* The reversal is stronger on pool OI-decline days: −42.8bp (t −2.9) vs −20.0bp (t −1.7). But the interaction is t −1.2, and on down days the liquidation share predicts the rebound only at t 1.9. Cross-sectionally, liquidated versus new-short names show no difference (t −0.3), and low-close days are not more liquidation-heavy (52% vs 52%).
+    - *Roll and delivery.* The reversal is *weaker* in roll-heavy and pre-delivery-exit-heavy periods (wrong direction).
+    - **Conclusion:** the reversal is robust and not mechanical, but its cause is still unidentified. Price pressure from liquidity, liquidation or rolling is not supported as the driver.
+    - Per the predeclared rule, 2011–2015 L1 is **not** pulled: F1a has the wrong sign and the minute proxy does not track L1.
+- **Index transfer test** (`research/index_market_clock.py`, `config/research/index_market_clock_transfer.json`, IF/IH/IC 2016–2021, run 2026-10-26). IM listed 2022-07-22, so it is outside the index research window and was not tested (user decision).
+  - Carry is computed from contract dailies by `download/index/getIndexRollYield.py`. That rule reproduces RiceQuant commodity main_sub exactly on RB/CU/M 2018–2019: sub contract 1461/1461 days, annualized error < 2e-15. Main = `get_dominant(rule=0)`, which equals the shard dominant 100%. Sub = the largest same-day OI among contracts maturing after the main.
+  - IC carry is > 0 on 99.6% of days; IF 83%, IH 73%.
+  - Results:
+
+    | Book | Sharpe | Annual | Max DD | Beta | Alpha | NW t |
+    |---|---|---|---|---|---|---|
+    | long leg alone | 1.09 | 12.7% | −9.5% | 0.38 | 7.8% | 2.32 |
+    | current strategy | 1.03 | 11.9% | −10.4% | 0.34 | 7.6% | 2.15 |
+
+    Both books lost only in 2018.
+  - On index too the score is subsumed by close location: alone 15.1bp (t 2.37, 6/6 years); with close location −5.4bp (t −0.63); correlation −0.89. The three names move almost together, so this is a timing test on one asset; the rule was set on commodities and the index run is a transfer test.
+- **Index L1 mechanism diagnostic** (`research/index_close_location_mechanism.py`, predeclared in `config/research/index_close_location_mechanism.json`, run 2026-10-26). IF/IH/IC main-contract historical L1 ticks cover 2015-04-16..2021-12-31 (1,638 days each; 96,537,464 rows total); the mechanism sample is 2016-01-13..2021-12-31 (1,454 days). Trade-price and midpoint close-location slopes for next-session intraday return are both about −0.00285 (NW t −2.72/−2.71); the close-to-next-open gap is weak (t −1.37). Low-close days have a wider tail/day spread ratio (difference +0.0331, t 6.60) and thinner tail/day L1 depth (−0.0163, t −3.82); the close-location × thin-depth term is negative (t −2.24), while spread and signed-imbalance interactions are not significant. Daily range has no clear relation to same-day or next-session returns (|t| < 0.8). This is partial liquidity-pressure evidence, not causal proof or OOS confirmation. All a2-a5/b2-b5 prices and sizes are zero across the downloaded ticks; usable history is L1, not L2.
+- **Index close-location candidate robustness** (`python -m research.index_close_location_candidate --robustness`, predeclared in `config/research/index_liquidity_mechanism.json` → `candidate_robustness`, run 2026-10-27). The registered gate verdict is unchanged (fail).
+  - Same ledger, fees and 1 tick.
+  - Candidate minus an exposure-matched constant long (0.48×): +12.5%/yr, NW t 3.31 (2016-01-13 start); t 3.21 (2016-01-04, including the January 2016 circuit-breaker days); t 2.50 (2015-04-16, including the 2015 crash, where the candidate's max drawdown is −33%).
+  - Versus a 1× long it stays t 1.2–1.5.
+  - So the timing adds return beyond its lower exposure; the failed gate mostly reflects comparing a ~0.5-beta book against a 1× long.
+  - **Capacity is not modelled.** A 1e8 book opens up to 23–58 lots per product per day in 2015–2018 (`robustness/capacity.csv`), above CFFEX's daily opening limits of that period (as recalled: 10 lots from 2015-09, relaxed in steps until 2019; verify against exchange notices). Results before 2019 do not hold at that size.
+- **Index liquidity / arbitrage mechanism** (`research/index_liquidity_mechanism.py`, `config/research/index_liquidity_mechanism.json`, run 2026-10-27).
+  - Data: IF/IH/IC raw L1 ticks 2015-04-16..2021-12-31 (1,638 days each), plus spot CSI300/SSE50/CSI500 dailies from `download/index/getIndexSpot.py` (`data/index/external_rqdata/spot_daily.csv`). Results are in `runs/index/index_liquidity_mechanism/`; 2016+ figures are below.
+  - **Limits to arbitrage (A).** The futures-minus-spot basis converges strongly after weak futures closes: Δbasis on futures CLV t −7.1, negative in 7/7 years. Low-close days have the basis below its 20-day mean (t −3.1). But futures and spot CLV correlate 0.92 and cannot be separated (A3).
+  - **Post hoc split (`post_hoc_split.csv`, added after seeing A).** The basis convergence happens **overnight**: close→next open t −8.8; Q1 +22bp, Q5 +2bp.
+  - In the next session the basis partly re-widens (t +2.5; Q1 −15bp).
+  - The spot index gaps further down overnight (t +3.1) and then rebounds during the session (t −3.5 on futures CLV, −4.2 on spot CLV).
+  - Reading: at the close the futures already price a decline that spot only shows at its next open, which is futures price discovery. The reversal the book can trade (from the next open) is the **spot market's own intraday rebound after a weak close and a weak open**, not futures-specific mispricing.
+  - **Inventory (B).**
+    - The order-flow price-impact decomposition is inconclusive. The flow component F = λ̂ × signed volume does not predict the rebound (t −0.6), and neither does the residual (t −0.9). CLV survives both (t −2.6).
+    - The rebound is **not** in the first 30 minutes (t +0.6); it comes later in the session (t −3.5), against fast inventory unwinding.
+    - The CLV × high-impact interaction is t −1.3.
+    - L1 depth recovers more the morning after a low close (t +3.3), but recovery is uncorrelated with the rebound (−0.05).
+  - **Overreaction (O).** The non-flow residual does not reverse (t −0.9).
+  - **Conclusion:** the tradable index reversal is a slow, next-session rebound of the cash market after a weak close and an overnight continuation. Futures-specific arbitrage limits and fast inventory unwinding do not explain it. The mechanism is still not identified; candidate stories to test next are the opening sell pressure of cash-equity holders under T+1 and its absorption during the day.
+- **Index close-location candidate** (`research/index_close_location_candidate.py`, preregistered in `config/research/index_close_location_candidate.json`, run 2026-10-26). Fixed rule: when equal-weight IF/IH/IC close location is below 0.5, hold a 1x equal-weight long basket from the next open; otherwise stay in cash. On 2016-01-13..2021-12-30 (1,453 days), with research fees, 1 tick per side and the shared 10% drawdown breaker: net annual return 19.8%, Sharpe 1.47, max drawdown −16.8%, versus risk-matched equal weight 8.7%, 0.57, −28.6%. Paired excess-return NW t is 1.52, below the preregistered 2.0 gate, so the candidate **fails the full gate**. Raw equal-weight return was +118.2% cumulative with no costs or breaker and is not like-for-like. The sample overlaps previously inspected research dates; keep this as an unregistered exploratory candidate, not a frozen book, and do not open OOS.
 
 ## 3. Data partitions and what is already spent (most important section)
 
 | Partition | Dates | Commodity | Index |
 |---|---|---|---|
 | Warmup | 2010 | in research shards; factor warmup only | — |
-| Research | 2011–2021 | `data/commodity/minute_shards/research/`. **User decision 2026-10-23:** the book scores from 2011; 2011–2015 pools are rebuilt; SHFE fees before 2013-10-08 are backfilled (§2). 2016–2021 is the window the live book was frozen on | `data/index/minute_shards/research/` (IF/IH/IC), 2016–2021; 2015 warmup |
-| Validation | 2022 | `validation_2022/`; opened before the 2026-10-22 ledger reset, not clean | inside `holdout_locked/`; **unread** |
-| 2023 | 2023 | `holdout_locked/`; opened before the reset, not clean | inside `holdout_locked/`; **unread** |
-| 2024 | 2024 | `holdout_locked/`; opened before the reset, not clean | **unread** |
-| 2025 | 2025 | `holdout_locked/`; no recorded open before the reset | **unread** |
+| Research | 2011–2021 | `data/commodity/minute_shards/research/`. **User decision 2026-10-23:** the book scores from 2011; 2011–2015 pools are rebuilt; SHFE fees before 2013-10-08 are backfilled (§2). | `data/index/minute_shards/research/`; comparable IF/IH/IC calendar starts 2015-04-16, when all three are listed. IF was listed in 2010; IH and IC in 2015; IM in 2022 and is excluded. Shared-pool scoring also requires the declared factor warmup. |
+| OOS | 2022 | `validation_2022/`; out-of-sample for the current strategy, never run with it; closed until the user starts OOS | inside `holdout_locked/`; **unread** |
+| OOS | 2023 | `holdout_locked/`; same | inside `holdout_locked/`; **unread** |
+| OOS | 2024 | `holdout_locked/`; same | **unread** |
+| OOS | 2025 | `holdout_locked/`; same | **unread** |
 | Forward | 2026-01-01..2026-10-08 | `data/commodity/data_min/future_*_20260101-20261008.txt`, not sharded; **never read** | — |
 
 Rules:
@@ -97,13 +170,14 @@ Rules:
    - A new commodity strategy must first pass its predeclared research-period gate and have an economic story. Only then is it frozen.
    - **Freeze gate (user decision 2026-10-21):** `run_span` refuses any window ending in 2022 or later unless every requested book's JSON is `status: frozen` with `frozen_at` and `chosen == parameters`. It refuses before writing the ledger or reading data.
    - Once frozen, `--validation`, `--year Y` and `--oos [--by-year]` open a window. The ledger is written first: 2022 gets a `year_test` entry; 2023+ goes through `final_evaluation`, with `oos_start`, `frozen_at`, `chosen` and file hashes (keyed by repo-relative path, `C.file_hashes`, over `book.FILES`) recorded.
-   - A window recorded as opened or finished only prints its saved result. If a recorded result is gone, append a `kind: void` entry with a reason before reopening. The 2026-10-22 reset (§2) removed those records, so this check no longer covers 2022–2024.
-   - Do not run any 2022+ window unless the user asks for it in the same turn.
+   - A window recorded as opened or finished only prints its saved result. If a recorded result is gone, append a `kind: void` entry with a reason before reopening. The ledger is currently empty.
+   - Do not run any 2022+ window until the user says to start OOS, and then only the window they name.
+   - A user may explicitly authorize prefetching raw index L1 ticks without opening OOS: `python -m download.index.getTickL1Close --partition oos_locked --start 2022-01-01 --end 2025-12-31` writes only to `data/index/external_rqdata/holdout_locked/l1_ticks/`, without summaries or analysis. This does not open an OOS result; never inspect/use those files until the user starts the named OOS window. The downloader refuses dates beyond 2025.
    - Never read 2026. `run_span`, `load_through_year` and `roll_yield` raise before loading it. The `holdout_locked` roll-yield pickles contain rows through 2026-10-08; `roll_yield` drops everything after the window, and reads that partition only inside `final_evaluation`.
    - Never read index 2022+.
 2. Research code must go through the guards in `src/tfcta/config.py`: `assert_research_only`, `assert_no_holdout_dates`, `HoldoutViolation`, and the `final_evaluation` context plus ledger. Do not weaken, bypass or monkeypatch them, and do not add an env var or flag that unlocks data.
-3. Anything tuned, selected or "fixed" after seeing a commodity window is **in-sample** for that window. An empty ledger does not restore a window's clean status.
-4. A new hypothesis is first tested on commodity 2011–2021 (the research window). A 2022+ window is opened only by an explicit `--year` or `--oos` request in that turn. Never use 2026. Name which window you are using.
+3. Anything tuned, selected or "fixed" after seeing a commodity window is **in-sample** for that window.
+4. A new commodity hypothesis defaults to 2011–2021. A comparable IF/IH/IC panel defaults to the common listed period beginning 2015-04-16; exclude IM. Respect data availability and predeclared warmup, and report the resulting scored dates. A 2022+ window is opened only by an explicit `--year` or `--oos` request in that turn. Never use 2026. Name which window you are using.
 5. Before any test that uses external data (carry/roll_yield, warehouse, OI), verify that the partition covers the whole window. A truncated carry file once produced a fake pass. `targets()` calls `require_carry_coverage`, which raises if a pool symbol-year has more than 5% missing roll yield.
 
 ## 4. Repository layout
@@ -111,20 +185,27 @@ Rules:
 ```
 src/tfcta/          library: config (paths, partitions, guards, factor signs), data (shards, universe,
                     rolls), factors, costs (fees, ticks, multipliers), prepare/ (sharding, ticks,
-                    universe, factor caches), index/ (GTJA index factors)
-strategies/         market_clock_slow_short_20_60_120/: only strategy (long and short legs, factors, carry, trend), frozen JSON;
-                    catalog.py: FROZEN_BOOKS / BOOKS (the one live book) and book_named
+                    universe, factor caches)
+strategies/         market_clock_slow_short_20_60_120/: sole frozen commodity strategy;
+                    index_close_location_reversal/: exploratory IF/IH/IC strategy, not frozen;
+                    catalog.py: commodity books; index_catalog.py: separate index books
 backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, max_drawdown, newey_west_t,
                     deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
-research/           market_clock_slow_short_20_60_120 (spans, beta/alpha, ledger, freeze gate), market_clock_slow_short_factors
+research/           market_clock_slow_short_20_60_120 (spans, beta/alpha, ledger, freeze gate), market_clock_mechanism
+                    (components, range, close-location and liquidity-proxy tests), market_clock_slow_short_factors
                     (signal-level diagnostics), index_market_clock (IF/IH/IC transfer test),
-                    time_factor_screen, gtja_time; index_kline is only a chart utility
+                    index_close_location_candidate (registered index research strategy),
+                    close_location_mechanism, index_close_location_mechanism, time_factor_screen
 config/research/    predeclared JSON specs for research studies and exploratory strategies
 download/           RiceQuant downloaders (commodity minute/external/fees, index minute, index roll yield)
 tests/              pytest, synthetic data only (generator in tests/synthetic.py)
 docs/               the two broker reports + guide.md (strategy rules and research results)
 data/, runs/        gitignored; data inputs and all outputs
 ```
+
+`download/index/getTickL1Close.py` 保存 IF/IH/IC 研究期主力历史 L1 tick 到 `data/index/external_rqdata/l1_ticks/`，并输出每日 L1 汇总；其 `--partition oos_locked` 模式只预取 2022–2025 原始 tick 到 `data/index/external_rqdata/holdout_locked/l1_ticks/`，不汇总或分析。RiceQuant 历史期指接口不提供可用的 L2 多档深度。股指收盘位置机制诊断为 `research/index_close_location_mechanism.py`，预登记文件为 `config/research/index_close_location_mechanism.json`。
+
+商品策略通过 `strategies/catalog.py` 登记；股指研究策略通过单独的 `strategies/index_catalog.py` 登记，避免交给商品 `backtest.engine`。`index_close_location_reversal` 当前为 `exploratory_predeclared`，只运行 2016–2021 研究样本，不冻结、不打开 OOS。
 
 Outputs:
 - Strategy runs go to `runs/strategies/<id>/commodity/<research|oos|YYYY|YYYY-YYYY>/`. Each run writes `summary.csv`, `annual.csv`, `daily.csv`, `positions.csv` and `events.csv`, plus `plots/<name>/`.
@@ -137,23 +218,28 @@ Outputs:
 - RiceQuant credentials live in `config/rqdata.env`. Never print, commit or move them.
 
 ```bash
-python -m pytest                                      # must stay green
+python -m pytest tests/research/test_index_market_clock.py tests/index/test_tick_l1.py # focused example; use paths for changed behavior
 python -m backtest.engine --research                 # 2011–21，不点名则全部已登记策略都跑
-python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期，结果在 2016-2021/；信号层检验的紧缩夏普读这里
+python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期，结果在 2016-2021/；信号层检验读这里
 python -m backtest.engine 按池宽1倍加三窗口趋势空头 --research   # 只跑点名的那一条
 python -m backtest.engine --research --by-year        # 每年一本新的 1e8
 python -m backtest.engine --start 2018 --end 2020     # 研究区间；不点名则全部已登记策略
-python -m backtest.engine --validation               # 2022；须点名冻结策略。先记台账。不是干净样本
+python -m backtest.engine --validation               # 2022；用户说开始看样本外之后才跑。先记台账
 python -m backtest.engine --year 2023                # 单年；须点名冻结策略。先记台账
 python -m backtest.engine --oos                      # 2023–2025；须点名冻结策略。先记台账
 python -m backtest.engine --oos --by-year            # 2023、2024、2025；须点名冻结策略
-python -m research.market_clock_slow_short_factors  # signal-level diagnostics, DSR, PBO; already seen
-python -m research.index_market_clock                # current strategy on IF/IH/IC; index roll yield unavailable
+python -m research.market_clock_slow_short_factors  # signal-level diagnostics
+python -m research.index_market_clock                # current strategy on IF/IH/IC 2016–2021; already run, refuses a rerun
+python -m research.index_close_location_candidate --robustness  # predeclared R1–R4 robustness, research only
+python -m research.index_liquidity_mechanism         # index L1 + spot mechanism tests (basis, flow impact, timing)
+python -m download.index.getIndexSpot                # CSI300/SSE50/CSI500 dailies 2015-04-16..2021
+python -m research.index_close_location_candidate   # registered CLV<0.5 index candidate; research period only, not frozen
+python -m research.market_clock_mechanism            # components, range, close location, liquidity proxies, 2011–2021
+python -m download.index.getIndexRollYield           # IF/IH/IC carry from contract dailies, 2015–2021
 python -m research.time_factor_screen
-python -m research.gtja_time
 ```
 
-Every 2022+ command above is refused for any book that is not frozen. Both live books are frozen, so only run those commands when the user asks for that window. A window already opened only prints its saved result.
+Every 2022+ command above is refused for any book that is not frozen. The live book is frozen; still, run none of them until the user says to start OOS. A window already opened only prints its saved result.
 
 `TFCTA_DATA_ROOT`, `TFCTA_RUNS_ROOT`, `TFCTA_CONFIG_DIR` and `TFCTA_MINUTE_DIR` redirect paths. Use them only for tests and reproduction checks.
 
@@ -212,12 +298,14 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
 - **No-night days:** about 100 of the 1460 research days have no night session (post-holiday days, and the 2020 night suspension). On those days the full-day `ts_low`/`ts_high` market mean shifts by roughly −0.23/+0.18 sd, because the normalisation grid is shorter.
 - **Year-test factors:** `load_through_year` recomputes the five factors from 320 research days before 2022 onward. It asserts that the recomputed values equal the research cache on the last 60 research days. Keep `duration_factors`, `report_factors` and the cache on the same N250/M55 definition.
 - **Flow:** `backtest.engine.main` maps switches to `research.market_clock_slow_short_20_60_120.run_span(start, end, by_year)`, which loads data, calls the current book's `targets(data, columns)`, runs `simulate_target_lots`, writes results with `write_results` and prints beta/alpha from `summarize`.
+- **Index L1:** The historical IF/IH/IC tick endpoint exposes usable bid/ask level 1 only; deeper quote columns observed on the probe day were zero. Do not label these data L2 or infer order-level flow.
 
 ## 8. Coding conventions
 
 - Match the surrounding style.
   - Docstrings and comments are short and in **Chinese**. Identifiers are English. Output CSV column names are Chinese.
   - Comment density is low; comments explain "why" and sample boundaries.
+- **Tests stay minimal.** Add a test only for a material behavior change or a high-risk invariant (look-ahead, sample/holdout guards, accounting, or a live strategy rule). Prefer one concise synthetic test that exercises the changed contract; do not add broad test matrices, duplicate coverage, tests for report wording/formatting, or tests for one-off exploratory analyses. Run the focused existing tests first; run the full suite only when a shared core contract changes or the focused tests indicate wider risk. Do not remove existing tests just to reduce the count without checking what production behavior they protect.
 - Prefer extending existing modules (`factors.py`, `engine.py`, `costs.py`) over new files.
   - Use one directory per strategy, with `__init__.py` plus `<id>.json`.
   - Delete dead code instead of leaving parallel versions. Git history is the archive.
@@ -231,7 +319,7 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
 1. Read the relevant module, its JSON spec and its tests. Re-read §3 to decide which partitions the change may touch.
 2. If the change produces new numbers, write or adjust the predeclared spec first.
 3. Implement it, then add or adjust tests.
-4. Run `python -m pytest`. Run only the research-period entry point that the change needs.
+4. Run focused tests covering the changed contract, then only the research-period entry point that the change needs. Run the full test suite only when a shared core contract changes or focused results show wider risk.
 5. Update docs that describe changed behaviour or numbers: `README.md` (Chinese user manual), `backtest/README.md`, `strategies/README.md`. Update this file if rules or layout changed.
 6. Report back with:
    - what changed;
@@ -240,4 +328,4 @@ Data preparation order (README §数据准备): `prepare/shard.py` → `prepare/
    - what is in-sample versus clean;
    - what was not verified.
 
-   Keep it short. Do not call research-period Sharpe "evidence" when the same rule family already failed OOS.
+   Keep it short.

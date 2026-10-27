@@ -1,0 +1,54 @@
+{
+  "name": "Market-clock books transferred to IF/IH/IC from common listing date",
+  "status": "declared_test_not_a_strategy",
+  "declared_at": "2026-10-26",
+  "sample": "Index research calendar 2015-04-16 through 2021-12-31, beginning when IF, IH, and IC are all listed. IF data from 2015-01-05 may be used only as factor warmup; IH and IC data begin on their listing date. Actual signals begin only after rolling factor and z-score warmup requirements in the existing implementation are met. Backtest returns, ledgers, annual outputs, and charts start on the first date with any nonzero strategy target; do not output earlier warmup dates. Exclude IM. Read only index research minute shards, index research fees, and index research roll-yield data. Do not read 2022 or 2026; do not read 2023-2025 locked partitions.",
+  "instruments": [
+    "IF",
+    "IH",
+    "IC"
+  ],
+  "pool": "Fixed equal-weight pool of IF, IH, and IC; split gross exposure by three instruments.",
+  "minimum_valid_instruments_for_market_score": 3,
+  "books": [
+    "market_clock_pool",
+    "market_clock_slow_short_20_60_120"
+  ],
+  "parameters": {
+    "factors": [
+      "ts_low",
+      "ts_high",
+      "dfp_top3",
+      "ts_low_pm",
+      "ts_high_pm"
+    ],
+    "factor_signs": {
+      "ts_low": 1,
+      "ts_high": -1,
+      "dfp_top3": 1,
+      "ts_low_pm": 1,
+      "ts_high_pm": -1
+    },
+    "duration_threshold": "55th percentile of absolute one-minute price changes over the prior 250 trading days, excluding the current day",
+    "zscore": "per instrument and factor, trailing 250 observations excluding the current day, minimum 125, clipped to +/-3",
+    "roll_yield": "main_sub annualized_yield computed from contract daily settlement prices: main = RiceQuant get_dominant rule 0, sub = the largest same-day open interest among contracts maturing after the main, yield = (main - sub) / sub, annualized by 365 / |maturity gap in days|; lagged one trading day",
+    "short_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "gross_exposure_limit": 1.0,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10
+  },
+  "execution": {
+    "initial_capital": 100000000,
+    "commission": "historical index fees, by-money rate x1.01 and by-volume rate +0.01 CNY/lot",
+    "slippage": "one prior-year tick estimated from index minute data per side",
+    "margin_rate_assumption": 0.2,
+    "decision": "close-known signal executed at the next trading day's first bar open; unchanged target keeps lots"
+  },
+  "reporting": "Report both books and calendar-year results only from the first nonzero target date; exclude pre-signal warmup rows from output files and plots. Preserve the common-listed calendar start as protocol metadata. The commodity strategy was fixed before this index transfer test; this is not independent validation or a deployable-edge claim.",
+  "roll_yield_method": "RiceQuant get_roll_yield returns None for index futures. Contract-daily calculation was checked against RiceQuant commodity main_sub on RB, CU, and M in 2018-2019: sub contract matched 1461/1461 days and annualized_yield error was below 2e-15.",
+  "known_constraints": "IC carry is positive on 99.6% of days and IF/IH on 83%/73%, so the short leg can rarely trade IC. IM listed in 2022 and is excluded."
+}
