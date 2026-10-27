@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -61,6 +62,26 @@ def test_write_results_includes_calmar_in_summary_and_annual_csv(monkeypatch, tm
     saved_annual = pd.read_csv(tmp_path / "strategies" / "test" / "commodity" / "2019" / "annual.csv")
     assert saved_summary.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
     assert saved_annual.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
+    engine.write_results(
+        2019,
+        strategy,
+        daily,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        [],
+        market="index",
+        result_subdirectory=Path("individual") / "IF",
+    )
+    assert (
+        tmp_path
+        / "strategies"
+        / "test"
+        / "index"
+        / "individual"
+        / "IF"
+        / "2019"
+        / "summary.csv"
+    ).is_file()
 
 
 def test_annualized_metrics_and_sharpe_use_242_trading_days():
@@ -146,14 +167,65 @@ def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
     assert seen == [window]
 
 
-def test_cli_passes_a_named_exploratory_book(monkeypatch):
+def test_cli_passes_a_named_frozen_replacement_book(monkeypatch):
     import research.market_clock_slow_short_20_60_120 as driver
     from strategies import commodity_close_location_reversal as R
 
     seen = []
     monkeypatch.setattr(driver, "run_span", lambda *a, by_year=False, book=None: seen.append(book))
-    engine.main([R.BOOK.ID, "--research"])
-    assert seen == [R.BOOK]
+    engine.main([R.STRICT_SWAP_BOOK.ID, "--research"])
+
+    assert seen == [R.STRICT_SWAP_BOOK]
+
+
+def test_cli_routes_index_research_to_the_shared_engine(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        engine,
+        "run_index_research",
+        lambda start, end, by_year=False, include_individuals=False: seen.append(
+            (start, end, by_year, include_individuals)
+        ),
+    )
+
+    engine.main(["index_close_location_reversal_strict_swap", "--research"])
+
+    assert seen == [(2015, 2021, False, False)]
+
+
+def test_index_cli_can_request_single_symbol_ledgers(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        engine,
+        "run_index_research",
+        lambda start, end, by_year=False, include_individuals=False: seen.append(
+            (start, end, include_individuals)
+        ),
+    )
+
+    engine.main(
+        [
+            "index_close_location_reversal_strict_swap",
+            "--research",
+            "--index-individuals",
+        ]
+    )
+
+    assert seen == [(2015, 2021, True)]
+
+
+def test_index_cli_rejects_later_windows_before_loading_data(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        engine,
+        "_load_index_research_inputs",
+        lambda: called.append(True),
+    )
+
+    with pytest.raises(SystemExit):
+        engine.main(["--market", "index", "--year", "2024"])
+
+    assert called == []
 
 
 @pytest.mark.parametrize("argv", [

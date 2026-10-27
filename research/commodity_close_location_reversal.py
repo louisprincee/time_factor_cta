@@ -18,9 +18,10 @@ import numpy as np
 import pandas as pd
 
 from backtest.engine import INITIAL_CAPITAL, ledger_inputs, newey_west_t, plot_performance
-from research import index_close_location_candidate as I, index_market_clock as M
+from research import index_market_clock as M
 from research import market_clock_slow_short_20_60_120 as D
 from strategies import commodity_close_location_reversal as R
+from strategies import index_close_location_reversal as IX
 from strategies import market_clock_slow_short_20_60_120 as S
 from tfcta import config as C
 
@@ -79,12 +80,13 @@ def run() -> None:
 
 # 三策略严格替换比较与多空、品种贡献归因。
 CONFIG_PATH = C.CONFIG_DIR / "research" / "three_strategy_clv_comparison.json"
+FOLLOWUP_CONFIG_PATH = C.CONFIG_DIR / "research" / "three_strategy_contribution_followup.json"
 COMPARISON_OUT = C.RUNS_DIR / "research" / "three_strategy_clv_comparison"
+FOLLOWUP_OUT = COMPARISON_OUT / "component_followup"
 COMMODITY_START = 2011
 END_YEAR = 2021
 INDEX_START = pd.Timestamp("2015-04-16")
 INDEX_END = pd.Timestamp("2021-12-31")
-CLV_THRESHOLD = 0.5
 BOOK_LABELS = {
     "commodity_original": "商品原策略",
     "commodity_clv_swap": "商品策略（仅时间换收盘位置）",
@@ -128,34 +130,32 @@ def load_protocol() -> dict:
     return protocol
 
 
+def load_followup_protocol() -> dict:
+    protocol = json.loads(FOLLOWUP_CONFIG_PATH.read_text(encoding="utf-8"))
+    sample = protocol.get("sample", "")
+    components = protocol.get("commodity_components", {})
+    products = protocol.get("index_products", {})
+    if (
+        protocol.get("status") != "post_hoc_research_only"
+        or "Do not read 2022" not in sample
+        or "2023-2025 locked partitions" not in sample
+        or "or 2026" not in sample
+        or components.get("books") != [S.BOOK.ID, R.STRICT_SWAP_BOOK.ID]
+        or products.get("instruments") != list(M.SYMBOLS)
+        or "own close location < 0.5" not in products.get("individual_books", "")
+    ):
+        raise ValueError("组成部分后续检验规格与样本边界或实现不一致")
+    return protocol
+
+
 def index_close_location_targets(
     index: pd.DatetimeIndex,
     bars: dict[str, pd.DataFrame],
     carry: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """用收盘位置替换股指迁移策略的五因子分数，其余信号保持不变。"""
-    symbols = list(M.SYMBOLS)
-    close = bars["closew"].reindex(index=index, columns=symbols)
-    high = bars["highw"].reindex(index=index, columns=symbols)
-    low = bars["loww"].reindex(index=index, columns=symbols)
-    width = high - low
-    if close.isna().any().any() or high.isna().any().any() or low.isna().any().any():
-        raise ValueError("股指收盘位置行情未完全对齐")
-    if width.le(0).any().any():
-        raise ValueError("股指日内最高价必须高于最低价")
-    clv = (close - low) / width
-    if not np.isfinite(clv.to_numpy()).all() or clv.lt(0).any().any() or clv.gt(1).any().any():
-        raise ValueError("股指收盘位置超出 [0, 1] 或包含无效值")
-    market_clv = clv.mean(axis=1, skipna=False).rename("market_clv")
-
-    pool = {year: symbols for year in sorted(set(index.year))}
-    lagged_carry = carry.reindex(index=index, columns=symbols).shift(1)
-    trend = S.symbol_trend(bars, symbols).reindex(index)
-    close_return = S.close_return(bars, symbols).reindex(index)
-    bear = S.market_trend(close_return.mean(axis=1)).lt(0)
-    score = CLV_THRESHOLD - market_clv
-    decisions = S.decision_weights(score, lagged_carry, trend, bear)
-    targets = decisions.shift(1).fillna(0.0).where(S.pool_mask(pool, index, symbols), 0.0)
+    market_clv = IX.market_close_location(bars, index)
+    targets = IX.STRICT_SWAP_BOOK.targets(market_clv, bars, carry)
     return targets, market_clv
 
 
@@ -249,6 +249,121 @@ def _annual_rows(strategy_id: str, daily: pd.DataFrame, contribution: pd.DataFra
             }
         )
     return rows
+
+
+def _commodity_component_targets(data, symbols, carry) -> dict[str, pd.DataFrame]:
+    index = data.returns.index
+    pool = S.pool_mask(data.universe, index, symbols)
+    lagged = carry.reindex(index=index, columns=symbols).shift(1)
+    ones = pd.DataFrame(1.0, index=index, columns=symbols)
+    score = S.market_score(data.factors.signed, data.universe, index)
+    close_location = R.market_close_location(
+        data.factors.bars, data.universe, index, symbols
+    )
+    trend = S.symbol_trend(data.factors.bars, symbols).reindex(index)
+    market_daily = S.close_return(data.factors.bars, symbols).where(pool).mean(axis=1)
+    bear = S.market_trend(market_daily).lt(0)
+    short = -(
+        (trend.lt(0) & lagged.lt(0)).mul(bear.eq(True), axis=0).astype(float)
+    )
+    decisions = {
+        "score_only": ones.mul(score.gt(0).astype(float), axis=0),
+        "clv_only": ones.mul(close_location.lt(R.LONG_THRESHOLD).astype(float), axis=0),
+        "carry_only": ones.where(lagged.gt(0), 0.0),
+        "score_and_carry_long": S.long_weights(score, lagged),
+        "clv_and_carry_long": ones.where(lagged.gt(0), 0.0).mul(
+            close_location.lt(R.LONG_THRESHOLD).astype(float), axis=0
+        ),
+        "short_only": short,
+    }
+    return {
+        name: decision.shift(1).fillna(0.0).where(pool, 0.0)
+        for name, decision in decisions.items()
+    }
+
+
+def _run_commodity_component_followup(data, inputs, carry, symbols, market) -> None:
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    protocol = load_followup_protocol()
+    output = FOLLOWUP_OUT / "commodity"
+    output.mkdir(parents=True, exist_ok=True)
+    rows, annual, daily_returns = [], [], {}
+    labels = {
+        "score_only": "分数单独（无展期筛选）",
+        "clv_only": "CLV 单独（无展期筛选）",
+        "carry_only": "正展期单独（无时间信号）",
+        "score_and_carry_long": "分数 + 正展期（实际多头规则）",
+        "clv_and_carry_long": "CLV + 正展期（替换后多头规则）",
+        "short_only": "趋势 + 负展期空头",
+    }
+    for key, target in _commodity_component_targets(data, symbols, carry).items():
+        aligned = target.reindex(index=inputs["index"], columns=inputs["columns"]).fillna(0.0)
+        daily, positions, _ = D.simulate(aligned, inputs, S.BOOK)
+        row, _ = D.summarize(
+            labels[key],
+            daily,
+            positions,
+            market,
+            inputs["adjusted_open_delta"],
+            D.sectors(),
+        )
+        row.update({"组件": key, "解释": labels[key]})
+        rows.append(row)
+        net = daily["净收益"].fillna(0.0)
+        daily_returns[key] = net
+        for year, part in net.groupby(net.index.year):
+            annual.append(
+                {
+                    "组件": key,
+                    "解释": labels[key],
+                    "年份": int(year),
+                    "净收益": float((1.0 + part).prod() - 1.0),
+                    "日收益贡献求和_非复利": float(part.sum()),
+                }
+            )
+    summary = pd.DataFrame(rows)
+    annual_frame = pd.DataFrame(annual)
+    summary.to_csv(output / "summary.csv", index=False, encoding="utf-8-sig")
+    annual_frame.to_csv(output / "annual.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame(daily_returns).to_csv(
+        output / "daily_returns.csv", encoding="utf-8-sig"
+    )
+    (output / "protocol.json").write_text(
+        json.dumps(protocol, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    fig, axis = plt.subplots(figsize=(12, 6.5))
+    colors = {
+        "score_only": "#315A7D",
+        "clv_only": "#2A8C82",
+        "carry_only": "#E2A23A",
+        "score_and_carry_long": "#5D76B5",
+        "clv_and_carry_long": "#44A39B",
+        "short_only": "#D66B4D",
+    }
+    for key, values in daily_returns.items():
+        axis.plot(
+            values.index,
+            values.cumsum(),
+            color=colors[key],
+            linewidth=1.8,
+            label=labels[key],
+        )
+    axis.axhline(0, color="#77818A", linewidth=0.8)
+    axis.set_title(
+        "商品组件反事实组合：累计日净收益贡献（非复利、不可相加）",
+        loc="left",
+        color="#24313D",
+        fontsize=13,
+    )
+    axis.set_ylabel("累计日净收益贡献")
+    axis.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+    _style(axis)
+    axis.legend(frameon=False, ncol=2, loc="best")
+    fig.tight_layout()
+    fig.savefig(output / "component_counterfactuals.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
 
 def _style(axis) -> None:
@@ -428,7 +543,6 @@ def _run_commodity():
     data = D._load(END_YEAR, COMMODITY_START)
     years = tuple(range(COMMODITY_START, END_YEAR + 1))
     inputs = D.ledger_inputs(data, years, pd.Timestamp(f"{END_YEAR}-12-31"))
-    columns = inputs["columns"]
     all_symbols = sorted({symbol for members in data.universe.values() for symbol in members})
     market = D.pool_open_return(data, inputs["universe"], inputs["index"])
     carry = S.roll_yield(data.returns.index, all_symbols)
@@ -437,23 +551,32 @@ def _run_commodity():
         S.pool_mask(data.universe, data.returns.index, all_symbols),
     )
 
-    targets = {
-        "commodity_original": S.BOOK.targets(data, all_symbols),
-        "commodity_clv_swap": R.targets(
-            data.factors.bars,
-            data.universe,
-            data.returns.index,
-            all_symbols,
-            carry=carry,
-            long_carry=True,
-        ),
+    books = {
+        "commodity_original": S.BOOK.ID,
+        "commodity_clv_swap": R.STRICT_SWAP_BOOK.ID,
     }
     results = {}
     summary_rows, annual_rows, position_rows, event_rows = [], [], [], []
     contributions, instruments = {}, {}
-    for key, target in targets.items():
-        aligned = target.reindex(index=inputs["index"], columns=columns).fillna(0.0)
-        daily, positions, events = D.simulate(aligned, inputs, S.BOOK)
+    for key, book_id in books.items():
+        result_dir = C.RUNS_DIR / "strategies" / book_id / "commodity" / "research"
+        required = ("daily.csv", "positions.csv", "events.csv", "summary.csv")
+        missing = [name for name in required if not (result_dir / name).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"{BOOK_LABELS[key]} 账本须先由 backtest.engine 运行；"
+                f"缺少 {', '.join(missing)}：{result_dir}"
+            )
+        daily = pd.read_csv(
+            result_dir / "daily.csv", parse_dates=["交易日"]
+        ).set_index("交易日")
+        positions = pd.read_csv(
+            result_dir / "positions.csv", parse_dates=["交易日"]
+        )
+        events = pd.read_csv(result_dir / "events.csv", parse_dates=["交易日"])
+        expected_index = inputs["index"][inputs["index"] >= daily.index.min()]
+        if not daily.index.equals(expected_index):
+            raise ValueError(f"{book_id} engine 账本日期与本次研究归因输入不一致")
         row, _ = D.summarize(
             BOOK_LABELS[key],
             daily,
@@ -481,11 +604,12 @@ def _run_commodity():
         instruments[key] = instrument_contribution
         position_rows.append(positions.assign(策略ID=key))
         event_rows.append(events.assign(策略ID=key))
+    _run_commodity_component_followup(data, inputs, carry, all_symbols, market)
     return results, contributions, instruments, summary_rows, annual_rows, position_rows, event_rows
 
 
 def _run_index():
-    index, bars, contracts, _, ticks = M._load_index_inputs()
+    index, bars, _, _, _ = M._load_index_inputs()
     returns = (
         (bars["openw"].shift(-1) - bars["openw"])
         / bars["open"].where(bars["open"] > 0)
@@ -495,6 +619,7 @@ def _run_index():
     if returns.empty:
         raise ValueError("IF/IH/IC 共同上市期没有完整的下一开盘收益")
     C.assert_no_holdout_dates(returns.index, what="股指 CLV 严格替换收益")
+    all_returns = returns.copy()
     carry = M.load_index_carry(index)
     M.require_index_carry_coverage(carry, returns.index)
     target, market_clv = index_close_location_targets(index, bars, carry)
@@ -506,24 +631,30 @@ def _run_index():
     if returns.empty:
         raise ValueError("股指首次非零目标后没有可用收益")
 
-    first_tick = ticks[ticks["year"] == 2015].set_index("symbol")["tick"].reindex(list(M.SYMBOLS))
-    if not np.allclose(first_tick.to_numpy(dtype=float), I.EXCHANGE_TICK):
-        raise ValueError(f"2015 年估计 tick 与固定交易所 tick 不符：{first_tick.to_dict()}")
-    prior_ticks = pd.concat(
-        [
-            ticks[ticks["year"] != 2014],
-            ticks[ticks["year"] == 2015].assign(year=2014),
-        ],
-        ignore_index=True,
+    result_dir = (
+        C.RUNS_DIR
+        / "strategies"
+        / IX.STRICT_SWAP_BOOK.ID
+        / "index"
+        / "research"
     )
-    aligned_target = target.reindex(index=returns.index, columns=list(M.SYMBOLS)).fillna(0.0)
-    daily, positions, events = I.simulate_book(
-        aligned_target,
-        returns.index,
-        bars,
-        contracts,
-        prior_ticks,
+    required = ("daily.csv", "positions.csv", "events.csv", "summary.csv")
+    missing = [name for name in required if not (result_dir / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "股指账本须先由 backtest.engine 运行；"
+            f"缺少 {', '.join(missing)}：{result_dir}"
+        )
+    daily = pd.read_csv(result_dir / "daily.csv", parse_dates=["交易日"]).set_index(
+        "交易日"
     )
+    positions = pd.read_csv(
+        result_dir / "positions.csv", parse_dates=["交易日"]
+    )
+    events = pd.read_csv(result_dir / "events.csv", parse_dates=["交易日"])
+    expected_index = returns.index[returns.index >= daily.index.min()]
+    if not daily.index.equals(expected_index):
+        raise ValueError("engine 中股指账本日期与本次研究归因输入不一致")
     market = returns.mean(axis=1).reindex(daily.index)
     summary = M._summary_row(
         "index_clv_swap",
@@ -553,6 +684,7 @@ def _run_index():
         year = row["年份"]
         for symbol in M.SYMBOLS:
             row[f"{symbol}毛贡献"] = float(annual_index.at[year, symbol])
+    _run_index_individual(bars, all_returns, instrument_contribution)
     return (
         {"index_clv_swap": daily},
         {"index_clv_swap": contribution},
@@ -565,8 +697,170 @@ def _run_index():
     )
 
 
+def _run_index_individual(
+    bars,
+    all_returns,
+    joint_contributions,
+) -> None:
+    protocol = load_followup_protocol()
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    output = FOLLOWUP_OUT / "index_individual"
+    plot_dir = output / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    summaries, annual_rows, daily_returns, contributions = [], [], {}, []
+    position_rows = []
+    for symbol in M.SYMBOLS:
+        engine_dir = (
+            C.RUNS_DIR
+            / "strategies"
+            / IX.STRICT_SWAP_BOOK.ID
+            / "index"
+            / "individual"
+            / symbol
+            / "research"
+        )
+        required = ("daily.csv", "positions.csv", "summary.csv")
+        missing = [name for name in required if not (engine_dir / name).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"{symbol} 单品种账本须先由 backtest.engine --index-individuals 运行；"
+                f"缺少 {', '.join(missing)}：{engine_dir}"
+            )
+        daily = pd.read_csv(
+            engine_dir / "daily.csv", parse_dates=["交易日"]
+        ).set_index("交易日")
+        positions = pd.read_csv(
+            engine_dir / "positions.csv", parse_dates=["交易日"]
+        )
+        if not daily.index.isin(all_returns.index).all():
+            raise ValueError(f"{symbol} 单品种账本日期超出股指研究收益区间")
+        start = daily.index.min()
+        market = all_returns[symbol].reindex(daily.index)
+        row = M._summary_row(
+            f"index_{symbol}_own_clv",
+            f"{symbol} 独立 CLV + 展期 + 空头",
+            daily,
+            market,
+        )
+        row["信号首日"] = str(start.date())
+        summaries.append(row)
+        adjusted_delta = (
+            bars["openw"].shift(-1) - bars["openw"]
+        ).reindex(index=daily.index, columns=[symbol])
+        _, instrument_contribution = attribute_positions(
+            daily, positions, adjusted_delta
+        )
+        joint = joint_contributions[symbol].reindex(daily.index).fillna(0.0)
+        contribution = instrument_contribution[symbol].rename(
+            f"{symbol}_standalone_gross"
+        )
+        contributions.append(
+            pd.concat(
+                [
+                    contribution,
+                    instrument_contribution["交易成本及清零调整"].rename(
+                        f"{symbol}_standalone_cost"
+                    ),
+                    joint.rename(f"{symbol}_joint_gross"),
+                ],
+                axis=1,
+            )
+        )
+        daily_returns[f"{symbol}_standalone_net"] = daily["净收益"].fillna(0.0)
+        for year, part in daily.groupby(daily.index.year):
+            annual_rows.append(
+                {
+                    "品种": symbol,
+                    "年份": int(year),
+                    "独立策略净收益": float(
+                        daily.loc[part.index, "权益"].iloc[-1]
+                        / daily.loc[part.index, "期初权益"].iloc[0]
+                        - 1.0
+                    ),
+                    "独立策略日净收益贡献求和": float(
+                        daily.loc[part.index, "净收益"].fillna(0.0).sum()
+                    ),
+                    "共同组合该品种毛贡献": float(joint.reindex(part.index).sum()),
+                }
+            )
+        position_rows.append(positions.assign(独立策略=symbol))
+
+        nav = (1.0 + daily["净收益"].fillna(0.0)).cumprod()
+        peak = daily["权益"].cummax().clip(lower=INITIAL_CAPITAL)
+        drawdown = daily["权益"] / peak - 1.0
+        joint_cumulative = joint.cumsum()
+        fig, axes = plt.subplots(3, 1, figsize=(11.5, 9.0), sharex=True)
+        axes[0].plot(nav.index, nav, color=COLORS[symbol], linewidth=2.0)
+        axes[0].set_ylabel("独立策略净值")
+        axes[0].set_title(
+            f"{symbol}：独立 CLV 策略净值",
+            loc="left",
+            color="#24313D",
+            fontsize=12,
+        )
+        axes[1].plot(
+            joint_cumulative.index,
+            joint_cumulative,
+            color="#7B6FA8",
+            linewidth=1.8,
+        )
+        axes[1].axhline(0, color="#77818A", linewidth=0.8)
+        axes[1].set_ylabel("共同组合毛贡献")
+        axes[1].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+        axes[1].set_title(
+            f"{symbol}：在 IF/IH/IC 共同策略中的累计毛贡献（非复利）",
+            loc="left",
+            color="#24313D",
+            fontsize=11,
+        )
+        axes[2].fill_between(
+            drawdown.index,
+            drawdown.to_numpy(),
+            0.0,
+            color="#D66B4D",
+            alpha=0.25,
+            linewidth=0,
+        )
+        axes[2].plot(drawdown.index, drawdown, color="#D66B4D", linewidth=1.2)
+        axes[2].set_ylabel("独立策略回撤")
+        axes[2].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+        for axis in axes:
+            _style(axis)
+        fig.suptitle(
+            f"{symbol} | 2015共同上市期起；独立策略与共同组合贡献口径不同",
+            x=0.08,
+            ha="left",
+            color="#18232D",
+            fontsize=14,
+        )
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
+        fig.savefig(plot_dir / f"{symbol}.png", dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    pd.DataFrame(summaries).to_csv(
+        output / "summary.csv", index=False, encoding="utf-8-sig"
+    )
+    pd.DataFrame(annual_rows).to_csv(
+        output / "annual.csv", index=False, encoding="utf-8-sig"
+    )
+    pd.DataFrame(daily_returns).to_csv(
+        output / "daily_returns.csv", encoding="utf-8-sig"
+    )
+    pd.concat(contributions, axis=1).to_csv(
+        output / "contributions.csv", encoding="utf-8-sig"
+    )
+    pd.concat(position_rows, ignore_index=True).to_csv(
+        output / "positions.csv", index=False, encoding="utf-8-sig"
+    )
+    (output / "protocol.json").write_text(
+        json.dumps(protocol, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def run_three_book_comparison(*, overwrite: bool = False) -> None:
     protocol = load_protocol()
+    load_followup_protocol()
     if COMPARISON_OUT.exists():
         saved_protocol = COMPARISON_OUT / "protocol.json"
         if not overwrite or not saved_protocol.is_file():

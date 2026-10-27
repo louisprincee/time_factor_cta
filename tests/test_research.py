@@ -144,6 +144,7 @@ from research.index_close_location_candidate import (
     build_targets,
     load_protocol as load_candidate_protocol,
 )
+from strategies.index_close_location_reversal import STRICT_SWAP_BOOK, strict_swap_targets
 from strategies.catalog import BOOKS as COMMODITY_BOOKS
 from strategies.index_catalog import BOOKS as INDEX_BOOKS, book_named
 
@@ -164,7 +165,7 @@ def test_candidate_uses_prior_close_location_and_registered_binary_rule():
     protocol = load_candidate_protocol()
     assert protocol["status"] == "exploratory_predeclared"
     assert protocol["parameters"]["score_start"] == "2016-01-13"
-    assert book_named(CANDIDATE_ID) is INDEX_BOOKS[0]
+    assert INDEX_BOOKS == (STRICT_SWAP_BOOK,)
     assert all(book.ID != CANDIDATE_ID for book in COMMODITY_BOOKS)
     assert market_clv.tolist() == pytest.approx([0.2, 0.8, 0.1, 0.9])
     assert targets[CANDIDATE_ID].iloc[:, 0].tolist() == [0.0, 1.0, 0.0, 1.0]
@@ -177,6 +178,23 @@ def test_candidate_uses_prior_close_location_and_registered_binary_rule():
         targets[CANDIDATE_ID].iloc[:-1],
         changed_targets[CANDIDATE_ID].iloc[:-1],
     )
+
+
+def test_frozen_index_strict_swap_uses_lagged_clv_and_carry():
+    index = pd.bdate_range("2015-04-16", periods=5)
+    bars = {
+        "close": pd.DataFrame(100.0, index=index, columns=SYMBOLS),
+        "closew": pd.DataFrame(100.0, index=index, columns=SYMBOLS),
+        "highw": pd.DataFrame(110.0, index=index, columns=SYMBOLS),
+        "loww": pd.DataFrame(90.0, index=index, columns=SYMBOLS),
+    }
+    carry = pd.DataFrame(0.1, index=index, columns=SYMBOLS)
+    clv = pd.Series([0.2, 0.8, 0.2, 0.8, 0.2], index=index)
+
+    targets = strict_swap_targets(clv, bars, carry)
+
+    assert STRICT_SWAP_BOOK.frozen()["chosen"] == STRICT_SWAP_BOOK.declared()["parameters"]
+    assert targets["IF"].tolist() == [0.0, 0.0, 0.0, 1.0, 0.0]
 
 
 def test_short_leg_overrides_the_long_and_uses_only_the_previous_close():
@@ -282,3 +300,30 @@ def test_component_attribution_reconciles_to_ledger_net_return():
     assert side.loc[day, "交易成本及清零调整"] == -0.005
     assert np.isclose(side.loc[day].sum(), daily.loc[day, "净收益"])
     assert np.isclose(instruments.loc[day].sum(), daily.loc[day, "净收益"])
+
+
+# --- commodity L1 mechanism diagnostics ---
+
+from research.close_location_mechanism import (
+    benjamini_hochberg_qvalues,
+    load_l1_liquidity_protocol,
+    trailing_worse_state,
+)
+
+
+def test_commodity_l1_protocol_and_liquidity_states_exclude_current_day():
+    protocol = load_l1_liquidity_protocol()
+    assert protocol["parameters"]["state_lookback"] == 250
+    index = pd.date_range("2020-01-01", periods=6, freq="D")
+    spread = pd.Series([1.0, 2.0, 3.0, 4.0, 0.0, 9.0], index=index)
+    state = trailing_worse_state(spread, higher_is_worse=True, window=4, min_periods=2)
+    changed = spread.copy()
+    changed.iloc[-1] = -9.0
+    changed_state = trailing_worse_state(
+        changed, higher_is_worse=True, window=4, min_periods=2
+    )
+    pd.testing.assert_series_equal(state.iloc[:-1], changed_state.iloc[:-1])
+    assert state.iloc[-1] == 1.0
+    q_values = benjamini_hochberg_qvalues(pd.Series([3.0, 0.1, 2.0]))
+    assert q_values.between(0.0, 1.0).all()
+    assert q_values.iloc[0] < q_values.iloc[1]

@@ -1,9 +1,10 @@
 """股指策略目录，与商品账本注册表分开。"""
 from __future__ import annotations
 
-from strategies.index_close_location_reversal import BOOK
+from strategies.index_close_location_reversal import BOOK, STRICT_SWAP_BOOK
 
-INDEX_BOOKS = (BOOK,)
+INDEX_FROZEN_BOOKS = (STRICT_SWAP_BOOK,)
+INDEX_BOOKS = INDEX_FROZEN_BOOKS
 BOOKS = INDEX_BOOKS
 
 

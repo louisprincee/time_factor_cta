@@ -1,4 +1,4 @@
-"""商品收盘位置反转（commodity_close_location_reversal），探索期，未冻结。规格在同目录 JSON，导入时核对。
+"""商品收盘位置策略：原探索规则与冻结的严格替换规则。
 
 多头：池内等权收盘位置 < 0.5 时池内每个品种 +1，与股指候选同一规则，不用五个时间因子，也不看展期。
 空头：与冻结的 market_clock_slow_short_20_60_120 完全相同，直接复用它的函数；同一品种同一天多空冲突时以空头为准。
@@ -17,6 +17,8 @@ from tfcta import config as C
 LONG_THRESHOLD = 0.5
 LONG_RULE = "market_clv < 0.5"
 CONFLICT_RULE = "short_overrides_long"
+STRICT_SWAP_ID = "commodity_close_location_reversal_strict_swap"
+STRICT_SWAP_CONFIG_PATH = Path(__file__).with_name(f"{STRICT_SWAP_ID}.json")
 
 
 def market_close_location(bars: dict, universe: dict, index: pd.DatetimeIndex, columns) -> pd.Series:
@@ -113,5 +115,63 @@ class Book:
         return targets(data.factors.bars, data.universe, data.returns.index, columns)
 
 
+class StrictSwapBook:
+    ID = STRICT_SWAP_ID
+    NAME = "商品原策略（仅将分数换成收盘位置）"
+    GROSS = S.GROSS
+    CONFIG_PATH = STRICT_SWAP_CONFIG_PATH
+    DETAIL = (
+        "将原策略多头市场分数替换为池内等权收盘位置小于0.5，保留滞后一日展期收益大于0的多头筛选；"
+        "空头腿、预算、执行和风控均与冻结原策略一致"
+    )
+
+    @property
+    def FILES(self) -> list[Path]:
+        return [Path(S.__file__), Path(__file__), self.CONFIG_PATH]
+
+    def load_config(self) -> dict:
+        config = json.loads(self.CONFIG_PATH.read_text(encoding="utf-8"))
+        parameters = config.get("parameters") or {}
+        if (
+            config.get("id") != self.ID
+            or config.get("status") != "frozen"
+            or not config.get("frozen_at")
+            or config.get("chosen") != parameters
+            or "do not read 2026" not in config.get("sample", "").lower()
+            or parameters.get("long_signal")
+            != "Equal-weight annual-pool close location (closew - loww) / (highw - loww) < 0.5"
+            or parameters.get("long_carry_filter") != "Prior trading day's annualized_yield > 0"
+            or parameters.get("roll_yield") != "annualized_yield"
+            or parameters.get("roll_yield_lag_days") != 1
+            or parameters.get("gross_split") != "pool"
+            or parameters.get("rebalance_on_count_change") is not False
+            or parameters.get("short_trend_windows") != list(S.TREND_WINDOWS)
+            or parameters.get("short_rule") != S.SHORT_RULE
+            or parameters.get("short_weight") != -1.0
+            or parameters.get("bear_trend_windows") != list(S.TREND_WINDOWS)
+            or parameters.get("bear_rule") != S.BEAR_RULE
+            or parameters.get("conflict_rule") != CONFLICT_RULE
+            or parameters.get("gross_exposure_limit") != S.GROSS
+            or parameters.get("drawdown_breaker") != S.DRAWDOWN_LIMIT
+            or parameters.get("halt_days") != S.HALT_DAYS
+        ):
+            raise ValueError(f"{self.ID} 的冻结规格与实现不一致")
+        return config
+
+    def frozen(self) -> dict:
+        return self.load_config()
+
+    def targets(self, data, columns) -> pd.DataFrame:
+        return targets(
+            data.factors.bars,
+            data.universe,
+            data.returns.index,
+            columns,
+            long_carry=True,
+        )
+
+
 BOOK = Book()
 BOOK.load_config()
+STRICT_SWAP_BOOK = StrictSwapBook()
+STRICT_SWAP_BOOK.load_config()

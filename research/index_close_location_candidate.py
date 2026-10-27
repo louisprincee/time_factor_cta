@@ -124,30 +124,34 @@ def build_targets(
 
 
 def simulate_book(target: pd.DataFrame, index: pd.DatetimeIndex, bars: dict, contracts: pd.DataFrame,
-                  ticks: pd.DataFrame):
+                  ticks: pd.DataFrame, symbols: tuple[str, ...] = SYMBOLS):
     """同一整数手账本：研究期股指手续费、上一年估计 tick 每边 1 跳、10% 熔断停 10 天。"""
-    selected_open = bars["open"].reindex(index=index, columns=SYMBOLS)
+    symbols = tuple(symbols)
+    if not symbols or any(symbol not in SYMBOLS for symbol in symbols):
+        raise ValueError(f"无效的股指回测品种：{symbols}")
+    selected_open = bars["open"].reindex(index=index, columns=symbols)
     fee_table = load_index_fees("research")
     fee_table = fee_table[fee_table["trading_date"] <= SCORE_END]
     open_fee, close_fee, roll_fee = fee_tables(fee_table, selected_open)
-    slippage = slippage_tables(ticks[ticks["year"] < SCORE_END.year], selected_open)
-    selected_contracts = contracts.reindex(index=index, columns=SYMBOLS)
+    selected_ticks = ticks[ticks["symbol"].isin(symbols)]
+    slippage = slippage_tables(selected_ticks[selected_ticks["year"] < SCORE_END.year], selected_open)
+    selected_contracts = contracts.reindex(index=index, columns=symbols)
     rolls = selected_contracts.ne(selected_contracts.shift()).fillna(False)
     if not rolls.empty:
         rolls.iloc[0] = False
-    universe = {year: list(SYMBOLS) for year in range(index.min().year, index.max().year + 1)}
+    universe = {year: list(symbols) for year in range(index.min().year, index.max().year + 1)}
     return simulate_target_lots(
-        target.reindex(index=index, columns=SYMBOLS).fillna(0.0),
+        target.reindex(index=index, columns=symbols).fillna(0.0),
         selected_open,
-        bars["close"].reindex(index=index, columns=SYMBOLS),
-        bars["openw"].reindex(index=index, columns=SYMBOLS),
-        (bars["openw"].shift(-1) - bars["openw"]).reindex(index=index, columns=SYMBOLS),
-        bars["highw"].reindex(index=index, columns=SYMBOLS),
-        bars["loww"].reindex(index=index, columns=SYMBOLS),
+        bars["close"].reindex(index=index, columns=symbols),
+        bars["openw"].reindex(index=index, columns=symbols),
+        (bars["openw"].shift(-1) - bars["openw"]).reindex(index=index, columns=symbols),
+        bars["highw"].reindex(index=index, columns=symbols),
+        bars["loww"].reindex(index=index, columns=symbols),
         rolls,
         selected_contracts,
         universe,
-        {symbol: INDEX_MULTIPLIER[symbol] for symbol in SYMBOLS},
+        {symbol: INDEX_MULTIPLIER[symbol] for symbol in symbols},
         open_fee,
         close_fee,
         roll_fee,

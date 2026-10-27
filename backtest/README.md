@@ -13,11 +13,20 @@ python -m backtest.engine --year 2024                # 单年，冻结后
 python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 ```
 
-当前 `strategies/catalog.py` 只登记冻结的 20/60/120 三窗口策略；命令不需要策略名。只做商品。
+当前 `strategies/catalog.py` 登记两条冻结商品策略；不指定策略名时，商品入口会运行两条。股指策略由 `strategies/index_catalog.py` 独立登记，但同样由 `backtest.engine` 调用共享整数手账本运行。股指正式组合只开放 2015–2021 研究期，不读 2022+：
+
+```bash
+python -m backtest.engine market_clock_slow_short_20_60_120 --research
+python -m backtest.engine commodity_close_location_reversal_strict_swap --research
+python -m backtest.engine index_close_location_reversal_strict_swap --research
+python -m backtest.engine index_close_location_reversal_strict_swap --research --index-individuals
+```
+
+股指组合结果位于 `runs/strategies/index_close_location_reversal_strict_swap/index/research/`。添加 `--index-individuals` 会由同一 engine 额外执行 IF、IH、IC 三本单品种诊断账本，分别写入 `.../index/individual/<品种>/research/`；这些是事后诊断，不是独立冻结策略。研究归因脚本只读取这些账本并生成汇总和图，不再模拟策略账本。
 
 2022 及以后：点到的策略里有任何一条没冻结，整批直接拒绝，不写台账也不读行情。冻结了就先写台账再读（2022 记 `year_test`，2023 起走 `final_evaluation`，都带冻结日期、`chosen` 和代码与规格文件的哈希）。台账里已经打开过的窗口只打印旧结果；结果文件丢了，要先追加一条 `kind: void` 并写原因才能重开。不读 2026。
 
-2026-10-26 用户决定：2022–2025 是当前策略的样本外，当前策略从未在这几年运行过；用户说开始看样本外之前一律不打开。台账（`data/commodity/oos/ledger.jsonl`）目前是空的，打开时先写台账再读。
+2026-10-26 用户决定：2022–2025 是当前商品原策略的样本外，原策略从未在这几年运行过；2026-10-27 冻结的替换策略也没有 OOS 结果。用户明确说开始看样本外之前一律不打开任何 2022+ 窗口。台账（`data/commodity/oos/ledger.jsonl`）目前是空的，打开时先写台账再读。
 
 ## 账本
 
@@ -38,13 +47,13 @@ python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 
 ## 输出
 
-`runs/strategies/<id>/commodity/<区间>/`，区间是 `research`（2011–2021）、`oos`、单年 `2019`，或 `2016-2021` 这样的起止年。每个区间里有 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv`，净值图在 `plots/<策略名>/`。研究期每条还写一份 `runs/research/<id>/protocol.json`（当时的规格）。
+商品结果在 `runs/strategies/<id>/commodity/<区间>/`，股指结果在 `runs/strategies/<id>/index/<区间>/`。区间是 `research`、单年 `2019` 或 `2016-2021` 这样的起止年。每个账本目录包含 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv` 和绩效图。研究期规格文件仍位于对应的 `runs/research/<id>/protocol.json`。
 
 绩效函数 `performance`、`sharpe_ratio`、`max_drawdown`、`newey_west_t`、`deflated_sharpe`、`pbo_cscv` 也在 `backtest/engine.py`。
 
 ## 三策略收盘位置替换对照
 
-运行 `python -m research.commodity_close_location_reversal --three-book-comparison`，研究规格在 `config/research/three_strategy_clv_comparison.json`。此研究只比较三本账，不改策略目录登记：
+先用 `backtest.engine` 生成三本冻结策略账本；股指还需加 `--index-individuals` 生成 IF/IH/IC 单品种诊断账本。然后运行 `python -m research.commodity_close_location_reversal --three-book-comparison`，研究规格在 `config/research/three_strategy_clv_comparison.json`。研究脚本只读账本并做归因和绘图，不执行策略回测：
 
 1. 商品冻结原策略，2011–2021；
 2. 商品严格替换版：仅将五因子时间分数 `> 0` 换为池内等权收盘位置 `< 0.5`，原有滞后一日 carry > 0 多头门槛、趋势空头、预算、执行和风控不变；

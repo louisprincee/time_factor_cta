@@ -123,10 +123,11 @@ def _bars(index, symbols):
     return {"close": close, "closew": close - 50.0}
 
 
-def test_catalog_freezes_only_the_three_window_book():
+def test_catalog_registers_frozen_commodity_books():
     from strategies import commodity_close_location_reversal as R
 
-    assert FROZEN_BOOKS == (S.BOOK,) and BOOKS == (S.BOOK, R.BOOK)
+    assert FROZEN_BOOKS == (S.BOOK, R.STRICT_SWAP_BOOK)
+    assert BOOKS == FROZEN_BOOKS
     assert (S.BOOK.ID, S.BOOK.NAME, S.BOOK.GROSS, S.TREND_WINDOWS) == (
         "market_clock_slow_short_20_60_120", "按池宽1倍加三窗口趋势空头", 1.0, (20, 60, 120),
     )
@@ -140,6 +141,11 @@ def test_catalog_freezes_only_the_three_window_book():
     for removed in ("market_clock_pool", "market_clock_slow_short", "market_clock_slow_short_fast3"):
         with pytest.raises(ValueError):
             book_named(removed)
+    assert R.STRICT_SWAP_BOOK.frozen()["chosen"] == R.STRICT_SWAP_BOOK.load_config()["parameters"]
+    assert R.STRICT_SWAP_BOOK.ID == "commodity_close_location_reversal_strict_swap"
+    assert book_named(R.STRICT_SWAP_BOOK.ID) is R.STRICT_SWAP_BOOK
+    with pytest.raises(ValueError):
+        book_named(R.BOOK.ID)
 
 
 def test_current_trend_helpers_warm_up_on_the_120_day_window():

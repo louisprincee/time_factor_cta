@@ -2,6 +2,7 @@
 
     python -m research.close_location_mechanism            # 日线和分钟部分，商品 2011–2021
     python -m research.close_location_mechanism --l1       # L1 盘口部分，5 个品种 2016–2021（先跑 download.commodity.getTickL1Close）
+    python -m research.close_location_mechanism --all-l1   # 所有已下载商品 L1，检验流动性枯竭/提供假设
     python -m research.close_location_mechanism --followup # 盘口变差、持仓变化、换月和交割前平仓三项后续检验
 
 规则在 config/research/close_location_mechanism.json，先登记后运行。只诊断，不改冻结策略。
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import warnings
 
 import numpy as np
@@ -18,9 +20,10 @@ import pandas as pd
 
 from backtest.engine import load_research, newey_west_t
 from research.market_clock_mechanism import LAGS, day_shape, slope, trailing_median_above
+from research.time_factor_screen import ols_hac
 from strategies import market_clock_slow_short_20_60_120 as S
 from tfcta import config as C
-from tfcta.data import load_shard
+from tfcta.data import build_universe, daily_bars, load_shard, load_universe, wide_by_field
 
 CONFIG_PATH = C.CONFIG_DIR / "research" / "close_location_mechanism.json"
 OUT = C.RUNS_DIR / "research" / "close_location_mechanism"
@@ -33,8 +36,13 @@ VOL_WINDOW, VOLUME_WINDOW, HORIZONS = 20, 20, (1, 2, 3, 4, 5)
 CONTRACT_DIR = C.COMMODITY_DATA / "external_rqdata" / "contracts"
 DOMINANT_DIR = C.COMMODITY_DATA / "external_rqdata" / "dominant"
 MATURITY_PATH = C.COMMODITY_DATA / "external_rqdata" / "contract_maturity.csv"
+L1_LIQUIDITY_CONFIG_PATH = C.CONFIG_DIR / "research" / "commodity_l1_liquidity.json"
+L1_LIQUIDITY_OUT = C.RUNS_DIR / "research" / "commodity_l1_liquidity"
 TAIL_START, DAY_START, DAY_END = "14:30", "09:00", "15:00"
 ROLL_LOOKBACK = 5
+L1_STATE_LOOKBACK, L1_STATE_MIN_PERIODS = 250, 125
+L1_MIN_PRODUCT_OBSERVATIONS, L1_MIN_SECTOR_OBSERVATIONS = 500, 500
+L1_MIN_CALENDAR_YEARS, L1_MIN_SECTOR_PRODUCTS = 3, 2
 
 
 def load_protocol(path=CONFIG_PATH) -> dict:
@@ -43,6 +51,30 @@ def load_protocol(path=CONFIG_PATH) -> dict:
         raise ValueError("检验登记必须声明这不是策略")
     if "不读 2022" not in protocol.get("sample", "") or "不读 2026" not in protocol.get("sample", ""):
         raise ValueError("样本口径必须写明不读 2022 以后和 2026")
+    return protocol
+
+
+def load_l1_liquidity_protocol(path=L1_LIQUIDITY_CONFIG_PATH) -> dict:
+    protocol = json.loads(path.read_text(encoding="utf-8"))
+    sample = protocol.get("sample", "")
+    parameters = protocol.get("parameters", {})
+    if (
+        protocol.get("status") != "declared_test_not_a_strategy"
+        or "不读 2022" not in sample
+        or "不读 2026" not in sample
+        or parameters.get("commodity_window") != [2011, 2021]
+        or parameters.get("state_lookback") != L1_STATE_LOOKBACK
+        or parameters.get("state_min_periods") != L1_STATE_MIN_PERIODS
+        or parameters.get("hac_lags") != LAGS
+        or parameters.get("minimum_product_observations") != L1_MIN_PRODUCT_OBSERVATIONS
+        or parameters.get("minimum_product_calendar_years") != L1_MIN_CALENDAR_YEARS
+        or parameters.get("minimum_sector_products_per_day") != L1_MIN_SECTOR_PRODUCTS
+        or parameters.get("minimum_sector_observations") != L1_MIN_SECTOR_OBSERVATIONS
+        or parameters.get("minimum_sector_calendar_years") != L1_MIN_CALENDAR_YEARS
+        or parameters.get("sector_aggregation")
+        != "Equal-weight product means within the active research pool on each date; require at least two products with complete inputs for the model."
+    ):
+        raise ValueError("商品 L1 流动性检验登记与实现或样本边界不一致")
     return protocol
 
 
@@ -213,6 +245,460 @@ def load_l1() -> dict:
     table["depth_ratio"] = table["depth_last30"] / table["depth_day"]
     fields = ("imb_last30", "imb_day", "spread_ratio", "depth_ratio", "close_vs_mid", "half_spread_final", "clv_last", "clv_mid")
     return {f: table.pivot_table(index="trading_date", columns="symbol", values=f) for f in fields}
+
+
+def trailing_worse_state(
+    values: pd.Series,
+    *,
+    higher_is_worse: bool,
+    window: int = L1_STATE_LOOKBACK,
+    min_periods: int = L1_STATE_MIN_PERIODS,
+) -> pd.Series:
+    """用不含当天的历史中位数标记价差变宽或深度变薄。"""
+    median = values.shift(1).rolling(window, min_periods=min_periods).median()
+    state = values.gt(median) if higher_is_worse else values.lt(median)
+    return state.astype("float64").where(median.notna())
+
+
+def benjamini_hochberg_qvalues(t_statistics: pd.Series) -> pd.Series:
+    """用正态近似双侧 p 值计算 BH q 值。"""
+    q_values = pd.Series(np.nan, index=t_statistics.index, dtype="float64")
+    valid = t_statistics.replace([np.inf, -np.inf], np.nan).dropna()
+    if valid.empty:
+        return q_values
+    p_values = valid.abs().map(lambda value: math.erfc(float(value) / math.sqrt(2.0)))
+    order = np.argsort(p_values.to_numpy())
+    sorted_p = p_values.to_numpy()[order]
+    ranks = np.arange(1, len(sorted_p) + 1, dtype="float64")
+    adjusted = np.minimum.accumulate((sorted_p * len(sorted_p) / ranks)[::-1])[::-1]
+    adjusted = np.minimum(adjusted, 1.0)
+    q_values.loc[p_values.index.to_numpy()[order]] = adjusted
+    return q_values
+
+
+L1_MODELS = (
+    {
+        "id": "reversal",
+        "label": "次日盘中收益 ~ 收盘位置",
+        "outcome": "next_intraday",
+        "predictors": ("clv_mid",),
+        "tested": 0,
+        "expected": "<0",
+        "return_units": True,
+    },
+    {
+        "id": "spread_depletion",
+        "label": "尾盘相对价差 ~ 收盘位置",
+        "outcome": "spread_ratio",
+        "predictors": ("clv_mid",),
+        "tested": 0,
+        "expected": "<0",
+        "return_units": False,
+    },
+    {
+        "id": "depth_depletion",
+        "label": "尾盘相对深度 ~ 收盘位置",
+        "outcome": "depth_ratio",
+        "predictors": ("clv_mid",),
+        "tested": 0,
+        "expected": ">0",
+        "return_units": False,
+    },
+    {
+        "id": "spread_provision",
+        "label": "收盘位置 × 尾盘价差偏宽状态",
+        "outcome": "next_intraday",
+        "predictors": ("clv_spread_interaction", "clv_mid", "spread_worse"),
+        "tested": 0,
+        "expected": "<0",
+        "return_units": True,
+        "interaction": True,
+    },
+    {
+        "id": "depth_provision",
+        "label": "收盘位置 × 尾盘深度偏薄状态",
+        "outcome": "next_intraday",
+        "predictors": ("clv_depth_interaction", "clv_mid", "depth_worse"),
+        "tested": 0,
+        "expected": "<0",
+        "return_units": True,
+        "interaction": True,
+    },
+    {
+        "id": "flow_pressure",
+        "label": "尾盘买卖不平衡 ~ 收盘位置",
+        "outcome": "imb_last30",
+        "predictors": ("clv_mid",),
+        "tested": 0,
+        "expected": ">0",
+        "return_units": False,
+    },
+    {
+        "id": "flow_prediction",
+        "label": "次日盘中收益 ~ 尾盘不平衡度（控制收盘位置）",
+        "outcome": "next_intraday",
+        "predictors": ("imb_last30", "clv_mid"),
+        "tested": 0,
+        "expected": "descriptive",
+        "return_units": True,
+    },
+    {
+        "id": "reversal_controlled",
+        "label": "次日盘中收益 ~ 收盘位置（控制尾盘不平衡度）",
+        "outcome": "next_intraday",
+        "predictors": ("clv_mid", "imb_last30"),
+        "tested": 0,
+        "expected": "<0",
+        "return_units": True,
+    },
+)
+
+
+def _l1_fit_row(
+    group: pd.DataFrame,
+    *,
+    scope: str,
+    entity: str,
+    model: dict,
+    minimum_observations: int,
+    minimum_years: int,
+) -> dict:
+    predictors = list(model["predictors"])
+    fields = [model["outcome"], *predictors]
+    sample = group[fields].replace([np.inf, -np.inf], np.nan).dropna()
+    years = sorted(set(sample.index.year))
+    enough = len(sample) >= minimum_observations and len(years) >= minimum_years
+    scale = 1e4 if model["return_units"] else 1.0
+    row = {
+        "范围": scope,
+        "品种或板块": entity,
+        "检验": model["id"],
+        "内容": model["label"],
+        "观测数": len(sample),
+        "年份数": len(years),
+        "起始日": str(sample.index.min().date()) if len(sample) else "",
+        "结束日": str(sample.index.max().date()) if len(sample) else "",
+        "最低样本要求满足": enough,
+        "预期方向": model["expected"],
+        "系数": np.nan,
+        "系数单位": "bp" if model["return_units"] else "ratio / imbalance unit",
+        "NW_t": np.nan,
+        "p_value": np.nan,
+        "BH_q": np.nan,
+        "差流动性状态下CLV斜率": np.nan,
+    }
+    if not enough:
+        return row
+    y = sample[model["outcome"]].to_numpy(dtype="float64")
+
+    def fit_term(term_index: int) -> tuple[float, float]:
+        ordered = [predictors[term_index]] + [
+            predictor for i, predictor in enumerate(predictors) if i != term_index
+        ]
+        return ols_hac(y, [sample[name].to_numpy(dtype="float64") for name in ordered], LAGS)
+
+    coefficient, t_stat = fit_term(model["tested"])
+    row.update(
+        {
+            "系数": coefficient * scale,
+            "NW_t": t_stat,
+            "p_value": math.erfc(abs(t_stat) / math.sqrt(2.0)) if np.isfinite(t_stat) else np.nan,
+        }
+    )
+    if model.get("interaction"):
+        base_clv, _ = fit_term(1)
+        row["差流动性状态下CLV斜率"] = (base_clv + coefficient) * scale
+    return row
+
+
+def _l1_model_rows(
+    panel: pd.DataFrame,
+    *,
+    scope: str,
+    entity: str,
+    minimum_observations: int,
+    minimum_years: int,
+    minimum_products_per_day: int = 1,
+) -> list[dict]:
+    rows = []
+    for model in L1_MODELS:
+        fields = [model["outcome"], *model["predictors"]]
+        complete = panel[fields].replace([np.inf, -np.inf], np.nan).dropna()
+        if minimum_products_per_day > 1:
+            grouped = complete.assign(交易日=complete.index).groupby("交易日")
+            complete = grouped.filter(lambda day: len(day) >= minimum_products_per_day)
+            series = complete.groupby("交易日")[fields].mean()
+            series.index = pd.DatetimeIndex(series.index)
+        else:
+            series = complete
+        rows.append(
+            _l1_fit_row(
+                series,
+                scope=scope,
+                entity=entity,
+                model=model,
+                minimum_observations=minimum_observations,
+                minimum_years=minimum_years,
+            )
+        )
+    return rows
+
+
+def run_all_l1(protocol: dict) -> None:
+    """按年池检验全部可用商品 L1 对流动性枯竭/提供假设的支持程度。"""
+    C.assert_research_only(C.RESEARCH_DIR)
+    C.assert_no_holdout_dates(pd.DatetimeIndex([pd.Timestamp("2021-12-31")]), "商品 L1 研究截止日")
+    stored_universe = load_universe()
+    universe = {year: members for year, members in stored_universe.items() if 2016 <= year <= 2021}
+    if FIRST_YEAR < 2016:
+        stats = pd.read_csv(C.UNIVERSE_DIR / "yearly_stats.csv")
+        C.assert_no_holdout_dates(
+            pd.to_datetime(stats["year"].astype(str) + "-01-01"), "商品年度品种池统计"
+        )
+        early_universe, _ = build_universe(stats, years=list(range(FIRST_YEAR, 2016)))
+        if early_universe[2015] != sorted(stored_universe[2015]):
+            raise ValueError("重建的 2015 商品研究池与已保存的品种池不一致")
+        universe = {
+            **{year: early_universe[year] for year in range(FIRST_YEAR, 2016)},
+            **universe,
+        }
+    pool_symbols = sorted({symbol for members in universe.values() for symbol in members})
+    daily_by_symbol = {}
+    for symbol in pool_symbols:
+        minute = load_shard(
+            symbol,
+            columns=["open", "openw", "closew", "trading_date"],
+        )
+        daily_by_symbol[symbol] = daily_bars(minute)
+    bars = wide_by_field(daily_by_symbol)
+    days = bars["open"].index
+    pool = S.pool_mask(universe, days, pool_symbols)
+    sector_table = json.loads(
+        (C.CONFIG_DIR / "research" / "time_factor_screen.json").read_text(encoding="utf-8")
+    )["sectors"]
+    sector_of = {
+        symbol: sector for sector, members in sector_table.items() for symbol in members
+    }
+    l1_paths = sorted(L1_DIR.glob("*.csv"))
+    if not l1_paths:
+        raise FileNotFoundError(f"没有商品 L1 汇总文件：{L1_DIR}")
+
+    l1_fields = {
+        "clv_mid",
+        "clv_last",
+        "spread_day",
+        "spread_last30",
+        "depth_day",
+        "depth_last30",
+        "imb_last30",
+    }
+    l1_by_symbol = {}
+    coverage_rows = []
+    for path in l1_paths:
+        symbol = path.stem.upper()
+        table = pd.read_csv(path, parse_dates=["trading_date"])
+        missing_fields = l1_fields - set(table.columns)
+        if missing_fields:
+            raise KeyError(f"{path} 缺少 L1 字段：{sorted(missing_fields)}")
+        table["trading_date"] = pd.to_datetime(table["trading_date"]).dt.normalize()
+        C.assert_no_holdout_dates(table["trading_date"], f"{symbol} 商品 L1 汇总")
+        if table["trading_date"].duplicated().any():
+            raise ValueError(f"{symbol} 商品 L1 汇总存在重复交易日")
+        table = table.set_index("trading_date").sort_index()
+        table["spread_ratio"] = table["spread_last30"] / table["spread_day"].where(
+            table["spread_day"] > 0
+        )
+        table["depth_ratio"] = table["depth_last30"] / table["depth_day"].where(
+            table["depth_day"] > 0
+        )
+        table["spread_worse"] = trailing_worse_state(
+            table["spread_ratio"], higher_is_worse=True
+        )
+        table["depth_worse"] = trailing_worse_state(
+            table["depth_ratio"], higher_is_worse=False
+        )
+        l1_by_symbol[symbol] = table
+
+    selected_symbols = sorted(set(l1_by_symbol) & set(pool_symbols))
+    unmapped = sorted(set(selected_symbols) - set(sector_of))
+    missing_bars = sorted(set(selected_symbols) - set(bars["open"].columns))
+    if unmapped or missing_bars:
+        raise ValueError(
+            f"L1 研究品种缺板块映射 {unmapped} 或研究分钟分片 {missing_bars}"
+        )
+
+    panel_rows = []
+    for path in l1_paths:
+        symbol = path.stem.upper()
+        l1 = l1_by_symbol[symbol]
+        in_pool = symbol in selected_symbols
+        if in_pool:
+            next_intraday = (
+                bars["closew"][symbol].shift(-1) - bars["openw"][symbol].shift(-1)
+            ) / bars["open"][symbol].shift(-1).where(
+                bars["open"][symbol].shift(-1) > 0
+            )
+            sample = l1.reindex(days)
+            sample = sample.assign(
+                next_intraday=next_intraday.reindex(days),
+                active_pool=pool[symbol].reindex(days).fillna(False),
+                symbol=symbol,
+                sector=sector_of[symbol],
+            )
+            sample = sample.loc[sample["active_pool"].astype(bool)].copy()
+            sample["clv_spread_interaction"] = sample["clv_mid"] * sample["spread_worse"]
+            sample["clv_depth_interaction"] = sample["clv_mid"] * sample["depth_worse"]
+            panel_rows.append(sample)
+        else:
+            sample = l1
+        base_valid = (
+            sample["clv_mid"].notna()
+            & (sample["next_intraday"].notna() if in_pool else False)
+        )
+        coverage_rows.append(
+            {
+                "品种": symbol,
+                "板块": sector_of.get(symbol, "未分类"),
+                "L1行数": len(l1),
+                "L1起始日": str(l1.index.min().date()) if len(l1) else "",
+                "L1结束日": str(l1.index.max().date()) if len(l1) else "",
+                "在研究池": in_pool,
+                "池内CLV及次日收益有效天数": int(base_valid.sum()),
+                "池内有效年份": int(
+                    len(set(sample.index[base_valid].year)) if in_pool else 0
+                ),
+                "缺失中间价CLV": int(l1["clv_mid"].isna().sum()),
+                "中间价CLV超出[0,1]": int(
+                    (l1["clv_mid"].lt(0) | l1["clv_mid"].gt(1)).sum()
+                ),
+                "缺失价差比": int(
+                    (l1["spread_ratio"].isna() | ~np.isfinite(l1["spread_ratio"])).sum()
+                ),
+                "缺失深度比": int(
+                    (l1["depth_ratio"].isna() | ~np.isfinite(l1["depth_ratio"])).sum()
+                ),
+            }
+        )
+    if not panel_rows:
+        raise ValueError("商品研究池与 L1 文件没有可交集品种")
+    panel = pd.concat(panel_rows).sort_index()
+    panel.index.name = "trading_date"
+
+    def adjust(rows: list[dict]) -> None:
+        result = pd.DataFrame(rows)
+        for _, indices in result.groupby(["范围", "检验"]).groups.items():
+            q_values = benjamini_hochberg_qvalues(result.loc[indices, "NW_t"])
+            for idx, value in q_values.items():
+                rows[idx]["BH_q"] = float(value) if pd.notna(value) else np.nan
+
+    def fit_all(sample_panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        symbol_rows = []
+        for symbol, group in sample_panel.groupby("symbol", sort=True):
+            symbol_rows.extend(
+                _l1_model_rows(
+                    group,
+                    scope="品种",
+                    entity=symbol,
+                    minimum_observations=L1_MIN_PRODUCT_OBSERVATIONS,
+                    minimum_years=L1_MIN_CALENDAR_YEARS,
+                )
+            )
+        sector_rows = []
+        for sector, group in sample_panel.groupby("sector", sort=True):
+            sector_rows.extend(
+                _l1_model_rows(
+                    group,
+                    scope="板块",
+                    entity=sector,
+                    minimum_observations=L1_MIN_SECTOR_OBSERVATIONS,
+                    minimum_years=L1_MIN_CALENDAR_YEARS,
+                    minimum_products_per_day=L1_MIN_SECTOR_PRODUCTS,
+                )
+            )
+        adjust(symbol_rows)
+        adjust(sector_rows)
+        return pd.DataFrame(symbol_rows), pd.DataFrame(sector_rows)
+
+    symbol_results, sector_results = fit_all(panel)
+    clipped_panel = panel.copy()
+    clipped_panel["clv_mid"] = clipped_panel["clv_mid"].clip(0.0, 1.0)
+    clipped_panel["clv_spread_interaction"] = (
+        clipped_panel["clv_mid"] * clipped_panel["spread_worse"]
+    )
+    clipped_panel["clv_depth_interaction"] = (
+        clipped_panel["clv_mid"] * clipped_panel["depth_worse"]
+    )
+    clipped_products, clipped_sectors = fit_all(clipped_panel)
+    L1_LIQUIDITY_OUT.mkdir(parents=True, exist_ok=True)
+    coverage = pd.DataFrame(coverage_rows)
+    symbol_results.to_csv(
+        L1_LIQUIDITY_OUT / "product_results.csv", index=False, encoding="utf-8-sig"
+    )
+    sector_results.to_csv(
+        L1_LIQUIDITY_OUT / "sector_results.csv", index=False, encoding="utf-8-sig"
+    )
+    clipped_products.to_csv(
+        L1_LIQUIDITY_OUT / "product_results_clipped_clv_sensitivity.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    clipped_sectors.to_csv(
+        L1_LIQUIDITY_OUT / "sector_results_clipped_clv_sensitivity.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    coverage.to_csv(
+        L1_LIQUIDITY_OUT / "coverage.csv", index=False, encoding="utf-8-sig"
+    )
+    effective = panel.loc[panel["clv_mid"].notna() & panel["next_intraday"].notna()]
+    summary = {
+        "sample_start": str(effective.index.min().date()),
+        "sample_end": str(effective.index.max().date()),
+        "l1_files": len(l1_paths),
+        "tested_products": int(panel["symbol"].nunique()),
+        "tested_sectors": int(panel["sector"].nunique()),
+        "pool_observations": len(effective),
+        "midpoint_clv_out_of_bounds_rows": int(
+            coverage["中间价CLV超出[0,1]"].sum()
+        ),
+        "read_partitions": [
+            "commodity research minute shards (daily bar fields only)",
+            "commodity annual universe and prior-year turnover statistics",
+            "commodity L1 close summaries",
+        ],
+        "oos_or_forward_data_read": False,
+    }
+    (L1_LIQUIDITY_OUT / "protocol.json").write_text(
+        json.dumps(
+            {"protocol": protocol, "sample": summary},
+            ensure_ascii=False,
+            indent=2,
+            default=float,
+        ),
+        encoding="utf-8",
+    )
+    print("商品 L1 流动性假设：品种级结果")
+    print(
+        symbol_results[
+            symbol_results["检验"].isin(
+                ["reversal", "spread_depletion", "depth_depletion", "spread_provision", "depth_provision"]
+            )
+        ][["品种或板块", "检验", "观测数", "系数", "NW_t", "BH_q", "最低样本要求满足"]]
+        .round(4)
+        .to_string(index=False)
+    )
+    print("商品 L1 流动性假设：板块级结果")
+    print(
+        sector_results[
+            sector_results["检验"].isin(
+                ["reversal", "spread_depletion", "depth_depletion", "spread_provision", "depth_provision"]
+            )
+        ][["品种或板块", "检验", "观测数", "系数", "NW_t", "BH_q", "最低样本要求满足"]]
+        .round(4)
+        .to_string(index=False)
+    )
+    print(f"样本与覆盖：{json.dumps(summary, ensure_ascii=False)}")
+    print(f"研究结果：{L1_LIQUIDITY_OUT}")
 
 
 def run_l1(protocol) -> None:
@@ -461,12 +947,21 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="收盘位置反转的经济机制检验")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--l1", action="store_true", help="只跑 L1 盘口部分")
+    mode.add_argument("--all-l1", action="store_true", help="用所有可用商品 L1 检验流动性枯竭/提供假设")
     mode.add_argument("--followup", action="store_true", help="盘口变差、持仓变化、换月和交割前平仓")
     args = parser.parse_args(argv)
-    protocol = load_protocol()
+    protocol = load_l1_liquidity_protocol() if args.all_l1 else load_protocol()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        (run_l1 if args.l1 else run_followup if args.followup else run_daily)(protocol)
+        (
+            run_all_l1
+            if args.all_l1
+            else run_l1
+            if args.l1
+            else run_followup
+            if args.followup
+            else run_daily
+        )(protocol)
 
 
 if __name__ == "__main__":

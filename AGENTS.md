@@ -1,6 +1,6 @@
 # AGENTS.md — working rules for this repository
 
-Read this before changing anything. It reflects the repo on 2026-10-26 (one live book: `market_clock_slow_short_20_60_120`).
+Read this before changing anything. It reflects the repo on 2026-10-27 (three frozen research books: two commodity and one index).
 If the code and this file disagree, trust the code, then update this file in the same change.
 
 **Research sample default (user decision 2026-10-26):** New commodity experiments, data pulls, and backtests default to the full 2011–2021 research window. For a comparable IF/IH/IC index panel, the research calendar starts on 2015-04-16, when all three are listed; exclude IM. Actual scored dates still depend on available data and required factor warmup; declare and report those limits. Existing preregistered results retain their original sample labels.
@@ -33,9 +33,9 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 - On commodities, `ts_low`, `ts_low − ts_high` and `dfp_*` have cross-sectional t > 3 at the close decision.
 - Only 1 of 115 cells passes the full predeclared gate (t, 5/6 years, 4/6 sectors), and 0 are allowed to pair.
 
-`strategies/catalog.py` lists the one live book. The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them.
+`strategies/catalog.py` lists two frozen commodity books; `strategies/index_catalog.py` lists one frozen IF/IH/IC book. The four long-only tail rules, their write-up and `backtest/index_market.py` were removed. Do not restore them.
 
-**Live book (frozen 2026-10-23).** Write-up `docs/guide.md`. The single strategy combines these two legs:
+**Original commodity book (frozen 2026-10-23).** Write-up `docs/guide.md`. This strategy combines these two legs:
 - Long leg: at the close, the five-factor market score must be > 0, and that name's main-versus-sub `annualized_yield` lagged one trading day must be strictly > 0. Weight +1.
 - Short leg, only on bear days: a name gets weight −1 when its own trend (mean sign of 20/60/120-day returns, (closew_t − closew_{t−n}) / close_{t−n}) is < 0 and its lagged carry is < 0.
 - Budget: |weight| × 1 × equity / pool width. A name is never in both legs on the same day (long needs carry > 0, short carry < 0).
@@ -44,8 +44,11 @@ Be honest about this in every report. Nothing in this repo is a proven deployabl
 
 The market bear rule and symbol short rule share `TREND_WINDOWS = (20, 60, 120)` in `strategies/market_clock_slow_short_20_60_120/__init__.py`. Both frozen JSON window fields are checked against this constant. Scoring begins on 2011-01-14; 2010 is factor warmup only.
 
+**Strict close-location replacements (frozen 2026-10-27).** The commodity book `commodity_close_location_reversal_strict_swap` replaces only the original five-factor long trigger with equal-weight pool CLV < 0.5; its lagged positive-carry filter and short leg are unchanged. The index book `index_close_location_reversal_strict_swap` makes the same one-for-one replacement for the equal-weight IF/IH/IC market signal and keeps the original carry filter and short leg. Their complete frozen rules are in their strategy JSON files. Both were frozen after overlapping research results had already been inspected; their research reruns are in-sample, not independent validation. Neither freeze authorizes OOS. Do not open 2022+ windows until the user explicitly names one.
+
 - **OOS records reset (user decision 2026-10-22).** The commodity OOS ledger (`data/commodity/oos/ledger.jsonl`) and every 2022+ result folder were cleared.
   - **User decision 2026-10-26: 2022–2025 is the out-of-sample window for the current strategy, which has never been run on it. Do not open any 2022+ window until the user says to start OOS.**
+    - The two strict CLV replacement books were frozen by explicit user decision on 2026-10-27 after overlapping research results had already been inspected. They also have no OOS results; this freeze does not satisfy the user's separate authorization to open an OOS window.
   - With the ledger empty, `--validation`, `--year` and `--oos` read the data again and write new entries; they no longer just print an old result.
 
 - **Roll yield.** RiceQuant `get_roll_yield(type="main_sub")`. `yield` = (main settlement − sub settlement) / sub settlement, verified against contract dailies on 3,840 research days (error 1e-17). 99.7% of rows have the main maturing before the sub; LR, JR, RI, RS, B, SF, PM, BB occasionally invert.
@@ -118,6 +121,12 @@ The market bear rule and symbol short rule share `TREND_WINDOWS = (20, 60, 120)`
     - *Roll and delivery.* The reversal is *weaker* in roll-heavy and pre-delivery-exit-heavy periods (wrong direction).
     - **Conclusion:** the reversal is robust and not mechanical, but its cause is still unidentified. Price pressure from liquidity, liquidation or rolling is not supported as the driver.
     - Per the predeclared rule, 2011–2015 L1 is **not** pulled: F1a has the wrong sign and the minute proxy does not track L1.
+- **Commodity L1 liquidity follow-up** (`research/close_location_mechanism.py --all-l1`, `config/research/commodity_l1_liquidity.json`, run 2026-10-27). Uses 42 downloaded commodity product L1 summaries plus research minute bars, restricted to each product's annual research-pool dates in 2011–2021. No 2022+ or 2026 data were read. 34 products meet the minimum 500 observations and 3 calendar years; 5 sectors meet the same effective-date threshold with at least two products per date.
+  - Low midpoint close location coincides with a wider last-30-minute spread relative to the day in 32/34 eligible products and all 5 eligible sectors after within-family Benjamini–Hochberg correction (q ≤ 0.10). Relative depth is significantly thinner in only 4/34 products and 2/5 eligible sectors.
+  - Next-session intraday reversal survives correction in CU, FG, JD and ZN, and in the ferrous-metals, non-ferrous-metals and chemicals sector aggregates. The weak-close × wider-spread interaction has no significant eligible result. The weak-close × thinner-depth interaction is significant only for chemicals in the expected direction (q = 0.074), while non-ferrous metals is significant in the opposite direction (q = 0.074); there are no eligible product-level interaction findings.
+  - Controlling for tail signed-volume imbalance, the close-location reversal remains significant in 15 products and 4 sectors. Tail signed-volume imbalance itself predicts same-direction continuation in agriculture, chemicals, and ferrous metals, not flow reversal.
+  - A post-hoc data-quality sensitivity clips midpoint close location to [0, 1] and reruns every model. The 42 source files contain 109 out-of-range rows; BB contains 18 extreme rows but is ineligible (220 pool observations, below the 500-day threshold). Clipping changes none of the eligible q ≤ 0.10 findings. The daily summaries do not retain the raw high/low tick series needed to diagnose every excursion.
+  - **Conclusion:** the L1 evidence supports close-time spread widening as a liquidity-stress correlate, but does not robustly confirm that liquidity provision causes the subsequent reversal. These are observational, overlapping research-period findings, not causal identification or OOS validation. The downloader stores daily L1 summaries only; they do not measure L2 depth.
 - **Index transfer test** (`research/index_market_clock.py`, `config/research/index_market_clock_transfer.json`, IF/IH/IC 2016–2021, run 2026-10-26). IM listed 2022-07-22, so it is outside the index research window and was not tested (user decision).
   - Carry is computed from contract dailies by `download/index/getIndexRollYield.py`. That rule reproduces RiceQuant commodity main_sub exactly on RB/CU/M 2018–2019: sub contract 1461/1461 days, annualized error < 2e-15. Main = `get_dominant(rule=0)`, which equals the shard dominant 100%. Sub = the largest same-day OI among contracts maturing after the main.
   - IC carry is > 0 on 99.6% of days; IF 83%, IH 73%.
@@ -166,7 +175,12 @@ The market bear rule and symbol short rule share `TREND_WINDOWS = (20, 60, 120)`
   | 2016–21 | main | 0.90 | 6.7% | −9.9% | 0.27 | −0.08 |
   | 2016–21 | long_carry | 1.19 | 6.6% | −6.0% | 0.15 | −0.36 |
 
-  Without carry the CLV long is just pool beta (long_only loses 2011–2015). Swapping the score for CLV changes nothing measurable (correlation 0.92, paired t 0.8). Not frozen; cannot open 2022+.
+  Without carry the CLV long is just pool beta (long_only loses 2011–2015). The original unfiltered exploratory book is not frozen. The later strict one-for-one replacement is a distinct, frozen ID; it remains in-sample and cannot open 2022+ without explicit user authorization.
+- **Three frozen-book comparison and attribution** (`research/commodity_close_location_reversal.py --three-book-comparison`, run 2026-10-27). All results use research partitions only and overlap previously examined samples. With historical fees and one tick per side:
+  - Commodity original (2011-01-14..2021-12-30): net Sharpe 1.03, annual 5.64%, max DD −6.48%.
+  - Commodity strict CLV replacement (same sample): net Sharpe 1.12, annual 6.21%, max DD −5.99%.
+  - Index strict CLV replacement (2015-04-20..2021-12-30): net Sharpe 0.88, annual 11.94%, max DD −26.35%; 2015 uses the fixed 0.2-point tick.
+  - Results and charts are in `runs/research/three_strategy_clv_comparison/`. Commodity signal-only, carry-only, signal-plus-carry, and short-only books are separate counterfactuals, not additive causal contributions. The actual ledger decomposes only into the combined long leg, short leg, and costs. IF/IH/IC are also shown as single-product books and as gross contributors to the shared portfolio; those are not independent replications.
 - **Index close-location candidate robustness** (`python -m research.index_close_location_candidate --robustness`, predeclared in `config/research/index_liquidity_mechanism.json` → `candidate_robustness`, run 2026-10-27). The registered gate verdict is unchanged (fail).
   - Same ledger, fees and 1 tick.
   - Candidate minus an exposure-matched constant long (0.48×): +12.5%/yr, NW t 3.31 (2016-01-13 start); t 3.21 (2016-01-04, including the January 2016 circuit-breaker days); t 2.50 (2015-04-16, including the 2015 crash, where the candidate's max drawdown is −33%).
@@ -222,9 +236,9 @@ Rules:
 src/tfcta/          library: config (paths, partitions, guards, factor signs), data (shards, universe,
                     rolls), factors, costs (fees, ticks, multipliers), prepare/ (sharding, ticks,
                     universe, factor caches)
-strategies/         market_clock_slow_short_20_60_120/: sole frozen commodity strategy;
-                    commodity_close_location_reversal/: exploratory commodity CLV book, not frozen;
-                    index_close_location_reversal/: exploratory IF/IH/IC strategy, not frozen;
+strategies/         market_clock_slow_short_20_60_120/: frozen commodity strategy;
+                    commodity_close_location_reversal/: exploratory CLV book plus frozen strict replacement;
+                    index_close_location_reversal/: exploratory IF/IH/IC candidate plus frozen strict replacement;
                     catalog.py: commodity books; index_catalog.py: separate index books
 backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, max_drawdown, newey_west_t,
                     deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
@@ -242,10 +256,10 @@ data/, runs/        gitignored; data inputs and all outputs
 
 `download/index/getTickL1Close.py` saves historical main-contract L1 ticks for IF/IH/IC during the research period to `data/index/external_rqdata/l1_ticks/` and produces daily L1 summaries. Its `--partition oos_locked` mode only prefetches raw 2022–2025 ticks to `data/index/external_rqdata/holdout_locked/l1_ticks/`, without summarizing or analyzing them. RiceQuant's historical index-futures API does not provide usable multi-level L2 depth. The index close-location mechanism diagnostic is `research/index_close_location_mechanism.py`, preregistered in `config/research/index_close_location_mechanism.json`.
 
-Commodity strategies are registered in `strategies/catalog.py` (`FROZEN_BOOKS` contains only frozen strategies; `commodity_close_location_reversal` is only in `BOOKS` and is always refused for 2022+). Index research strategies are registered separately in `strategies/index_catalog.py` to keep them out of the commodity `backtest.engine`. `index_close_location_reversal` is currently `exploratory_predeclared`; it only runs on the 2016–2021 research sample, is not frozen, and does not open OOS.
+The two frozen commodity strategies are registered in `strategies/catalog.py`; the frozen IF/IH/IC strategy is registered separately in `strategies/index_catalog.py`. Both markets' formal strategy ledgers run through `backtest.engine`; index research is restricted to 2015–2021. The original unfiltered `commodity_close_location_reversal` and simple `index_close_location_reversal` candidates remain exploratory and are not in the frozen registries. All frozen books still require explicit user authorization before any 2022+ window is opened.
 
 Outputs:
-- Strategy runs go to `runs/strategies/<id>/commodity/<research|oos|YYYY|YYYY-YYYY>/`. Each run writes `summary.csv`, `annual.csv`, `daily.csv`, `positions.csv` and `events.csv`, plus `plots/<name>/`.
+- Strategy runs go to `runs/strategies/<id>/<commodity|index>/<research|oos|YYYY|YYYY-YYYY>/`. Each run writes `summary.csv`, `annual.csv`, `daily.csv`, `positions.csv` and `events.csv`, plus `plots/<name>/`. The optional `--index-individuals` engine flag writes IF/IH/IC diagnostic ledgers beneath `index/individual/<symbol>/research/`.
 - Research studies go to `runs/research/<study>/` or `runs/index/<study>/`, with a `protocol.json`.
 
 ## 5. Environment and commands
@@ -257,6 +271,7 @@ Outputs:
 ```bash
 python -m pytest tests/test_research.py tests/test_index.py # focused example; use paths for changed behavior
 python -m backtest.engine --research                 # 2011–2021; runs all registered strategies unless one is named
+python -m backtest.engine index_close_location_reversal_strict_swap --research --index-individuals # IF/IH/IC ledgers, research only
 python -m backtest.engine --start 2016 --end 2021     # Frozen-period research window; results go to 2016-2021/ and are used by signal-level tests
 python -m backtest.engine market_clock_slow_short_20_60_120 --research  # Run only the named strategy
 python -m backtest.engine --research --by-year        # A separate 1e8 book for each year
@@ -272,14 +287,15 @@ python -m research.index_liquidity_mechanism         # index L1 + spot mechanism
 python -m download.index.getIndexSpot                # CSI300/SSE50/CSI500 dailies 2015-04-16..2021
 python -m download.index.getMemberRank               # CFFEX top-20 member long/short positions, IF/IH/IC 2015-04-16..2021
 python -m research.index_positioning_mechanism       # top-20 member positions and OI change vs the close-location reversal
-python -m research.index_close_location_candidate   # registered CLV<0.5 index candidate; research period only, not frozen
-python -m research.commodity_close_location_reversal # commodity CLV book, 3 declared variants vs frozen, 2011–21 and 2016–21
+python -m research.index_close_location_candidate   # exploratory long-only CLV diagnostic; not in the frozen index registry
+python -m research.commodity_close_location_reversal # exploratory commodity CLV book, 3 declared variants vs original, 2011–21 and 2016–21
+python -m research.commodity_close_location_reversal --three-book-comparison --overwrite # three frozen books, component attribution, and IF/IH/IC plots; research only
 python -m research.market_clock_mechanism            # components, range, close location, liquidity proxies, 2011–2021
 python -m download.index.getIndexRollYield           # IF/IH/IC carry from contract dailies, 2015–2021
 python -m research.time_factor_screen
 ```
 
-Every 2022+ command above is refused for any book that is not frozen. The live book is frozen; still, run none of them until the user says to start OOS. A window already opened only prints its saved result.
+Every 2022+ command above is refused for any book that is not frozen. Three books are currently frozen; still, run none of them until the user says to start OOS. A window already opened only prints its saved result.
 
 `TFCTA_DATA_ROOT`, `TFCTA_RUNS_ROOT`, `TFCTA_CONFIG_DIR` and `TFCTA_MINUTE_DIR` redirect paths. Use them only for tests and reproduction checks.
 
@@ -337,7 +353,7 @@ Data preparation order (README, Data preparation): `prepare/shard.py` → `prepa
   - The breaker drawdown metric in `daily.csv` resets its peak when a halt ends. Reported max drawdown (`max_drawdown`) does not.
 - **No-night days:** about 100 of the 1460 research days have no night session (post-holiday days, and the 2020 night suspension). On those days the full-day `ts_low`/`ts_high` market mean shifts by roughly −0.23/+0.18 sd, because the normalisation grid is shorter.
 - **Year-test factors:** `load_through_year` recomputes the five factors from 320 research days before 2022 onward. It asserts that the recomputed values equal the research cache on the last 60 research days. Keep `duration_factors`, `report_factors` and the cache on the same N250/M55 definition.
-- **Flow:** `backtest.engine.main` maps switches to `research.market_clock_slow_short_20_60_120.run_span(start, end, by_year)`, which loads data, calls the current book's `targets(data, columns)`, runs `simulate_target_lots`, writes results with `write_results` and prints beta/alpha from `summarize`.
+- **Flow:** `backtest.engine.main` routes commodity runs to `research.market_clock_slow_short_20_60_120.run_span(start, end, by_year)` and runs the frozen IF/IH/IC strategy and optional per-symbol diagnostics through the shared `simulate_target_lots` ledger and `write_results`. Research attribution scripts read those strategy outputs; they do not rerun the formal strategy ledger.
 - **Index L1:** The historical IF/IH/IC tick endpoint exposes usable bid/ask level 1 only; deeper quote columns observed on the probe day were zero. Do not label these data L2 or infer order-level flow.
 
 ## 8. Coding conventions
@@ -347,6 +363,7 @@ Data preparation order (README, Data preparation): `prepare/shard.py` → `prepa
   - Comment density is low; comments explain "why" and sample boundaries.
 - **Tests stay minimal.** Add a test only for a material behavior change or a high-risk invariant (look-ahead, sample/holdout guards, accounting, or a live strategy rule). Prefer one concise synthetic test that exercises the changed contract; do not add broad test matrices, duplicate coverage, tests for report wording/formatting, or tests for one-off exploratory analyses. Run the focused existing tests first; run the full suite only when a shared core contract changes or the focused tests indicate wider risk. Do not remove existing tests just to reduce the count without checking what production behavior they protect.
 - Prefer extending existing modules (`factors.py`, `engine.py`, `costs.py`) over new files.
+- Do not add code files when a related existing module is a suitable home; create a new code file only for a distinct responsibility.
 - Before adding a code file, check for a nearby module with the same responsibility; extend it when that keeps responsibilities clear, and create a separate file only for a genuinely distinct component.
   - Use one directory per strategy, with `__init__.py` plus `<id>.json`.
   - Delete dead code instead of leaving parallel versions. Git history is the archive.

@@ -1,0 +1,30 @@
+{
+  "name": "Frozen strategy components and index product breakdown",
+  "status": "post_hoc_research_only",
+  "declared_at": "2026-10-27",
+  "prior_information": "The three-book comparison and close-location results have already been inspected on overlapping research dates. These follow-ups are descriptive, post-hoc, and not independent validation.",
+  "sample": "Commodity research calendar 2011-01-01 through 2021-12-31. IF/IH/IC common-listing research calendar 2015-04-16 through 2021-12-31. Read only research shards, research fees/tick estimates, and research roll-yield data. Do not read 2022, 2023-2025 locked partitions, or 2026.",
+  "commodity_components": {
+    "books": ["market_clock_slow_short_20_60_120", "commodity_close_location_reversal_strict_swap"],
+    "counterfactuals": [
+      "Time signal only: original score or CLV long trigger with the carry filter removed; no short leg.",
+      "Carry only: positive lagged annualized roll-yield long filter with the score/CLV trigger removed; no short leg.",
+      "Time signal plus carry: the actual long leg, with the short leg removed.",
+      "Short only: the unchanged market-bear, own-trend, negative-carry short leg."
+    ],
+    "report": "Run each counterfactual as a separate 1e8 book with the same pool-width accounting, costs, and 10% breaker. Also show actual full-book PnL split into combined long leg (time signal AND carry), short leg, and costs. Counterfactual books are not additive; do not label them as causal attribution."
+  },
+  "index_products": {
+    "instruments": ["IF", "IH", "IC"],
+    "joint_book": "Keep the frozen three-index close-location signal and show each contract's gross PnL contribution inside the joint portfolio.",
+    "individual_books": "Run one standalone 1e8 book per contract, using that contract's own close location < 0.5 and lagged annualized_yield > 0 for longs. Use the same pooled IF/IH/IC bear-trend gate for the existing own-trend and negative-carry short rule. Apply the same costs, one-tick-per-side assumption, 10% breaker, and 10-day halt.",
+    "score_start": "2015-04-16 common listing; report actual first active date after required inputs.",
+    "costs": "Use the verified 0.2-point CFFEX tick in 2015; thereafter prior-year estimated tick. Historical index exchange fees.",
+    "plots": "Create one high-resolution chart per IF, IH, and IC showing standalone net NAV/drawdown and that instrument's cumulative gross contribution to the joint book; label the two series as different analyses."
+  },
+  "limitations": [
+    "A conjunction of signal and carry has no unique additive attribution. Report its actual joint long-leg PnL and the separate ablation portfolios, not an invented additive split.",
+    "IF, IH, and IC are highly correlated; the individual runs are not independent replications.",
+    "All results overlap previously examined research dates and are not OOS confirmation."
+  ]
+}
