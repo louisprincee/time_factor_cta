@@ -30,7 +30,7 @@
     },
     "duration_threshold": "55th percentile of absolute one-minute price changes over the prior 250 trading days, excluding the current day",
     "zscore": "per instrument and factor, trailing 250 observations excluding the current day, minimum 125, clipped to +/-3",
-    "roll_yield": "RiceQuant main_sub annualized_yield, lagged one trading day",
+    "roll_yield": "main_sub annualized_yield computed from contract daily settlement prices (download/index/getIndexRollYield.py): main = RiceQuant get_dominant rule 0, sub = the largest same-day open interest among contracts maturing after the main, yield = (main - sub) / sub, annualized by 365 / |maturity gap in days|; lagged one trading day",
     "short_trend_windows": [
       20,
       60,
@@ -47,5 +47,6 @@
     "margin_rate_assumption": 0.2,
     "decision": "close-known signal executed at the next trading day's first bar open; unchanged target keeps lots"
   },
-  "reporting": "Report both diagnostics and all six calendar-year results with costs. The commodity rule was selected after prior research-period comparisons, so this transfer test is not independent validation; do not tune or infer a deployable edge from this sample."
+  "reporting": "Report both diagnostics and all six calendar-year results with costs. The rule was set on commodities; this is a transfer test and is not used for tuning.",
+  "amended": "2026-10-26, before the first run: RiceQuant get_roll_yield returns None for index futures, so carry is computed from contract dailies with the rule that reproduces RiceQuant's commodity main_sub on RB, CU and M 2018-2019 (sub contract 1461/1461 days, annualized_yield error < 2e-15). IM is not tested: it listed 2022-07-22, outside the index research window. Known before running: IC carry is positive on 99.6% of days and IF/IH on 83%/73%, so the short leg can rarely trade IC."
 }

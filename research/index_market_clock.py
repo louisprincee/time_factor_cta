@@ -1,6 +1,7 @@
 """按预登记口径把多头基线和慢趋势策略迁移到 IF、IH、IC 研究期检验。"""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from backtest.engine import (
     max_drawdown,
     newey_west_t,
     performance,
+    plot_performance,
     sharpe_ratio,
     simulate_target_lots,
 )
@@ -36,13 +38,13 @@ from tfcta.factors import (
     timestamp_factors,
 )
 
-CONFIG_PATH = C.CONFIG_DIR / "research" / "index_market_clock_transfer.json"
+CONFIG_PATH = C.CONFIG_DIR / "research" / "index_market_clock_2015_2021.json"
 # 登记时的只做多书 market_clock_pool 已在 2026-10-23 删掉；它就是两条空头策略共用的多头腿，这里按多头腿单独算
 LONG_LEG = SimpleNamespace(ID="market_clock_pool", NAME="按池宽1倍（多头腿）", GROSS=S.GROSS)
-OUT = C.RUNS_DIR / "index" / "market_clock_transfer"
+OUT = C.RUNS_DIR / "index" / "market_clock_transfer_2015_2021"
 SYMBOLS = ("IF", "IH", "IC")
 FACTORS = ("ts_low", "ts_high", "dfp_top3", "ts_low_pm", "ts_high_pm")
-SCORE_START = pd.Timestamp("2016-01-04")
+SCORE_START = pd.Timestamp("2015-04-16")
 SCORE_END = pd.Timestamp("2021-12-31")
 WARMUP_START = pd.Timestamp("2015-01-01")
 THRESHOLD_LOOKBACK = 250
@@ -58,6 +60,7 @@ def load_protocol(path: Path = CONFIG_PATH) -> dict:
         or protocol.get("books") != [LONG_LEG.ID, S.BOOK.ID]
         or "Do not read 2022" not in protocol.get("sample", "")
         or "or 2026" not in protocol.get("sample", "")
+        or str(SCORE_START.date()) not in protocol.get("sample", "")
         or protocol.get("parameters", {}).get("factors") != list(FACTORS)
         or protocol.get("parameters", {}).get("factor_signs") != expected_signs
         or protocol.get("parameters", {}).get("short_trend_windows") != list(S.TREND_WINDOWS)
@@ -128,7 +131,9 @@ def _load_index_inputs():
     index = pd.DatetimeIndex(sorted(set.union(*(
         set(frame.index) for frame in bars_by_symbol.values()
     ))))
-    index = index[(index >= WARMUP_START) & (index <= SCORE_END)]
+    # IH、IC 2015-04-16 才上市：三品种比较从共同上市日开始，信号仍需滚动预热
+    common = max(frame.index.min() for frame in bars_by_symbol.values())
+    index = index[(index >= max(WARMUP_START, common)) & (index <= SCORE_END)]
     bars = {
         field: pd.DataFrame({
             symbol: frame[field].reindex(index)
@@ -180,7 +185,7 @@ def load_index_carry(index: pd.DatetimeIndex) -> pd.DataFrame:
 
 
 def require_index_carry_coverage(carry: pd.DataFrame, scored_index: pd.DatetimeIndex) -> None:
-    for year in range(SCORE_START.year, SCORE_END.year + 1):
+    for year in sorted(set(scored_index.year)):
         days = scored_index[scored_index.year == year]
         if days.empty:
             raise ValueError(f"{year} 年没有可评分的股指交易日")
@@ -191,13 +196,35 @@ def require_index_carry_coverage(carry: pd.DataFrame, scored_index: pd.DatetimeI
             raise ValueError(f"{year} 年股指展期收益覆盖不足（阈值 5%）：{detail}")
 
 
+def _trim_to_first_target(
+    returns: pd.DataFrame,
+    targets: dict[str, pd.DataFrame],
+) -> tuple[pd.DataFrame, pd.Timestamp]:
+    dates = [
+        frame.index[frame.ne(0).any(axis=1)][0]
+        for frame in targets.values()
+        if frame.ne(0).any(axis=1).any()
+    ]
+    if not dates:
+        raise ValueError("股指研究窗口没有任何非零目标，无法确定有效回测起点")
+    first_signal_date = min(dates)
+    trimmed = returns.loc[returns.index >= first_signal_date]
+    if trimmed.empty:
+        raise ValueError("首个非零目标日没有可用的下一开盘收益")
+    return trimmed, first_signal_date
+
+
 def _targets(index, bars, signed, carry):
-    universe = {year: list(SYMBOLS) for year in range(2015, SCORE_END.year + 1)}
+    universe = {year: list(SYMBOLS) for year in range(SCORE_START.year, SCORE_END.year + 1)}
     pool = S.pool_mask(universe, index, SYMBOLS)
+    # dfp_top3 要 250 日分钟历史，IF 约 2016-01、IH/IC 约 2016-04 才有；分数从五个因子都至少有一个品种有值的那天起算，
+    # 之前缺失（不交易）。各因子的 z 仍用各自完整历史
+    first = max(signed[name].dropna(how="all").index.min() for name in FACTORS)
+    scored = index[index >= first]
     score = S.market_score(
-        signed, universe, index,
+        signed, universe, scored,
         min_symbols=len(SYMBOLS),
-    )
+    ).reindex(index)
     lagged_carry = carry.reindex(index=index, columns=SYMBOLS).shift(1)
     long_decision = S.long_weights(score, lagged_carry)
     long_targets = long_decision.shift(1).fillna(0.0).where(pool, 0.0)
@@ -222,7 +249,7 @@ def _summary_row(strategy_id, name, daily, market):
     return {
         "策略ID": strategy_id,
         "策略": name,
-        "样本": "2016-01-04..2021-12-31",
+        "样本": f"{daily.index.min().date()}..{daily.index.max().date()}",
         "累计净收益": float(daily["权益"].iloc[-1] / INITIAL_CAPITAL - 1),
         "年化净收益": result["ann_return"],
         "年化波动": result["ann_vol"],
@@ -241,10 +268,50 @@ def _summary_row(strategy_id, name, daily, market):
     }
 
 
-def run() -> None:
+def write_plots(book_returns: pd.DataFrame, market_returns: pd.Series, out: Path = OUT) -> None:
+    """按商品账本的格式输出各策略净值/回撤图，并附股指基准对比图。"""
+    labels = {
+        LONG_LEG.ID: LONG_LEG.NAME,
+        S.BOOK.ID: S.BOOK.NAME,
+    }
+    for strategy_id, label in labels.items():
+        if strategy_id not in book_returns:
+            raise KeyError(f"股指日收益缺少策略：{strategy_id}")
+        plot_performance(
+            book_returns[strategy_id].rename(label),
+            out / "plots" / strategy_id,
+            title=f"整数手数：{label}，股指，1亿元、1倍敞口、20%保证金假设",
+        )
+    comparison = book_returns.rename(columns=labels).copy()
+    comparison["等权股指"] = market_returns.reindex(comparison.index)
+    plot_performance(
+        comparison,
+        out / "plots" / "comparison",
+        title="IF/IH/IC 股指迁移：策略与等权基准净值及回撤",
+    )
+
+
+def _existing_output_matches(protocol: dict) -> bool:
+    path = OUT / "protocol.json"
+    if not path.is_file():
+        return False
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    prior = saved.get("protocol", {})
+    return (
+        prior.get("name") == protocol.get("name")
+        and prior.get("instruments") == list(SYMBOLS)
+        and prior.get("books") == protocol.get("books")
+        and saved.get("calendar_start") == str(SCORE_START.date())
+    )
+
+
+def run(*, overwrite: bool = False) -> None:
     protocol = load_protocol()
     if (OUT / "summary.csv").exists():
-        raise FileExistsError(f"股指迁移结果已存在，不重复运行：{OUT}")
+        if not overwrite or not _existing_output_matches(protocol):
+            raise FileExistsError(
+                f"股指迁移结果已存在；仅可用 --overwrite 刷新同一研究协议的输出：{OUT}"
+            )
     S.BOOK.frozen()
 
     daily_index, bars, contracts, signed, ticks = _load_index_inputs()
@@ -262,6 +329,16 @@ def run() -> None:
     carry = load_index_carry(daily_index)
     require_index_carry_coverage(carry, returns.index)
     targets = _targets(daily_index, bars, signed, carry)
+    first_target_dates = {
+        strategy_id: (
+            str(target.index[target.ne(0).any(axis=1)][0].date())
+            if target.ne(0).any(axis=1).any()
+            else None
+        )
+        for strategy_id, target in targets.items()
+    }
+    returns, _ = _trim_to_first_target(returns, targets)
+    C.assert_no_holdout_dates(returns.index, what="预热后股指策略收益")
 
     fee_table = load_index_fees("research")
     fee_table = fee_table[fee_table["trading_date"] <= SCORE_END]
@@ -333,12 +410,15 @@ def run() -> None:
     pd.concat(events, ignore_index=True).to_csv(
         OUT / "events.csv", index=False, encoding="utf-8-sig"
     )
+    write_plots(pd.DataFrame(index_results), returns.mean(axis=1))
     (OUT / "protocol.json").write_text(
         json.dumps({
             "protocol": protocol,
-            "scored_start": str(returns.index.min().date()),
-            "scored_end": str(returns.index.max().date()),
-            "scored_days": len(returns),
+            "calendar_start": str(SCORE_START.date()),
+            "first_return_date": str(returns.index.min().date()),
+            "last_return_date": str(returns.index.max().date()),
+            "return_observations": len(returns),
+            "first_nonzero_target_date": first_target_dates,
             "instruments": list(SYMBOLS),
             "carry_coverage_by_year": {
                 str(year): {
@@ -347,7 +427,7 @@ def run() -> None:
                     ].notna().mean())
                     for symbol in SYMBOLS
                 }
-                for year in range(SCORE_START.year, SCORE_END.year + 1)
+            for year in sorted(set(returns.index.year))
             },
         }, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -358,4 +438,10 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(description="IF/IH/IC 当前策略迁移回测")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="仅当结果目录属于同一研究协议时，刷新已有输出",
+    )
+    run(overwrite=parser.parse_args().overwrite)

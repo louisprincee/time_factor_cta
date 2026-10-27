@@ -1,6 +1,8 @@
 # 策略
 
-当前只保留一条冻结的商品策略：**按池宽1倍加三窗口趋势空头**（`market_clock_slow_short_20_60_120`）。完整实现、多头和空头信号、规格核对都在 [`market_clock_slow_short_20_60_120/`](market_clock_slow_short_20_60_120/)；唯一策略由 [`catalog.py`](catalog.py) 登记。
+商品主线只保留一条冻结策略：**按池宽1倍加三窗口趋势空头**（`market_clock_slow_short_20_60_120`）。完整实现、多头和空头信号、规格核对都在 [`market_clock_slow_short_20_60_120/`](market_clock_slow_short_20_60_120/)；商品策略由 [`catalog.py`](catalog.py) 登记。
+
+股指主线独立登记一条尚未冻结的研究策略：**股指收盘位置反转**（`index_close_location_reversal`）。规则与规格在 [`index_close_location_reversal/`](index_close_location_reversal/)；由 [`index_catalog.py`](index_catalog.py) 单独登记，不能通过商品回测目录或 OOS 流程运行。实现只做研究期测试，当前规则未通过完整预登记门槛，因此不冻结、不打开 OOS。
 
 ## 规则
 
@@ -26,7 +28,9 @@
 
 ## 研究状态
 
-当前策略于 2026-10-23 冻结。它不是已证明可部署的优势；研究期表现不代表样本外证据。2022–2024 已经被看过，2025 尚未打开，任何 2022+ 测试都须由用户在当轮明确要求。**不读 2026。**
+当前策略于 2026-10-23 冻结。2022–2025 是它的样本外，从未用它运行过；用户说开始看样本外之前不打开。**不读 2026。**
+
+股指候选目前为 `exploratory_predeclared`：IF/IH/IC 等权收盘位置低于 0.5 时，下一交易日开盘等权做多 1 倍，否则空仓；沿用 10% 回撤熔断和停 10 个交易日。它在已看过的 2016–2021 研究期上没有通过预登记门槛，不能视作冻结策略或独立样本外验证。预登记的稳健性（`--robustness`）显示，相对同平均敞口的常数长仓超额 t 约 2.5–3.3，但 2015–2018 年 1 亿元资金会超过中金所日内开仓手数限制。运行 `python -m research.index_close_location_candidate` 只会读取股指研究分区。
 
 策略规则与研究结果见 [`docs/guide.md`](../docs/guide.md)。
 

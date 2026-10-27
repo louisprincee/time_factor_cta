@@ -1,0 +1,29 @@
+{
+  "id": "index_close_location_reversal",
+  "status": "exploratory_predeclared",
+  "declared_at": "2026-10-26",
+  "sample": "IF, IH, and IC only. Use 2015-04-16 through 2021-12-31 as the common-listing research calendar; score 2016-01-13 through 2021-12-31 so every scored year has prior-year tick estimates and results align with the existing index strategy comparison. Use only index research minute shards, research index fee history, and research-period tick estimates. Do not read 2022, 2023-2025 locked partitions, or 2026. The index strategy transfer and close-location mechanism have already been examined on overlapping research dates; all candidate results are exploratory, not out-of-sample validation.",
+  "hypothesis": "A weak market close, defined as the equal-weight mean close location below the fixed midpoint, predicts a positive next-open-to-next-open index return. A simple long-or-cash exposure rule may improve net risk-adjusted performance relative to a cost- and risk-matched equal-weight long basket.",
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "score_start": "2016-01-13",
+    "score_end": "2021-12-31",
+    "close_location": "For each index, (closew - loww) / (highw - loww); take the equal-weight mean across all three. closew/highw/loww are additive adjusted prices, so only their differences are used.",
+    "target_threshold": 0.5,
+    "target_rule": "At close t, if equal-weight market close location < 0.5, target +1 in each index; otherwise target 0. Weights are split equally by the shared ledger's pool-width accounting, producing 1x total gross exposure or cash.",
+    "execution": "Use close-t information to set the target for the next trading day's open; hold from that open to the following open.",
+    "gross_exposure_limit": 1.0,
+    "risk": "Use the shared 10% peak drawdown breaker and halt new positions for 10 trading days.",
+    "benchmark": "Equal-weight 1x long IF/IH/IC on every scored day, run through the same integer-lot ledger, historical fees, 1 tick per-side slippage, and drawdown breaker. Also report the equal-weight gross index return for context.",
+    "costs": "Historical index exchange fees and one tick per side, using the prior year's estimated tick; same assumptions for candidate and risk-matched benchmark.",
+    "hac_lags": 10
+  },
+  "decision_rules": [
+    "Report candidate and risk-matched equal-weight net return, net Sharpe, maximum drawdown, annual results, and paired daily excess-return Newey-West t statistic.",
+    "The predeclared research gate requires candidate net return above the risk-matched equal-weight benchmark, paired excess-return Newey-West t >= 2, and a less severe maximum drawdown.",
+    "The gross equal-weight return is contextual only and is not a like-for-like cost comparison.",
+    "Do not tune the threshold, exposure, or risk settings on this sample. A pass remains exploratory because the mechanism and index transfer were previously examined on overlapping dates.",
+    "Do not read or evaluate any 2022+ data."
+  ],
+  "limitations": "IF, IH, and IC are highly correlated and do not constitute three independent markets. The midpoint rule is motivated by previously observed research-period close-location reversal, so this is not a clean validation sample. No OOS data are opened."
+}

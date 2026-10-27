@@ -1,9 +1,10 @@
 # 时间因子 CTA
 
-根据兴业和国泰君安两份研报（`docs/` 下）构建的商品期货时间因子策略。回测都是整数手数账本，扣历史手续费和每边 1 跳滑点。
+根据兴业和国泰君安两份研报（`docs/` 下）开展商品和股指期货研究。回测使用整数手数账本，扣历史手续费和每边 1 跳滑点。
 
-- 当前只保留一条已冻结策略：按池宽1倍加三窗口趋势空头（`market_clock_slow_short_20_60_120`，2026-10-23 冻结）。多头和空头逻辑、因子与展期收益处理都在 [`strategies/market_clock_slow_short_20_60_120`](strategies/market_clock_slow_short_20_60_120/)。
-- 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。窗口是用户在看过同规则研究结果后选定的，不是新的样本外验证。
+- 商品主线保留一条已冻结策略：按池宽1倍加三窗口趋势空头（`market_clock_slow_short_20_60_120`，2026-10-23 冻结）。多头和空头逻辑、因子与展期收益处理都在 [`strategies/market_clock_slow_short_20_60_120`](strategies/market_clock_slow_short_20_60_120/)。
+- 股指另有一条已登记、尚未冻结的研究候选：`index_close_location_reversal`，仅针对 IF/IH/IC；单独列于 [`strategies/index_catalog.py`](strategies/index_catalog.py)，不混入商品回测注册表。
+- 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。
 - 策略规则、实现、研究期结果和研究局限见 [`docs/guide.md`](docs/guide.md)。
 
 ## 环境
@@ -19,16 +20,18 @@ conda activate factor-mining
 | 分区 | 日期 | 商品 | 股指 |
 |---|---|---|---|
 | 预热 | 2015 | 研究分片里，不计分 | 研究分片里，不计分 |
-| 研究期 | 2011–2021 | `data/commodity/minute_shards/research/`；用户 2026-10-23 决定账本从 2011 起算，2011–2015 品种池按同一门槛重建，2010 只做因子预热。2016–2021 是冻结时用的研究期 | `data/index/minute_shards/research/`，IF / IH / IC，2016–2021 |
-| 2022 | 2022 | `validation_2022/`；台账清空前已打开过，不是干净样本 | 锁在 `holdout_locked/`，不读 |
-| 2023 | 2023 | `holdout_locked/`；台账清空前已打开过，不是干净样本 | 同上 |
-| 2024 | 2024 | `holdout_locked/`；台账清空前已打开过，不是干净样本 | 同上 |
-| 2025 | 2025 | `holdout_locked/`；台账清空前没有打开记录 | 同上 |
+| 研究期 | 商品 2011–2021；股指 IF/IH/IC 从 2015-04-16 起 | `data/commodity/minute_shards/research/`；账本从 2011 起算，2011–2015 品种池按同一门槛重建，2010 只做因子预热 | `data/index/minute_shards/research/`；三品种共同研究期从 IF、IH、IC 均已上市的首日开始，实际评分日期还需满足数据覆盖和因子预热 |
+| 样本外 | 2022 | `validation_2022/`；当前策略从未运行过，用户说开始之前不打开 | 锁在 `holdout_locked/`，不读 |
+| 样本外 | 2023 | `holdout_locked/`；同上 | 同上 |
+| 样本外 | 2024 | `holdout_locked/`；同上 | 同上 |
+| 样本外 | 2025 | `holdout_locked/`；同上 | 同上 |
 | 前推 | 2026-01-01 起 | `data/commodity/data_min/` 里单独下载的 2026 文件，未分片，不读 | — |
 
 研究代码读到 2022 年及以后会抛 `HoldoutViolation`。策略冻结之后才能打开 2022 及以后，打开前先写台账：2022 记一条 `year_test`，2023 起通过 `final_evaluation`。台账在 `data/commodity/oos/ledger.jsonl`，作废记录用 `kind: void`。不读 2026。
 
-2026-10-22 按用户决定清空了商品 OOS 台账（`data/commodity/oos/ledger.jsonl`）和 2022 年及以后的结果文件。清空前，2022–2024 已经为当时的策略打开过，2025 没有打开记录。空台账不让任何年份变干净：2022–2024 重跑只算复现。台账空了以后，`--validation`、`--year`、`--oos` 会重新读数据、写新台账，不会只打印旧结果。
+2026-10-26 用户决定：2022–2025 是当前策略的样本外，当前策略从未在这几年运行过；用户说开始看样本外之前一律不打开。台账（`data/commodity/oos/ledger.jsonl`）目前是空的，打开时先写台账再读。
+
+2026-10-26 用户决定：商品新实验、拉数和回测默认研究日历区间为 2011–2021；股指可比组合排除 IM，IF/IH/IC 的共同研究期从 2015-04-16 开始（IF 于 2010 年上市，IH 和 IC 于 2015-04-16 上市）。滚动因子需按规格预热，结果文件与图表从首个非零目标日开始，不输出更早的预热日期。其他已登记研究结果保留原有样本标注。
 
 ## 数据准备
 
@@ -78,10 +81,21 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 
 ```bash
 python -m research.time_factor_screen          # 两份研报的时间戳和公允价偏离，商品截面和股指，2016–2021
-python -m research.gtja_time                   # 国泰君安持续期和行为时间戳，IF / IH / IC，2016–2021
-python -m research.market_clock_slow_short_factors  # 当前策略的信号检验；是已看过的研究期诊断
-python -m research.index_market_clock              # 当前策略迁移到 IF / IH / IC；缺股指展期收益，目前跑不了
-python -m research.index_kline                 # IF / IH / IC 研究期日 K 线图
+python -m research.market_clock_slow_short_factors  # 当前策略的信号层检验，研究期
+python -m research.index_market_clock              # IF / IH / IC 当前策略回测；仅输出首个信号日及之后的账本和净值/回撤图
+python -m research.index_market_clock --overwrite  # 同研究协议重写已有股指结果
+python -m research.index_close_location_candidate  # 已登记的 CLV<0.5 股指候选，只跑 2016–2021 研究期；未冻结、不读 OOS
+python -m research.index_close_location_candidate --robustness  # 候选的预登记稳健性：起始日、等敞口常数长仓、容量
+python -m research.index_liquidity_mechanism       # 股指 L1 逐笔加现货：期现基差、成交流量冲击分解、反弹时点
+python -m download.index.getIndexSpot              # 沪深300、上证50、中证500 现货日线，2015-04-16–2021
+python -m research.market_clock_mechanism         # 组成部分贡献图、振幅和收盘位置检验、分钟流动性代理，2011–2021
+python -m download.index.getIndexRollYield        # 用合约日线自算 IF / IH / IC 展期收益，2015–2021
+python -m research.close_location_mechanism [--l1] # 收盘位置反转的机制检验；--l1 用 L1 盘口汇总
+python -m download.commodity.getTickL1Close --pool # 商品研究池主力，2011–2021，只存每日 L1 汇总，可续跑
+python -m download.index.getTickL1Close            # IF/IH/IC 主力，2015-04-16–2021，保存全部 L1 tick 与日汇总，可续跑
+python -m download.index.getTickL1Close --symbols IF # 股指按品种分批下载；IH、IC 可用同样命令
+python -m research.index_close_location_mechanism   # 股指 L1 收盘位置与流动性机制诊断；使用预登记样本
+python -m download.index.getTickL1Close --partition oos_locked --start 2022-01-01 --end 2025-12-31 # 只存锁定期原始 tick，不生成汇总或分析
 ```
 
 检验规则先写在 `config/research/` 下的 JSON 里，再跑。结果在 `runs/research/<名字>/` 和 `runs/index/<名字>/`。
@@ -89,7 +103,7 @@ python -m research.index_kline                 # IF / IH / IC 研究期日 K 线
 ## 测试
 
 ```bash
-python -m pytest
+python -m pytest tests/research/test_index_market_clock.py tests/index/test_tick_l1.py
 ```
 
-测试用合成数据，不读真实的 2022 及以后行情。
+测试用合成数据，不读真实的 2022 及以后行情。日常改动只跑覆盖改动的必要测试；共享账本、成本或数据分区契约发生变化时才运行全套。
