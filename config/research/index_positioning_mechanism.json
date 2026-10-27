@@ -1,0 +1,37 @@
+{
+  "name": "股指收盘位置反转：前 20 名会员持仓和持仓量变化",
+  "status": "declared_test_not_a_strategy",
+  "declared_at": "2026-10-27",
+  "sample": "IF、IH、IC 研究期 2015-04-16 至 2021-12-31：股指研究分钟分片、合约日线持仓量（data/index/external_rqdata/*_contract_daily.pkl）、中金所前 20 名会员多空持仓（download.index.getMemberRank）。另报 2016-01-04 以后的子样本。只用股指期货数据，不用现货。不读 2022，不读 2023–2025，不读 2026。",
+  "question": "低位收盘是不是套保或机构集中加空造成的（期货收盘被压低，次日空头回补，价格反弹），还是多头被迫平仓造成的。两个故事对持仓变化的预测相反，用来区分",
+  "known_before": "股指上已看过：收盘位置对次日盘中收益 t −2.7（中间价同），反弹不在开盘后 30 分钟而在之后，成交流量冲击分解不预测。商品上：池子持仓减少日反转更强（−42.8bp，t −2.9，对增仓日 −20.0bp），交乘 t −1.2。会员持仓和股指持仓量还没有和收盘位置一起看过",
+  "definitions": {
+    "clv": "期货收盘位置 (closew − loww)/(highw − loww)，分钟分片日线，三品种等权",
+    "next_intraday": "次日开盘到收盘 (closew_{t+1} − openw_{t+1}) / open_{t+1}，三品种等权",
+    "fwd": "账本口径：次日开盘到再下一开盘",
+    "oi": "品种全部合约当日持仓量之和",
+    "d_oi": "log(oi_t / oi_{t−1})",
+    "top20_short_flow": "当日前 20 名空头会员的 volume_change 之和 / oi_{t−1}（这些会员今天的空头持仓减去他们昨天的）",
+    "top20_long_flow": "同上，多头",
+    "top20_net_flow": "top20_long_flow − top20_short_flow；< 0 表示大会员整体变得更偏空",
+    "market": "三品种等权平均，任一缺失则缺失",
+    "exclude": "当天或下一交易日是股指合约到期日（contract_maturity.csv 里的到期日）的日子不进任何回归，避免交割造成的持仓机械下降",
+    "stats": "市场层面 OLS，Newey–West t（滞后 5）；逐年斜率符号；1{·} 状态都用相对自身过去 250 个交易日（不含当天，至少 125 天）中位数"
+  },
+  "predictions": {
+    "hedging_pressure": [
+      "H1 当天：top20_short_flow 对 clv 的斜率 < 0（低位收盘那天大会员加空更多）；top20_net_flow 对 clv 的斜率 > 0",
+      "H2 次日回补：次日 top20_short_flow 对当天 clv 的斜率 > 0（低位收盘后第二天空头减少）；次日 top20_net_flow 对当天 clv 的斜率 < 0",
+      "H3 压力越大反弹越大：next_intraday 对 clv 和 top20_net_flow 同时回归，top20_net_flow 系数 < 0；clv × 1{大会员当天净加空高于中位} 交乘项 < 0",
+      "H4 增仓下跌：next_intraday 对 clv × 1{d_oi > 0} 的交乘项 < 0（新开仓日反转更强）"
+    ],
+    "forced_liquidation": [
+      "L1 与 H4 相反：clv × 1{d_oi < 0} 的交乘项 < 0（减仓日反转更强）",
+      "L2 低位收盘日 top20_long_flow 更负（大会员多头被迫减仓）：top20_long_flow 对 clv 的斜率 > 0"
+    ]
+  },
+  "pass": {
+    "rule": "只报告。每条报系数、NW t、95% 置信区间和 80% 功效最小可检出效应；|t| ≥ 2 且方向对记“支持”，方向反且 |t| ≥ 2 记“否定”，其余“不确定”。H 和 L 的结论分开写",
+    "note": "股指 2015-09 至 2019-04 有日内开仓手数限制和保证金上调，前 20 名会员持仓的变化可能受影响；子样本 2016+ 和逐年符号一起看"
+  }
+}

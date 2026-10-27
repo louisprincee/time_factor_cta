@@ -889,6 +889,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="按池宽1倍加三窗口趋势空头的整数手数回测。研究期随时可跑；2022 及以后要先冻结，先记台账再读。不读 2026。"
     )
+    parser.add_argument("strategy", nargs="?", help="策略 ID 或中文名，不给就是冻结策略")
     period = parser.add_mutually_exclusive_group()
     period.add_argument("--research", action="store_true", help="2011–2021（2011–2015 品种池按同一门槛重建）")
     period.add_argument("--validation", action="store_true", help="2022")
@@ -914,7 +915,12 @@ def main(argv=None):
         parser.error("要指定 --research、--validation、--oos、--year 或 --start/--end")
     if args.by_year and window[0] == window[1]:
         parser.error("--by-year 需要跨年的区间")
-    driver.run_span(*window, by_year=args.by_year)
+    from strategies.catalog import book_named
+    try:
+        book = book_named(args.strategy) if args.strategy else None
+    except ValueError as error:
+        parser.error(str(error))
+    driver.run_span(*window, by_year=args.by_year, book=book)
 
 
 if __name__ == "__main__":

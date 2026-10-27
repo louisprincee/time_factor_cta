@@ -2,6 +2,8 @@
 
 商品主线只保留一条冻结策略：**按池宽1倍加三窗口趋势空头**（`market_clock_slow_short_20_60_120`）。完整实现、多头和空头信号、规格核对都在 [`market_clock_slow_short_20_60_120/`](market_clock_slow_short_20_60_120/)；商品策略由 [`catalog.py`](catalog.py) 登记。
 
+商品另登记一条探索期策略：**商品收盘位置反转加趋势空头**（`commodity_close_location_reversal`）。池内等权收盘位置 < 0.5 时池内每个品种做多，空头腿与冻结策略相同，冲突以空头为准。在 `catalog.py` 的 `BOOKS` 里，不在 `FROZEN_BOOKS`，2022 及以后一律拒绝。
+
 股指主线独立登记一条尚未冻结的研究策略：**股指收盘位置反转**（`index_close_location_reversal`）。规则与规格在 [`index_close_location_reversal/`](index_close_location_reversal/)；由 [`index_catalog.py`](index_catalog.py) 单独登记，不能通过商品回测目录或 OOS 流程运行。实现只做研究期测试，当前规则未通过完整预登记门槛，因此不冻结、不打开 OOS。
 
 ## 规则

@@ -1,0 +1,31 @@
+{
+  "name": "Three-book close-location comparison",
+  "status": "declared_test_not_a_strategy",
+  "declared_at": "2026-10-27",
+  "sample": "Commodity research calendar 2011-01-01 through 2021-12-31; 2010 is factor and universe warmup only, and scored commodity data begin when all frozen factors are available. The IF/IH/IC research calendar is 2015-04-16 through 2021-12-31, the first date all three are listed; score from the first nonzero target after the prior-close signal. Read only commodity and index research partitions, research-period fees, ticks, and roll-yield data. Do not read 2022, 2023-2025 locked partitions, or 2026. All tested windows overlap previously inspected research and are in-sample, not OOS validation.",
+  "books": [
+    "market_clock_slow_short_20_60_120",
+    "commodity_close_location_reversal_strict_swap",
+    "index_close_location_reversal_strict_swap"
+  ],
+  "rules": {
+    "commodity_baseline": "Frozen commodity strategy as registered: five-factor market score > 0 and prior-day annualized roll yield > 0 for the long leg; unchanged trend-and-carry short leg.",
+    "commodity_close_location": "Replace only five-factor market score > 0 with equal-weight pool close location < 0.5. Keep the prior-day annualized roll-yield > 0 long filter, unchanged trend-and-carry short leg, pool-width sizing, next-open execution, and 10% drawdown breaker.",
+    "index_close_location": "Apply the same one-for-one replacement to the IF/IH/IC transfer: equal-weight index close location < 0.5 replaces the five-factor market score > 0. Keep prior-day index annualized roll-yield > 0 for longs, the original market/symbol trend and negative-carry short leg, pool-width sizing, next-open execution, and 10% drawdown breaker.",
+    "close_location": "For each instrument, (closew - loww) / (highw - loww), with additive-adjusted price differences only; use the equal-weight mean across the active commodity pool or IF/IH/IC."
+  },
+  "execution": {
+    "initial_capital": 100000000,
+    "gross_exposure_limit": 1.0,
+    "margin_rate_assumption": 0.2,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "commodity_costs": "Historical fees: by-money rate x1.01 and by-volume rate +0.01 CNY/lot; prior-year estimated tick, one tick per side. SHFE fees before 2013-10-08 use the approved 2013-10-08 backfill.",
+    "index_costs": "Historical index fees and one tick per side. Use the verified fixed 0.2-point CFFEX tick for the 2015 common-listing year because no prior-year tick history exists for IH/IC; thereafter use prior-year estimated ticks."
+  },
+  "reporting": {
+    "include": "Net performance, annual results, and additive daily PnL contributions by long leg, short leg, and actual transaction costs. Also split index gross PnL contribution by IF, IH, and IC. Preserve existing strategy registrations and outputs.",
+    "plots": "Legible high-resolution NAV/drawdown plots, annual contribution charts, and cumulative additive contribution charts. Contribution series are daily PnL divided by start-of-day equity and summed without compounding; actual book net returns are also reported separately.",
+    "selection_note": "The strict commodity substitution corresponds to the previously declared long_carry comparison variant. Selecting it for this request does not make the overlapping research sample clean."
+  }
+}

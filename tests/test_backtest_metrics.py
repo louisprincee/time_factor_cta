@@ -140,15 +140,25 @@ def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
     import research.market_clock_slow_short_20_60_120 as driver
 
     seen = []
-    monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False: seen.append(
+    monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False, book=None: seen.append(
         (start, end, by_year)))
     engine.main(argv)
     assert seen == [window]
 
 
+def test_cli_passes_a_named_exploratory_book(monkeypatch):
+    import research.market_clock_slow_short_20_60_120 as driver
+    from strategies import commodity_close_location_reversal as R
+
+    seen = []
+    monkeypatch.setattr(driver, "run_span", lambda *a, by_year=False, book=None: seen.append(book))
+    engine.main([R.BOOK.ID, "--research"])
+    assert seen == [R.BOOK]
+
+
 @pytest.mark.parametrize("argv", [
     [],     ["--start", "2018"], ["--year", "2019", "--by-year"], ["--research", "--strategy", "没有这条"],
-    ["按池宽1倍加三窗口趋势空头", "--research"],
+    ["没有这条", "--research"],
 ])
 def test_cli_rejects_incomplete_or_unknown_arguments(argv):
     with pytest.raises(SystemExit):
@@ -189,7 +199,7 @@ def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypa
 
 def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatch, tmp_path):
     import research.market_clock_slow_short_20_60_120 as driver
-    from strategies.catalog import BOOKS
+    from strategies.catalog import FROZEN_BOOKS as BOOKS
 
     _freeze_books(monkeypatch, tmp_path, BOOKS)
     ledger = tmp_path / "ledger.jsonl"
