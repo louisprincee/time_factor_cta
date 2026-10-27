@@ -28,7 +28,7 @@ SYMBOLS = ("IF", "IH", "IC")
 START, END = pd.Timestamp("2015-04-16"), pd.Timestamp(C.RESEARCH_END)
 SUB_START = pd.Timestamp("2016-01-04")
 LAGS = 5
-TAIL = pd.Timedelta(minutes=30)
+TAIL = pd.Timedelta(30, unit="min")
 MIN_MINUTES = 60
 IMPACT_WINDOW = 250
 
@@ -63,7 +63,7 @@ def tick_day_features(ticks: pd.DataFrame) -> dict:
     first, last = stamp.iloc[0], stamp.iloc[-1]
     day = pd.Timestamp(first).normalize()
     mid_open, mid_close = float(quotes["mid"].iloc[0]), float(quotes["mid"].iloc[-1])
-    at_1500 = quotes[stamp <= day + pd.Timedelta(hours=15)]
+    at_1500 = quotes[stamp <= day + pd.Timedelta(15, unit="h")]
     in_first30 = quotes[stamp <= first + TAIL]
     tail = quotes[stamp >= last - TAIL]
     head = quotes[stamp <= first + TAIL]

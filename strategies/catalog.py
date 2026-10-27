@@ -1,10 +1,10 @@
-"""当前冻结策略的注册表。"""
+"""商品策略注册表：冻结策略可开样本外，探索策略只能跑研究期。"""
 from __future__ import annotations
 
-from strategies import market_clock_slow_short_20_60_120
+from strategies import commodity_close_location_reversal, market_clock_slow_short_20_60_120
 
 FROZEN_BOOKS = (market_clock_slow_short_20_60_120.BOOK,)
-BOOKS = FROZEN_BOOKS
+BOOKS = FROZEN_BOOKS + (commodity_close_location_reversal.BOOK,)
 
 
 def book_named(name: str):

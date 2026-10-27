@@ -227,6 +227,90 @@ def run_robustness() -> None:
     print(f"稳健性结果：{ROBUST_OUT}")
 
 
+SHORT_LEG_PATH = C.CONFIG_DIR / "research" / "index_short_leg_2015_2021.json"
+SHORT_LEG_OUT = C.RUNS_DIR / "index" / "index_short_leg_2015_2021"
+
+
+def short_leg_targets(long_target: pd.DataFrame, bars: dict, carry: pd.DataFrame | None) -> pd.DataFrame:
+    """熊市日（池子 20/60/120 日趋势 < 0）品种自身趋势 < 0（且给了 carry 时滞后展期 < 0）→ −1；冲突时以空头为准。
+    收盘 t 已知的决策后移到下一开盘，与多头目标同口径。"""
+    from strategies import market_clock_slow_short_20_60_120 as T
+
+    index = long_target.index
+    symbols = list(SYMBOLS)
+    trend = T.symbol_trend(bars, symbols).reindex(index)
+    bear = T.market_trend(T.close_return(bars, symbols).reindex(index).mean(axis=1)).lt(0)
+    short = trend.lt(0)
+    if carry is not None:
+        short &= carry.reindex(index=index, columns=symbols).shift(1).lt(0)
+    short = short.mul(bear.astype(bool), axis=0).astype(bool).shift(1, fill_value=False)
+    return long_target.where(~short, -1.0)
+
+
+def run_short_leg() -> None:
+    """登记在 index_short_leg_2015_2021.json：候选、候选加展期空头腿、候选加趋势空头腿，两个起点。"""
+    load_protocol()
+    spec = json.loads(SHORT_LEG_PATH.read_text(encoding="utf-8"))
+    if "不读 2022" not in spec.get("sample", "") or "不读 2026" not in spec.get("sample", ""):
+        raise ValueError("样本口径必须写明不读 2022 以后和 2026")
+    daily_index, bars, contracts, _, ticks = M._load_index_inputs()
+    carry = M.load_index_carry(daily_index)
+    all_returns = (bars["openw"].shift(-1) - bars["openw"]) / bars["open"].where(bars["open"] > 0)
+    all_returns = all_returns.loc[all_returns.index <= SCORE_END].dropna(how="any")
+    C.assert_no_holdout_dates(all_returns.index, what="股指空头腿收益")
+    targets, _ = build_targets(bars, daily_index)
+    long_target = targets[CANDIDATE_ID]
+    books = {
+        "long": long_target,
+        "long_plus_carry_short": short_leg_targets(long_target, bars, carry),
+        "long_plus_trend_short": short_leg_targets(long_target, bars, None),
+    }
+    first_year = ticks[ticks["year"] == 2015].set_index("symbol")["tick"].reindex(list(SYMBOLS))
+    if not np.allclose(first_year.to_numpy(dtype=float), EXCHANGE_TICK):
+        raise ValueError(f"2015 年估计的 tick 不等于 {EXCHANGE_TICK}：{first_year.to_dict()}")
+    ticks_2015 = pd.concat([ticks[ticks["year"] != 2014],
+                            ticks[ticks["year"] == 2015].assign(year=2014)], ignore_index=True)
+    rows, annual = [], []
+    for label, start in (("2015-04-16 起", pd.Timestamp("2015-04-16")), ("2016-01-13 起", SCORE_START)):
+        index = all_returns.index[all_returns.index >= start]
+        market = all_returns.reindex(index).mean(axis=1)
+        nets = {}
+        for name, target in books.items():
+            daily, held, _ = simulate_book(target.reindex(index), index, bars, contracts, ticks_2015)
+            net = daily["净收益"].fillna(0.0)
+            nets[name] = net
+            summary = M._summary_row(name, name, daily, market)
+            short_days = int((held.groupby("交易日")["手数"].min() < 0).sum()) if not held.empty else 0
+            rows.append({"起点": label, **summary, "空头持仓日": short_days})
+            moves = (bars["openw"].shift(-1) - bars["openw"]).reindex(index=index, columns=list(SYMBOLS)).stack()
+            moves.index.names = ["交易日", "品种"]
+            pos = held.set_index(["交易日", "品种"])
+            pnl = pos["手数"] * pos["合约乘数"] * moves.reindex(pos.index).to_numpy()
+            short_pnl = pnl[pos["手数"] < 0].groupby(level="交易日").sum()
+            equity = daily["期初权益"]
+            for year, part in daily.groupby(daily.index.year):
+                sp = short_pnl[short_pnl.index.year == year]
+                annual.append({"起点": label, "账本": name, "年份": int(year),
+                               "净收益": float(part["权益"].iloc[-1] / part["期初权益"].iloc[0] - 1),
+                               "空头腿毛盈亏占期初权益": float((sp / equity.reindex(sp.index)).sum())})
+        for name in ("long_plus_carry_short", "long_plus_trend_short"):
+            diff = nets[name] - nets["long"]
+            rows.append({"起点": label, "策略ID": f"{name} − long", "策略": "配对超额",
+                         "年化净收益": float(diff.mean() * C.TRADING_DAYS_PER_YEAR), "alpha_NW_t": newey_west_t(diff, 10)})
+    SHORT_LEG_OUT.mkdir(parents=True, exist_ok=True)
+    table, annual = pd.DataFrame(rows), pd.DataFrame(annual)
+    table.to_csv(SHORT_LEG_OUT / "summary.csv", index=False, encoding="utf-8-sig")
+    annual.to_csv(SHORT_LEG_OUT / "annual.csv", index=False, encoding="utf-8-sig")
+    (SHORT_LEG_OUT / "protocol.json").write_text(json.dumps({"protocol": spec}, ensure_ascii=False, indent=2),
+                                                 encoding="utf-8")
+    pd.set_option("display.width", 240)
+    print(table[["起点", "策略ID", "年化净收益", "净Sharpe", "最大回撤", "相对等权股指beta", "alpha_NW_t",
+                 "熔断次数", "空头持仓日"]].round(3).to_string(index=False))
+    print(annual.pivot_table(index=["起点", "账本"], columns="年份", values="净收益").round(3).to_string())
+    print(annual.pivot_table(index=["起点", "账本"], columns="年份", values="空头腿毛盈亏占期初权益").round(3).to_string())
+    print(f"结果：{SHORT_LEG_OUT}")
+
+
 def _existing_output_matches(protocol: dict) -> bool:
     path = OUT / "protocol.json"
     if not path.is_file():
@@ -404,8 +488,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="IF/IH/IC 收盘位置长仓候选研究回测")
     parser.add_argument("--overwrite", action="store_true", help="重写同一预登记方案的研究输出")
     parser.add_argument("--robustness", action="store_true", help="登记过的稳健性检验 R1–R4，写到 robustness/")
+    parser.add_argument("--short-leg", action="store_true", help="候选加空头腿，2015–2021（登记在 index_short_leg_2015_2021.json）")
     cli = parser.parse_args()
-    if cli.robustness:
+    if cli.short_leg:
+        run_short_leg()
+    elif cli.robustness:
         run_robustness()
     else:
         run(overwrite=cli.overwrite)

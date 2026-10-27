@@ -4,6 +4,7 @@
 
 - 商品主线保留一条已冻结策略：按池宽1倍加三窗口趋势空头（`market_clock_slow_short_20_60_120`，2026-10-23 冻结）。多头和空头逻辑、因子与展期收益处理都在 [`strategies/market_clock_slow_short_20_60_120`](strategies/market_clock_slow_short_20_60_120/)。
 - 股指另有一条已登记、尚未冻结的研究候选：`index_close_location_reversal`，仅针对 IF/IH/IC；单独列于 [`strategies/index_catalog.py`](strategies/index_catalog.py)，不混入商品回测注册表。
+- 商品另有一条探索期策略：商品收盘位置反转加趋势空头（`commodity_close_location_reversal`），多头只看池内收盘位置 < 0.5，空头腿同冻结策略；只能跑研究期（`python -m backtest.engine commodity_close_location_reversal --research`，变体对照 `python -m research.commodity_close_location_reversal`）。
 - 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。
 - 策略规则、实现、研究期结果和研究局限见 [`docs/guide.md`](docs/guide.md)。
 
@@ -88,7 +89,12 @@ python -m research.index_close_location_candidate  # 已登记的 CLV<0.5 股指
 python -m research.index_close_location_candidate --robustness  # 候选的预登记稳健性：起始日、等敞口常数长仓、容量
 python -m research.index_liquidity_mechanism       # 股指 L1 逐笔加现货：期现基差、成交流量冲击分解、反弹时点
 python -m download.index.getIndexSpot              # 沪深300、上证50、中证500 现货日线，2015-04-16–2021
+python -m download.index.getMemberRank             # 中金所前 20 名会员多空持仓，IF / IH / IC，2015-04-16–2021
+python -m research.index_positioning_mechanism     # 会员持仓和持仓量变化与收盘位置反转的关系
+python -m research.index_positioning_mechanism --unabsorbed  # 没被大会员接住的卖压能否单独预测反弹
+python -m research.index_close_location_candidate --short-leg  # 股指候选加空头腿（展期版和纯趋势版），2015–2021
 python -m research.market_clock_mechanism         # 组成部分贡献图、振幅和收盘位置检验、分钟流动性代理，2011–2021
+python -m research.commodity_close_location_reversal --three-book-comparison  # 三策略严格替换对照及贡献图
 python -m download.index.getIndexRollYield        # 用合约日线自算 IF / IH / IC 展期收益，2015–2021
 python -m research.close_location_mechanism [--l1] # 收盘位置反转的机制检验；--l1 用 L1 盘口汇总
 python -m download.commodity.getTickL1Close --pool # 商品研究池主力，2011–2021，只存每日 L1 汇总，可续跑
@@ -99,11 +105,12 @@ python -m download.index.getTickL1Close --partition oos_locked --start 2022-01-0
 ```
 
 检验规则先写在 `config/research/` 下的 JSON 里，再跑。结果在 `runs/research/<名字>/` 和 `runs/index/<名字>/`。
+三策略对照的规格为 `config/research/three_strategy_clv_comparison.json`，入口并入 `research/commodity_close_location_reversal.py`，结果和高清图在 `runs/research/three_strategy_clv_comparison/`。它只替换五因子时间分数，保留原 carry 门槛、趋势空头和账本风控；结果属于重叠研究期的样本内分析，不是样本外验证。
 
 ## 测试
 
 ```bash
-python -m pytest tests/research/test_index_market_clock.py tests/index/test_tick_l1.py
+python -m pytest tests/test_research.py tests/test_index.py
 ```
 
 测试用合成数据，不读真实的 2022 及以后行情。日常改动只跑覆盖改动的必要测试；共享账本、成本或数据分区契约发生变化时才运行全套。

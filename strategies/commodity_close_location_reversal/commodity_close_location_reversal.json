@@ -1,0 +1,45 @@
+{
+  "id": "commodity_close_location_reversal",
+  "status": "exploratory_predeclared",
+  "declared_at": "2026-10-27",
+  "sample": "商品研究期 2011-01-14 至 2021-12-31（2010 只做预热，2011–2015 品种池按同一门槛重建），另报 2016–2021。不读取2022及2023年以后，不读 2026。",
+  "hypothesis": "用户要求：与股指收盘位置候选同一规则，只用收盘位置决定多头，并保留冻结商品策略的空头腿。全市场收在日内低位（池内等权收盘位置 < 0.5）之后次日反弹，多头不看展期；空头腿与冻结策略完全相同。",
+  "parameters": {
+    "long_signal": "池内等权收盘位置 (closew − loww)/(highw − loww) < 0.5 时池内每个品种 +1",
+    "long_rule": "market_clv < 0.5",
+    "long_threshold": 0.5,
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.0,
+    "gross_split": "pool",
+    "rebalance_on_count_change": false,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "short_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "short_rule": "symbol_trend < 0 and lagged annualized_yield < 0",
+    "short_weight": -1.0,
+    "bear_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "bear_rule": "market_trend < 0",
+    "conflict_rule": "short_overrides_long"
+  },
+  "comparison": {
+    "baseline": "冻结的 market_clock_slow_short_20_60_120，同一账本、成本和区间",
+    "report": "2011–2021 和 2016–2021 各一本 1 亿元账，三个变体全报：年化、净 Sharpe、最大回撤、beta、alpha、逐年；与冻结策略的配对日超额 NW t（滞后 10）；与冻结策略日收益相关",
+    "pass": "只报告，不作门槛，不调阈值，不按结果挑变体"
+  },
+  "costs": "历史手续费按金额 ×1.01、按手数 +0.01 元（上期所 2013-10-08 以前用 2013-10-08 费率往前沿用）；前一年估计 tick 每边 1 跳；持仓按所持合约的乘数",
+  "prior_information": "运行前已知：池内收盘位置和五因子分数日相关 −0.925；控制收盘位置后分数择时从 t 2.56 降到 0.06；收盘位置对池子下一段收益 t −3.42，11/11 年同号，最低五分之一组 +8.9bp、最高组 −4.6bp。冻结策略 2011–2021 净 Sharpe 1.03、2016–2021 1.29。这条规则是看到收盘位置吸收分数之后才提出的，研究期结果是事后的，不能当证据。",
+  "variants": {
+    "main": "登记规则本身：收盘位置多头（不看展期）+ 冻结空头腿，冲突以空头为准",
+    "long_carry": "对照：多头另要求滞后展期 > 0（即把冻结策略的五因子分数换成收盘位置，其余不变）",
+    "long_only": "对照：只有收盘位置多头，没有空头腿"
+  }
+}

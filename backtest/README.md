@@ -41,3 +41,23 @@ python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 `runs/strategies/<id>/commodity/<区间>/`，区间是 `research`（2011–2021）、`oos`、单年 `2019`，或 `2016-2021` 这样的起止年。每个区间里有 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv`，净值图在 `plots/<策略名>/`。研究期每条还写一份 `runs/research/<id>/protocol.json`（当时的规格）。
 
 绩效函数 `performance`、`sharpe_ratio`、`max_drawdown`、`newey_west_t`、`deflated_sharpe`、`pbo_cscv` 也在 `backtest/engine.py`。
+
+## 三策略收盘位置替换对照
+
+运行 `python -m research.commodity_close_location_reversal --three-book-comparison`，研究规格在 `config/research/three_strategy_clv_comparison.json`。此研究只比较三本账，不改策略目录登记：
+
+1. 商品冻结原策略，2011–2021；
+2. 商品严格替换版：仅将五因子时间分数 `> 0` 换为池内等权收盘位置 `< 0.5`，原有滞后一日 carry > 0 多头门槛、趋势空头、预算、执行和风控不变；
+3. IF/IH/IC 严格替换版：对股指迁移策略作相同替换，保留其 carry 多头门槛与趋势空头，日历从三品种共同上市日 2015-04-16 起。实际首个有目标的收益日为 2015-04-20。
+
+三个结果均使用 1 亿元账本、10% 回撤熔断、历史手续费和每边 1 跳滑点。股指 2015 年因 IH/IC 没有上一年估计 tick，按已核实的中金所固定 tick 0.2 点计；其后使用上一年估计 tick。实际结果（研究期、样本内）：
+
+| 策略 | 计分区间 | 年化净收益 | 净 Sharpe | 最大回撤 | 年化成本占权益 |
+|---|---|---:|---:|---:|---:|
+| 商品原策略 | 2011-01-14–2021-12-30 | 5.64% | 1.03 | −6.48% | 3.13% |
+| 商品仅替换为收盘位置 | 2011-01-14–2021-12-30 | 6.21% | 1.12 | −5.99% | 3.16% |
+| 股指仅替换为收盘位置 | 2015-04-20–2021-12-30 | 11.94% | 0.88 | −26.35% | 0.93% |
+
+贡献按实际整数手持仓的多头、空头毛盈亏拆分，实际交易成本单列，并校验各项可逐日复算账本净收益；IF、IH、IC 另分别拆分。年度贡献图采用“逐日 PnL / 当日期初权益”累加，不复利，因此与复利后的年度净收益不同。图表和明细位于 `runs/research/three_strategy_clv_comparison/`，包括 `plots/comparison/nav_comparison.png`、`plots/commodity_annual_contributions.png`、`plots/index_annual_symbol_contributions.png` 和 `plots/cumulative_leg_contributions.png`。比较入口与原商品 CLV 研究合并在 `research/commodity_close_location_reversal.py` 中，使用 `--three-book-comparison` 区分运行模式。
+
+这些窗口都与此前研究日期重叠，不是样本外验证。股指按 1 亿元运行时未建模历史中金所开仓限额；2015–2018 年潜在手数可能超过限额，不能把该段账本结果视为可执行容量或实盘表现。研究只读取商品 2011–2021、股指 2015–2021 研究分区，不读取 2022+ 或 2026。

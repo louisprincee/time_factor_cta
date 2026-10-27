@@ -172,15 +172,15 @@ def _show_saved(period, book) -> bool:
     return True
 
 
-def run_span(start: int, end: int, by_year: bool = False, ledger=None) -> None:
-    """一段年份一本账。2022 及以后要先冻结，先记台账再读；打开过的窗口只打印。"""
+def run_span(start: int, end: int, by_year: bool = False, ledger=None, book=None) -> None:
+    """一段年份一本账。2022 及以后要先冻结，先记台账再读；打开过的窗口只打印。book 默认冻结策略。"""
     start, end = int(start), int(end)
-    book = S.BOOK
+    book = book or S.BOOK
     if start > end or start < C.EARLY_START.year or end > C.DEFAULT_OOS_END.year:
         raise C.HoldoutViolation(f"回测年份必须落在 {C.EARLY_START.year}–2025，收到 {start}–{end}。不读 2026。")
     if by_year and start != end:
         for year in range(start, end + 1):
-            run_span(year, year, ledger=ledger)
+            run_span(year, year, ledger=ledger, book=book)
         return
     period = _period_for(start, end)
     if end <= C.RESEARCH_END.year:
