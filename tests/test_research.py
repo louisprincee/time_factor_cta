@@ -61,9 +61,9 @@ def test_index_run_writes_per_book_and_comparison_performance_plots(tmp_path):
 
     write_plots(returns, market, tmp_path)
 
-    assert (tmp_path / "plots" / "market_clock_pool" / "performance.png").is_file()
-    assert (tmp_path / "plots" / "market_clock_slow_short_20_60_120" / "performance.png").is_file()
-    assert (tmp_path / "plots" / "comparison" / "performance.png").is_file()
+    assert (tmp_path / "plots" / "market_clock_pool.png").is_file()
+    assert (tmp_path / "plots" / "market_clock_slow_short_20_60_120.png").is_file()
+    assert (tmp_path / "plots" / "comparison.png").is_file()
 
 
 def test_backtest_outputs_start_on_first_nonzero_target_date():
@@ -144,7 +144,7 @@ from research.index_close_location_candidate import (
     build_targets,
     load_protocol as load_candidate_protocol,
 )
-from strategies.index_close_location_reversal import STRICT_SWAP_BOOK, strict_swap_targets
+from strategies.index_close_location import STRICT_SWAP_BOOK, strict_swap_targets
 from strategies.catalog import BOOKS as COMMODITY_BOOKS
 from strategies.index_catalog import BOOKS as INDEX_BOOKS, book_named
 

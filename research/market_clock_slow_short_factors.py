@@ -17,7 +17,7 @@ from backtest.engine import (
 )
 from research.market_clock_slow_short_20_60_120 import pool_open_return, sectors, simulate, summarize
 from research.time_factor_screen import ols_hac
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from strategies.catalog import FROZEN_BOOKS
 from tfcta import config as C
 
@@ -152,7 +152,7 @@ def decomposition(data, alpha_lags):
 def book_returns(data):
     out = {}
     for book in FROZEN_BOOKS:
-        path = C.RUNS_DIR / "strategies" / book.ID / "commodity" / "2016-2021" / "daily.csv"   # 信号层检验只看 2016–2021
+        path = C.RUNS_DIR / "strategies" / book.ID / "2016-2021" / "daily.csv"   # 信号层检验只看 2016–2021
         if not path.is_file():
             raise FileNotFoundError(f"{book.NAME} 还没有 2016–2021 结果，先跑 python -m backtest.engine --start 2016 --end 2021")
         daily = pd.read_csv(path, parse_dates=["交易日"]).set_index("交易日")

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from strategies import market_clock_slow_short_20_60_120 as T
+from strategies import commodity_original as T
 
 SYMBOLS = ("IF", "IH", "IC")
 TARGET_THRESHOLD = 0.5
@@ -14,7 +14,7 @@ GROSS = 1.0
 DRAWDOWN_LIMIT = 0.10
 HALT_DAYS = 10
 ID = "index_close_location_reversal"
-NAME = "股指收盘位置反转（研究候选）"
+NAME = "股指收盘位置候选策略"
 CONFIG_PATH = Path(__file__).with_name(f"{ID}.json")
 STATUS = "exploratory_predeclared"
 STRICT_SWAP_ID = "index_close_location_reversal_strict_swap"
@@ -124,7 +124,7 @@ def strict_swap_targets(
 
 class StrictSwapBook:
     ID = STRICT_SWAP_ID
-    NAME = "股指原策略（仅将分数换成收盘位置）"
+    NAME = "股指收盘位置策略"
     SYMBOLS = SYMBOLS
     GROSS = GROSS
     DRAWDOWN_LIMIT = DRAWDOWN_LIMIT
@@ -166,7 +166,7 @@ class StrictSwapBook:
             or "Do not read 2022" not in config.get("sample", "")
             or "do not read 2026" not in config.get("sample", "").lower()
         ):
-            raise ValueError("股指严格替换冻结规格与实现不一致")
+            raise ValueError("股指收盘位置策略冻结规格与实现不一致")
         return config
 
     @staticmethod

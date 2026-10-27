@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from strategies.market_clock_slow_short_20_60_120 import FACTORS
+from strategies.commodity_original import FACTORS
 from tfcta import config as C
 from tfcta.costs import (
     INDEX_MULTIPLIER, MULTIPLIER, contract_multiplier_overrides, estimate_ticks, fee_tables,
@@ -906,7 +906,7 @@ def _run_index_individuals(
     carry: pd.DataFrame,
     ticks: pd.DataFrame,
 ) -> None:
-    from strategies.index_close_location_reversal import (
+    from strategies.index_close_location import (
         STRICT_SWAP_BOOK,
     )
 
@@ -945,7 +945,7 @@ def _run_index_individuals(
         )
         individual = SimpleNamespace(
             ID=STRICT_SWAP_BOOK.ID,
-            NAME=f"{symbol} 独立 CLV + 展期 + 空头（事后研究）",
+            NAME=f"{symbol} 单品种收盘位置策略",
             DETAIL=(
                 "事后单品种诊断：该品种收盘位置替代共同市场分数；"
                 "多头保留滞后正展期，空头沿用 IF/IH/IC 共同市场熊市门槛"
@@ -976,7 +976,7 @@ def run_index_research(
         raise C.HoldoutViolation(
             f"股指回测仅允许 {INDEX_RESEARCH_START.year}–{INDEX_RESEARCH_END.year} 研究期"
         )
-    from strategies.index_close_location_reversal import STRICT_SWAP_BOOK
+    from strategies.index_close_location import STRICT_SWAP_BOOK
 
     STRICT_SWAP_BOOK.frozen()
     index, bars, contracts, carry, ticks = _load_index_research_inputs()
@@ -999,13 +999,13 @@ def run_index_research(
         key: frame.reindex(index=index, columns=INDEX_SYMBOLS)
         for key, frame in bars.items()
     }
-    from strategies.index_close_location_reversal import market_close_location
+    from strategies.index_close_location import market_close_location
 
     market_clv = market_close_location(strategy_bars, index)
     targets = STRICT_SWAP_BOOK.targets(market_clv, strategy_bars, carry)
     active = targets.reindex(returns.index).ne(0.0).any(axis=1)
     if not active.any():
-        raise ValueError("股指严格替换策略在请求区间没有非零目标")
+        raise ValueError("股指收盘位置策略在请求区间没有非零目标")
     scored_index = returns.index[returns.index >= active.index[active][0]]
     if include_individuals and (start, end) != (
         INDEX_RESEARCH_START.year,
@@ -1069,7 +1069,14 @@ def period_layout(period) -> tuple[int, int, str, str]:
     raise ValueError(f"不认识的区间 {period!r}")
 
 
-def plot_performance(returns, out_dir, title="净值与最大回撤", series=None) -> Path:
+def plot_performance(
+    returns,
+    out_dir,
+    title="净值与最大回撤",
+    series=None,
+    *,
+    filename="performance.png",
+) -> Path:
     """日收益（列为策略）→ 净值和回撤同一张图，写到 out_dir/performance.png。"""
     import matplotlib
     matplotlib.use("Agg")
@@ -1108,7 +1115,7 @@ def plot_performance(returns, out_dir, title="净值与最大回撤", series=Non
     fig.tight_layout()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "performance.png"
+    path = out_dir / filename
     fig.savefig(path, dpi=130)
     plt.close(fig)
     return path
@@ -1189,17 +1196,19 @@ def write_results(
             "平仓笔数": int(part["平仓笔数"].sum()),
         })
 
-    result_dir = C.RUNS_DIR / "strategies" / strategy.ID / market
+    result_dir = C.RUNS_DIR / "strategies" / strategy.ID
     if result_subdirectory is not None:
         result_dir /= result_subdirectory
     result_dir /= folder
     result_dir.mkdir(parents=True, exist_ok=True)
     plot_performance(
-        returns.rename(label), result_dir / "plots" / label,
+        returns.rename(label),
+        result_dir / "plots",
         title=(
             f"{title}整数手数：{label}，{'股指' if market == 'index' else '商品'}，"
             f"1亿元、{float(strategy.GROSS):.1f}倍敞口、20%保证金假设"
         ),
+        filename="performance.png",
     )
     tables = {
         "summary.csv": pd.DataFrame([summary]),
@@ -1272,7 +1281,7 @@ def main(argv=None):
                 if market == "index":
                     raise ValueError(f"{args.strategy!r} 是商品策略，不能用于股指回测")
         elif market == "index":
-            from strategies.index_close_location_reversal import STRICT_SWAP_BOOK
+            from strategies.index_close_location import STRICT_SWAP_BOOK
 
             book = index_book_named(STRICT_SWAP_BOOK.ID)
         else:

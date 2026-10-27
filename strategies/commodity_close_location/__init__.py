@@ -1,4 +1,4 @@
-"""商品收盘位置策略：原探索规则与冻结的严格替换规则。
+"""商品收盘位置策略及其未过滤探索版本。
 
 多头：池内等权收盘位置 < 0.5 时池内每个品种 +1，与股指候选同一规则，不用五个时间因子，也不看展期。
 空头：与冻结的 market_clock_slow_short_20_60_120 完全相同，直接复用它的函数；同一品种同一天多空冲突时以空头为准。
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from tfcta import config as C
 
 LONG_THRESHOLD = 0.5
@@ -91,7 +91,7 @@ def check_config(config: dict, strategy_id: str) -> dict:
 
 class Book:
     ID = "commodity_close_location_reversal"
-    NAME = "商品收盘位置反转加趋势空头（探索）"
+    NAME = "商品收盘位置反转探索策略"
     GROSS = S.GROSS
     CONFIG_PATH = Path(__file__).with_name("commodity_close_location_reversal.json")
     DETAIL = (
@@ -117,7 +117,7 @@ class Book:
 
 class StrictSwapBook:
     ID = STRICT_SWAP_ID
-    NAME = "商品原策略（仅将分数换成收盘位置）"
+    NAME = "商品收盘位置策略"
     GROSS = S.GROSS
     CONFIG_PATH = STRICT_SWAP_CONFIG_PATH
     DETAIL = (

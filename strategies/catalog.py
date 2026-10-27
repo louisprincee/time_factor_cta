@@ -1,11 +1,11 @@
 """商品策略注册表：冻结策略可开样本外，探索策略只能跑研究期。"""
 from __future__ import annotations
 
-from strategies import commodity_close_location_reversal, market_clock_slow_short_20_60_120
+from strategies import commodity_close_location, commodity_original
 
 FROZEN_BOOKS = (
-    market_clock_slow_short_20_60_120.BOOK,
-    commodity_close_location_reversal.STRICT_SWAP_BOOK,
+    commodity_original.BOOK,
+    commodity_close_location.STRICT_SWAP_BOOK,
 )
 BOOKS = FROZEN_BOOKS
 
@@ -15,6 +15,6 @@ def book_named(name: str):
     key = str(name).strip()
     matches = [book for book in BOOKS if key in (book.ID, book.NAME)]
     if len(matches) != 1:
-        known = "、".join(f"{book.NAME}（{book.ID}）" for book in BOOKS)
+        known = "、".join(book.NAME for book in BOOKS)
         raise ValueError(f"未知策略 {key!r}；当前策略：{known}")
     return matches[0]

@@ -19,7 +19,7 @@ import pandas as pd
 from backtest.engine import PERIODS, ledger_inputs, load_research, newey_west_t, sharpe_ratio
 from research.market_clock_slow_short_20_60_120 import pool_open_return, sectors, simulate, summarize
 from research.time_factor_screen import ols_hac
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from tfcta import config as C
 from tfcta.data import load_shard
 

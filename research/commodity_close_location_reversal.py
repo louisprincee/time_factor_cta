@@ -3,7 +3,7 @@
     python -m research.commodity_close_location_reversal
     python -m research.commodity_close_location_reversal --three-book-comparison
 
-规格在 strategies/commodity_close_location_reversal/commodity_close_location_reversal.json。
+规格在 strategies/commodity_close_location/commodity_close_location_reversal.json。
 结果在 runs/research/commodity_close_location_reversal/。不读 2022 及以后，不读 2026。
 """
 from __future__ import annotations
@@ -20,9 +20,9 @@ import pandas as pd
 from backtest.engine import INITIAL_CAPITAL, ledger_inputs, newey_west_t, plot_performance
 from research import index_market_clock as M
 from research import market_clock_slow_short_20_60_120 as D
-from strategies import commodity_close_location_reversal as R
-from strategies import index_close_location_reversal as IX
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_close_location as R
+from strategies import index_close_location as IX
+from strategies import commodity_original as S
 from tfcta import config as C
 
 OUT = C.RUNS_DIR / "research" / R.BOOK.ID
@@ -78,7 +78,7 @@ def run() -> None:
     print(f"结果：{OUT}")
 
 
-# 三策略严格替换比较与多空、品种贡献归因。
+# 三策略对比与多空、品种贡献归因。
 CONFIG_PATH = C.CONFIG_DIR / "research" / "three_strategy_clv_comparison.json"
 FOLLOWUP_CONFIG_PATH = C.CONFIG_DIR / "research" / "three_strategy_contribution_followup.json"
 COMPARISON_OUT = C.RUNS_DIR / "research" / "three_strategy_clv_comparison"
@@ -89,8 +89,13 @@ INDEX_START = pd.Timestamp("2015-04-16")
 INDEX_END = pd.Timestamp("2021-12-31")
 BOOK_LABELS = {
     "commodity_original": "商品原策略",
-    "commodity_clv_swap": "商品策略（仅时间换收盘位置）",
-    "index_clv_swap": "股指策略（仅时间换收盘位置）",
+    "commodity_clv_swap": "商品收盘位置策略",
+    "index_clv_swap": "股指收盘位置策略",
+}
+PLOT_FILENAMES = {
+    "commodity_original": "commodity_original.png",
+    "commodity_clv_swap": "commodity_close_location.png",
+    "index_clv_swap": "index_close_location.png",
 }
 COLORS = {
     "commodity_original": "#315A7D",
@@ -386,8 +391,8 @@ def _plot_results(
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
 
-    comparison_dir = out / "plots" / "comparison"
-    comparison_dir.mkdir(parents=True, exist_ok=True)
+    plot_dir = out / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2, 1, figsize=(12, 9), sharex=False)
     commodity_keys = ("commodity_original", "commodity_clv_swap")
     for key in commodity_keys:
@@ -419,14 +424,15 @@ def _plot_results(
     _style(axes[1])
     fig.suptitle("三策略研究期净值（1亿元、历史手续费、每边1跳）", color="#18232D", fontsize=15, x=0.08, ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(comparison_dir / "nav_comparison.png", dpi=180, bbox_inches="tight")
+    fig.savefig(plot_dir / "nav_comparison.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
     for key, daily in daily_by_book.items():
         plot_performance(
             daily["净收益"].rename(BOOK_LABELS[key]),
-            out / "plots" / key,
+            out / "plots",
             title=f"{BOOK_LABELS[key]} | {daily.index.min():%Y-%m-%d} 至 {daily.index.max():%Y-%m-%d}",
+            filename=PLOT_FILENAMES[key],
         )
 
     # 年度贡献按逐日 PnL / 当日期初权益累加，与净收益的逐日简单收益口径相同。
@@ -556,11 +562,11 @@ def _run_commodity():
         "commodity_clv_swap": R.STRICT_SWAP_BOOK.ID,
     }
     results = {}
-    summary_rows, annual_rows, position_rows, event_rows = [], [], [], []
+    summary_rows, annual_rows = [], []
     contributions, instruments = {}, {}
     for key, book_id in books.items():
-        result_dir = C.RUNS_DIR / "strategies" / book_id / "commodity" / "research"
-        required = ("daily.csv", "positions.csv", "events.csv", "summary.csv")
+        result_dir = C.RUNS_DIR / "strategies" / book_id / "research"
+        required = ("daily.csv", "positions.csv", "summary.csv")
         missing = [name for name in required if not (result_dir / name).is_file()]
         if missing:
             raise FileNotFoundError(
@@ -573,7 +579,6 @@ def _run_commodity():
         positions = pd.read_csv(
             result_dir / "positions.csv", parse_dates=["交易日"]
         )
-        events = pd.read_csv(result_dir / "events.csv", parse_dates=["交易日"])
         expected_index = inputs["index"][inputs["index"] >= daily.index.min()]
         if not daily.index.equals(expected_index):
             raise ValueError(f"{book_id} engine 账本日期与本次研究归因输入不一致")
@@ -602,10 +607,8 @@ def _run_commodity():
         results[key] = daily
         contributions[key] = contribution
         instruments[key] = instrument_contribution
-        position_rows.append(positions.assign(策略ID=key))
-        event_rows.append(events.assign(策略ID=key))
     _run_commodity_component_followup(data, inputs, carry, all_symbols, market)
-    return results, contributions, instruments, summary_rows, annual_rows, position_rows, event_rows
+    return results, contributions, instruments, summary_rows, annual_rows
 
 
 def _run_index():
@@ -618,14 +621,14 @@ def _run_index():
     returns = returns.reindex(calendar).dropna(how="any")
     if returns.empty:
         raise ValueError("IF/IH/IC 共同上市期没有完整的下一开盘收益")
-    C.assert_no_holdout_dates(returns.index, what="股指 CLV 严格替换收益")
+    C.assert_no_holdout_dates(returns.index, what="股指收盘位置策略收益")
     all_returns = returns.copy()
     carry = M.load_index_carry(index)
     M.require_index_carry_coverage(carry, returns.index)
     target, market_clv = index_close_location_targets(index, bars, carry)
     first_nonzero = target.index[target.ne(0.0).any(axis=1)]
     if first_nonzero.empty:
-        raise ValueError("股指 CLV 严格替换在窗口内没有非零目标")
+        raise ValueError("股指收盘位置策略在窗口内没有非零目标")
     first_target_date = first_nonzero[0]
     returns = returns.loc[returns.index >= first_target_date]
     if returns.empty:
@@ -635,10 +638,9 @@ def _run_index():
         C.RUNS_DIR
         / "strategies"
         / IX.STRICT_SWAP_BOOK.ID
-        / "index"
         / "research"
     )
-    required = ("daily.csv", "positions.csv", "events.csv", "summary.csv")
+    required = ("daily.csv", "positions.csv", "summary.csv")
     missing = [name for name in required if not (result_dir / name).is_file()]
     if missing:
         raise FileNotFoundError(
@@ -651,7 +653,6 @@ def _run_index():
     positions = pd.read_csv(
         result_dir / "positions.csv", parse_dates=["交易日"]
     )
-    events = pd.read_csv(result_dir / "events.csv", parse_dates=["交易日"])
     expected_index = returns.index[returns.index >= daily.index.min()]
     if not daily.index.equals(expected_index):
         raise ValueError("engine 中股指账本日期与本次研究归因输入不一致")
@@ -691,8 +692,6 @@ def _run_index():
         {"index_clv_swap": instrument_contribution},
         [summary],
         annual,
-        [positions.assign(策略ID="index_clv_swap")],
-        [events.assign(策略ID="index_clv_swap")],
         market_clv.reindex(daily.index),
     )
 
@@ -709,13 +708,11 @@ def _run_index_individual(
     plot_dir = output / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     summaries, annual_rows, daily_returns, contributions = [], [], {}, []
-    position_rows = []
     for symbol in M.SYMBOLS:
         engine_dir = (
             C.RUNS_DIR
             / "strategies"
             / IX.STRICT_SWAP_BOOK.ID
-            / "index"
             / "individual"
             / symbol
             / "research"
@@ -739,7 +736,7 @@ def _run_index_individual(
         market = all_returns[symbol].reindex(daily.index)
         row = M._summary_row(
             f"index_{symbol}_own_clv",
-            f"{symbol} 独立 CLV + 展期 + 空头",
+            f"{symbol} 单品种收盘位置策略",
             daily,
             market,
         )
@@ -784,8 +781,6 @@ def _run_index_individual(
                     "共同组合该品种毛贡献": float(joint.reindex(part.index).sum()),
                 }
             )
-        position_rows.append(positions.assign(独立策略=symbol))
-
         nav = (1.0 + daily["净收益"].fillna(0.0)).cumprod()
         peak = daily["权益"].cummax().clip(lower=INITIAL_CAPITAL)
         drawdown = daily["权益"] / peak - 1.0
@@ -850,9 +845,6 @@ def _run_index_individual(
     pd.concat(contributions, axis=1).to_csv(
         output / "contributions.csv", encoding="utf-8-sig"
     )
-    pd.concat(position_rows, ignore_index=True).to_csv(
-        output / "positions.csv", index=False, encoding="utf-8-sig"
-    )
     (output / "protocol.json").write_text(
         json.dumps(protocol, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -878,8 +870,6 @@ def run_three_book_comparison(*, overwrite: bool = False) -> None:
     instrument_by_book = {**commodity[2], **index_result[2]}
     summaries = commodity[3] + index_result[3]
     annual_rows = commodity[4] + index_result[4]
-    positions = commodity[5] + index_result[5]
-    events = commodity[6] + index_result[6]
     annual_contribution = pd.DataFrame(annual_rows)
 
     COMPARISON_OUT.mkdir(parents=True, exist_ok=True)
@@ -901,17 +891,7 @@ def run_three_book_comparison(*, overwrite: bool = False) -> None:
             for key, frame in instrument_by_book.items()
         ]
     ).to_csv(COMPARISON_OUT / "daily_instrument_contributions.csv", encoding="utf-8-sig")
-    position_frames = [position for position in positions if not position.empty]
-    event_frames = [event for event in events if not event.empty]
-    if position_frames:
-        pd.concat(position_frames, ignore_index=True).to_csv(
-            COMPARISON_OUT / "positions.csv", index=False, encoding="utf-8-sig"
-        )
-    if event_frames:
-        pd.concat(event_frames, ignore_index=True).to_csv(
-            COMPARISON_OUT / "events.csv", index=False, encoding="utf-8-sig"
-        )
-    pd.Series(index_result[7], name="股指市场收盘位置").to_csv(
+    pd.Series(index_result[5], name="股指市场收盘位置").to_csv(
         COMPARISON_OUT / "index_market_close_location.csv", encoding="utf-8-sig"
     )
     (COMPARISON_OUT / "protocol.json").write_text(
@@ -944,7 +924,7 @@ def run_three_book_comparison(*, overwrite: bool = False) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="商品收盘位置研究")
-    parser.add_argument("--three-book-comparison", action="store_true", help="运行三策略收盘位置严格替换比较")
+    parser.add_argument("--three-book-comparison", action="store_true", help="运行三策略收盘位置对比")
     parser.add_argument("--overwrite", action="store_true", help="仅刷新相同规格的三策略比较结果")
     args = parser.parse_args()
     if args.three_book_comparison:

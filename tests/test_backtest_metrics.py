@@ -58,8 +58,8 @@ def test_write_results_includes_calmar_in_summary_and_annual_csv(monkeypatch, tm
     expected_calmar = performance(returns)["calmar"]
     assert summary["Calmar比率"] == pytest.approx(expected_calmar)
     assert annual[0]["Calmar比率"] == pytest.approx(expected_calmar)
-    saved_summary = pd.read_csv(tmp_path / "strategies" / "test" / "commodity" / "2019" / "summary.csv")
-    saved_annual = pd.read_csv(tmp_path / "strategies" / "test" / "commodity" / "2019" / "annual.csv")
+    saved_summary = pd.read_csv(tmp_path / "strategies" / "test" / "2019" / "summary.csv")
+    saved_annual = pd.read_csv(tmp_path / "strategies" / "test" / "2019" / "annual.csv")
     assert saved_summary.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
     assert saved_annual.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
     engine.write_results(
@@ -76,7 +76,6 @@ def test_write_results_includes_calmar_in_summary_and_annual_csv(monkeypatch, tm
         tmp_path
         / "strategies"
         / "test"
-        / "index"
         / "individual"
         / "IF"
         / "2019"
@@ -136,8 +135,8 @@ def test_deflated_sharpe_falls_with_more_trials():
 
 def test_performance_plot_writes_nav_and_drawdown_chart(tmp_path):
     returns = pd.Series([0.02, -0.03, 0.01], index=pd.bdate_range("2024-01-02", periods=3))
-    path = plot_performance(returns, tmp_path)
-    assert path == tmp_path / "performance.png" and path.stat().st_size > 0
+    path = plot_performance(returns, tmp_path, filename="direct.png")
+    assert path == tmp_path / "direct.png" and path.stat().st_size > 0
 
 
 def test_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
@@ -169,7 +168,7 @@ def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
 
 def test_cli_passes_a_named_frozen_replacement_book(monkeypatch):
     import research.market_clock_slow_short_20_60_120 as driver
-    from strategies import commodity_close_location_reversal as R
+    from strategies import commodity_close_location as R
 
     seen = []
     monkeypatch.setattr(driver, "run_span", lambda *a, by_year=False, book=None: seen.append(book))
@@ -291,7 +290,7 @@ def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatc
     assert seen[-1][0] == f"{BOOKS[0].ID}_2022"
     hashed = [e for e in C.read_ledger(ledger) if e.get("strategy") == f"{BOOKS[0].ID}_2022"][0]["sha256"]
     assert len(hashed) == 2 and {
-        "strategies/market_clock_slow_short_20_60_120/__init__.py",
+        "strategies/commodity_original/__init__.py",
     } <= set(hashed)
 
 
@@ -299,7 +298,7 @@ def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monk
     import research.market_clock_slow_short_20_60_120 as driver
     from strategies.catalog import book_named
 
-    book = book_named("按池宽1倍加三窗口趋势空头")
+    book = book_named("商品原策略")
     _freeze_books(monkeypatch, tmp_path, [book])
     monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
     ledger = tmp_path / "ledger.jsonl"

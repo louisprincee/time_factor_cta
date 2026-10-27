@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from strategies import market_clock_slow_short_20_60_120 as T
+from strategies import commodity_original as T
 
 
 def _window_bars(index, symbols, drift=-0.001, seed=0):
@@ -105,7 +105,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from strategies.catalog import BOOKS, FROZEN_BOOKS, book_named
 from tfcta import config as C
 
@@ -124,12 +124,12 @@ def _bars(index, symbols):
 
 
 def test_catalog_registers_frozen_commodity_books():
-    from strategies import commodity_close_location_reversal as R
+    from strategies import commodity_close_location as R
 
     assert FROZEN_BOOKS == (S.BOOK, R.STRICT_SWAP_BOOK)
     assert BOOKS == FROZEN_BOOKS
     assert (S.BOOK.ID, S.BOOK.NAME, S.BOOK.GROSS, S.TREND_WINDOWS) == (
-        "market_clock_slow_short_20_60_120", "按池宽1倍加三窗口趋势空头", 1.0, (20, 60, 120),
+        "market_clock_slow_short_20_60_120", "商品原策略", 1.0, (20, 60, 120),
     )
     parameters = S.BOOK.load_config()["parameters"]
     assert parameters["short_trend_windows"] == list(S.TREND_WINDOWS)
@@ -265,7 +265,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from strategies import commodity_close_location_reversal as R
+from strategies import commodity_close_location as R
 from tfcta import config as C
 
 

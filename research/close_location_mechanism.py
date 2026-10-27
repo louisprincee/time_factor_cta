@@ -21,7 +21,7 @@ import pandas as pd
 from backtest.engine import load_research, newey_west_t
 from research.market_clock_mechanism import LAGS, day_shape, slope, trailing_median_above
 from research.time_factor_screen import ols_hac
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from tfcta import config as C
 from tfcta.data import build_universe, daily_bars, load_shard, load_universe, wide_by_field
 

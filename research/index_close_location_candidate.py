@@ -20,7 +20,7 @@ from backtest.engine import (
 )
 from research import index_market_clock as M
 from strategies import index_catalog
-from strategies import index_close_location_reversal as S
+from strategies import index_close_location as S
 from tfcta import config as C
 from tfcta.costs import (
     INDEX_MULTIPLIER,
@@ -36,7 +36,7 @@ SCORE_END = pd.Timestamp("2021-12-31")
 CANDIDATE_ID = S.BOOK.ID
 CANDIDATE_NAME = S.BOOK.NAME
 BENCHMARK_ID = "index_equal_weight_risk_matched"
-BENCHMARK_NAME = "等权长仓（同风控）"
+BENCHMARK_NAME = "等权长仓"
 
 
 def load_protocol() -> dict:
@@ -238,7 +238,7 @@ SHORT_LEG_OUT = C.RUNS_DIR / "index" / "index_short_leg_2015_2021"
 def short_leg_targets(long_target: pd.DataFrame, bars: dict, carry: pd.DataFrame | None) -> pd.DataFrame:
     """熊市日（池子 20/60/120 日趋势 < 0）品种自身趋势 < 0（且给了 carry 时滞后展期 < 0）→ −1；冲突时以空头为准。
     收盘 t 已知的决策后移到下一开盘，与多头目标同口径。"""
-    from strategies import market_clock_slow_short_20_60_120 as T
+    from strategies import commodity_original as T
 
     index = long_target.index
     symbols = list(SYMBOLS)
@@ -459,14 +459,16 @@ def run(*, overwrite: bool = False) -> None:
     plot_returns["等权股指（毛）"] = returns.mean(axis=1)
     plot_performance(
         plot_returns,
-        OUT / "plots" / "comparison",
+        OUT / "plots",
         title="IF/IH/IC 收盘位置候选与等权基准：净值及回撤",
+        filename="comparison.png",
     )
     for book_id, daily in ledger_results.items():
         plot_performance(
             daily["净收益"].rename(labels[book_id]),
-            OUT / "plots" / book_id,
+            OUT / "plots",
             title=f"整数手数：{labels[book_id]}，1亿元、1倍敞口、研究期成本",
+            filename=f"{book_id}.png",
         )
 
     (OUT / "protocol.json").write_text(

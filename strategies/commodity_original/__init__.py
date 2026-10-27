@@ -1,4 +1,4 @@
-"""按池宽1倍加三窗口趋势空头（market_clock_slow_short_20_60_120）。规格在同目录 JSON，导入时跟代码核对。
+"""商品原策略。规格在同目录 JSON，导入时跟代码核对。
 
 收盘定权重，下一交易日第一根开盘成交；有夜盘时这一根是夜盘开盘，没有夜盘时是日盘开盘，夜盘算下一个交易日。
 多头腿：五因子收盘市场分数 > 0 且该品种滞后一日年化展期收益 > 0，权重 +1。
@@ -221,7 +221,7 @@ class Book:
     """这条策略：规格、冻结检查、收盘决策。回测和台账在对应的 research 模块。"""
 
     ID = "market_clock_slow_short_20_60_120"
-    NAME = "按池宽1倍加三窗口趋势空头"
+    NAME = "商品原策略"
     GROSS = GROSS
     CONFIG_PATH = Path(__file__).with_name("market_clock_slow_short_20_60_120.json")
     DETAIL = (

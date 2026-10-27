@@ -18,7 +18,7 @@ from backtest.engine import (
     sharpe_ratio,
     simulate_target_lots,
 )
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from tfcta import config as C
 from tfcta.costs import (
     INDEX_MULTIPLIER,
@@ -40,7 +40,7 @@ from tfcta.factors import (
 
 CONFIG_PATH = C.CONFIG_DIR / "research" / "index_market_clock_2015_2021.json"
 # 登记时的只做多书 market_clock_pool 已在 2026-10-23 删掉；它就是两条空头策略共用的多头腿，这里按多头腿单独算
-LONG_LEG = SimpleNamespace(ID="market_clock_pool", NAME="按池宽1倍（多头腿）", GROSS=S.GROSS)
+LONG_LEG = SimpleNamespace(ID="market_clock_pool", NAME="按池宽1倍多头腿", GROSS=S.GROSS)
 OUT = C.RUNS_DIR / "index" / "market_clock_transfer_2015_2021"
 SYMBOLS = ("IF", "IH", "IC")
 FACTORS = ("ts_low", "ts_high", "dfp_top3", "ts_low_pm", "ts_high_pm")
@@ -279,15 +279,17 @@ def write_plots(book_returns: pd.DataFrame, market_returns: pd.Series, out: Path
             raise KeyError(f"股指日收益缺少策略：{strategy_id}")
         plot_performance(
             book_returns[strategy_id].rename(label),
-            out / "plots" / strategy_id,
+            out / "plots",
             title=f"整数手数：{label}，股指，1亿元、1倍敞口、20%保证金假设",
+            filename=f"{strategy_id}.png",
         )
     comparison = book_returns.rename(columns=labels).copy()
     comparison["等权股指"] = market_returns.reindex(comparison.index)
     plot_performance(
         comparison,
-        out / "plots" / "comparison",
+        out / "plots",
         title="IF/IH/IC 股指迁移：策略与等权基准净值及回撤",
+        filename="comparison.png",
     )
 
 

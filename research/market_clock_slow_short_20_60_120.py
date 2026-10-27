@@ -18,7 +18,7 @@ from backtest.engine import (
     INITIAL_CAPITAL, MARGIN_RATE, PERIODS, ledger_inputs, load_research, load_through_year,
     max_drawdown, newey_west_t, sharpe_ratio, simulate_target_lots, write_results,
 )
-from strategies import market_clock_slow_short_20_60_120 as S
+from strategies import commodity_original as S
 from tfcta import config as C
 
 NW_LAGS = 10
@@ -164,7 +164,7 @@ def _show_saved(period, book) -> bool:
     folder = period if isinstance(period, str) else (
         f"{period[0]}-{period[1]}" if isinstance(period, tuple) else str(period)
     )
-    summary = C.RUNS_DIR / "strategies" / book.ID / "commodity" / folder / "summary.csv"
+    summary = C.RUNS_DIR / "strategies" / book.ID / folder / "summary.csv"
     if not summary.is_file():
         return False
     print(pd.read_csv(summary).to_string(index=False), flush=True)
