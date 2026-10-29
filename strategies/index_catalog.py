@@ -1,9 +1,9 @@
-"""股指策略目录，与商品账本注册表分开。"""
+"""股指策略目录，与商品账本注册表分开。用户 2026-10-29：股指只保留熊市空头加波动率缩放。"""
 from __future__ import annotations
 
-from strategies.index_close_location import BOOK, STRICT_SWAP_BOOK
+from strategies.index_bear_reversal import BOOK as BEAR_BOOK
 
-INDEX_FROZEN_BOOKS = (STRICT_SWAP_BOOK,)
+INDEX_FROZEN_BOOKS = (BEAR_BOOK,)
 INDEX_BOOKS = INDEX_FROZEN_BOOKS
 BOOKS = INDEX_BOOKS
 

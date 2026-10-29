@@ -154,6 +154,29 @@ def load_index_fees(partition="research"):
     return _read_fee_table(index_fee_path(partition), partition)
 
 
+# 中金所非套保“日内开仓交易量较大”：买开与卖开之和，超过下列手数即违规，故上限就是该手数。
+# 2015-08-26 至 2018-12-02 按单个产品（该产品全部合约合计）；2018-12-03 起改为单个合约。
+# 本账本每个品种只开主力，换月只开新合约，两种口径下手数相同。套保豁免不适用。
+# 公告：中金所 2015-08-25、2015-08-28、2015-09-02、2017-02-16、2018-12-02、2019-04-19。
+CFFEX_OPEN_LIMITS = (
+    (pd.Timestamp("2015-08-26"), 600),
+    (pd.Timestamp("2015-08-31"), 100),
+    (pd.Timestamp("2015-09-07"), 10),
+    (pd.Timestamp("2017-02-17"), 20),
+    (pd.Timestamp("2018-12-03"), 50),
+    (pd.Timestamp("2019-04-22"), 500),
+)
+
+
+def index_open_limits(index, symbols) -> pd.DataFrame:
+    """交易日 × 品种的当日最多开仓手数；2015-08-26 以前不限（inf）。"""
+    dates = pd.DatetimeIndex(index)
+    limit = pd.Series(np.inf, index=dates)
+    for start, lots in CFFEX_OPEN_LIMITS:
+        limit[dates >= start] = float(lots)
+    return pd.DataFrame({symbol: limit for symbol in symbols}, index=dates)
+
+
 CZCE_CLOSE_TODAY_FROM = pd.Timestamp("2017-06-23")
 CZCE_SYMBOLS = frozenset({
     "CF", "FG", "JR", "LR", "MA", "OI", "PM", "RI",

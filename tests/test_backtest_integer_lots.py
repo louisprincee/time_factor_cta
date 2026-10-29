@@ -172,3 +172,30 @@ def test_contract_multiplier_overrides_must_be_positive():
     targets, inputs = _inputs([1.0, 1.0])
     with pytest.raises(ValueError, match="合约乘数"):
         simulate_target_lots(targets, **inputs, contract_multipliers={"CU": {"CU2002": 0.0}})
+
+
+def test_daily_open_limit_fills_over_several_days_and_never_caps_closing():
+    # 本金 10 万、价格 100、乘数 10：目标 100 手；每天最多开 30 手
+    targets, inputs = _inputs([1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 0.0])
+    inputs["initial_capital"] = 100_000.0
+    limits = pd.DataFrame(30.0, index=targets.index, columns=targets.columns)
+    _, positions, events = simulate_target_lots(targets, **inputs, open_limits=limits)
+    held = positions.set_index("交易日")["手数"].tolist()
+    assert held == [30, 60, 90, 100, 100, -30, -60]           # 翻空：100 手平掉不受限，新方向只开 30
+    assert (events["事件"] == "开仓限额").sum() == 5
+    unlimited, _, _ = simulate_target_lots(targets, **inputs)
+    unlimited_inf, _, _ = simulate_target_lots(
+        targets, **inputs, open_limits=pd.DataFrame(np.inf, index=targets.index, columns=targets.columns))
+    pd.testing.assert_frame_equal(unlimited, unlimited_inf)
+
+
+def test_cffex_open_limits_follow_the_schedule():
+    from tfcta.costs import index_open_limits
+
+    days = pd.DatetimeIndex([
+        "2015-08-25", "2015-08-26", "2015-08-31", "2015-09-07",
+        "2017-02-17", "2018-12-03", "2019-04-22",
+    ])
+    assert index_open_limits(days, ["IF"])["IF"].tolist() == [
+        np.inf, 600.0, 100.0, 10.0, 20.0, 50.0, 500.0,
+    ]

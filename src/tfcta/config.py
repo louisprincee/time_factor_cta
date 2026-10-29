@@ -33,6 +33,7 @@ ROLL_DIR = COMMODITY_DATA / "roll_dates"
 INDEX_SHARD_ROOT = INDEX_DATA_ROOT / "minute_shards"
 INDEX_RESEARCH_DIR = INDEX_SHARD_ROOT / "research"
 INDEX_HOLDOUT_DIR = INDEX_SHARD_ROOT / "holdout_locked"    # 2022–2025，单独锁定
+INDEX_EXTERNAL_HOLDOUT_DIR = INDEX_DATA_ROOT / "external_rqdata" / "holdout_locked"
 
 # 因子缓存与运行留痕
 FACTOR_DAILY_DIR = COMMODITY_DATA / "factor_daily_v3"
@@ -173,6 +174,7 @@ class HoldoutViolation(RuntimeError):
 
 
 OOS_LEDGER = COMMODITY_DATA / "oos" / "ledger.jsonl"
+INDEX_OOS_LEDGER = INDEX_DATA_ROOT / "oos" / "ledger.jsonl"
 _final_evaluation: dict | None = None   # 只由 final_evaluation() 在 with 块内设置
 
 
@@ -266,7 +268,7 @@ def assert_research_only(path) -> None:
     """拒绝任何指向验证期或锁定样本外目录的研究读取。"""
     p = Path(path).resolve()
     if any(root.resolve() in p.parents or p == root.resolve()
-           for root in (HOLDOUT_DIR, VALIDATION_DIR, INDEX_HOLDOUT_DIR)):
+           for root in (HOLDOUT_DIR, VALIDATION_DIR, INDEX_HOLDOUT_DIR, INDEX_EXTERNAL_HOLDOUT_DIR)):
         raise HoldoutViolation(
             f"本阶段禁止读取样本外数据: {p}\n"
             "研究入口禁止读取验证期和样本外路径。"

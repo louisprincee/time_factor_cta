@@ -5,7 +5,7 @@
 口径与米筐商品 main_sub 一致，2026-10-26 在 RB、CU、M 2018–2019 共 1461 天上逐日核对：
 主力 = get_dominant(rule=0)；次主力 = 到期晚于主力的合约里当天持仓量最大的一张（与米筐 to_contract 1461/1461 一致）；
 yield = (主力结算价 − 次主力结算价) / 次主力结算价；annualized_yield = yield × 365 / |两张到期日相差天数|（复现误差 < 2e-15）。
-只请求 2015-01-01 至 2021-12-31，不读 2022 及以后。结果写成与商品同格式的 pickle，供 research.index_market_clock 读取。
+只请求 2015-01-01 至 2021-12-31，不读 2022 及以后。结果写成与商品同格式的 pickle。
 """
 from __future__ import annotations
 

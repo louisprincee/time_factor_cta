@@ -106,7 +106,7 @@ import pandas as pd
 import pytest
 
 from strategies import commodity_original as S
-from strategies.catalog import BOOKS, FROZEN_BOOKS, book_named
+from strategies.commodity_catalog import BOOKS, FROZEN_BOOKS, book_named
 from tfcta import config as C
 
 

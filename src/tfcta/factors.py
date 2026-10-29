@@ -302,6 +302,94 @@ def report_factors(df: pd.DataFrame,
     return res
 
 
+# 国泰君安股指报告（2025-02-25）的固定阈值持续期统计和行为时间戳。股指只有日盘，位置按当日日盘分钟数归一化。
+GTJA_COLUMNS = (
+    'time_to_max_turnover', 'time_to_half_volume', 'afternoon_high_time', 'time_to_low',
+    'Price_duration_vol', 'Price_duration_corr', 'Price_duration_adj_vol', 'Price_duration_max_min',
+    'Price_volume_persistence_ratio',
+    'Volume_duration_adj_vol', 'Volume_duration_slope', 'Volume_duration_extreme',
+    'Volume_duration_open_close', 'Volume_duration_return',
+)
+
+
+def _first_position(values: np.ndarray, mode: str) -> float:
+    ok = np.isfinite(values)
+    if ok.sum() < 2:
+        return np.nan
+    ranked = np.where(ok, values, -np.inf if mode == 'max' else np.inf)
+    j = int(np.argmax(ranked) if mode == 'max' else np.argmin(ranked))
+    return float(j / (len(values) - 1))
+
+
+def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
+    if np.nanstd(a) == 0 or np.nanstd(b) == 0:
+        return np.nan
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def gtja_index_factors(df: pd.DataFrame,
+                       price_threshold: float = 3.0,
+                       volume_threshold: float = 50.0) -> pd.DataFrame:
+    """单品种股指分钟表 → 每个交易日的报告因子（收盘 t 已知）。
+
+    持续期：分钟 j 往回找最近一个变化 ≥ 阈值的分钟 i，持续期 = j − i；找不到记为距当日首根的分钟数。
+    价格用原始分钟收盘价，成交量用分钟成交量。Volume_duration_open_close 按报告文字取收盘前 30 分钟减开盘后 30 分钟。
+    Volume_duration_return 用加法复权价之差除以前一日原始价，跨换月不跳。"""
+    for col in ('trading_date', 'close', 'closew', 'highw', 'loww', 'volume', 'total_turnover'):
+        if col not in df.columns:
+            raise KeyError(f"缺少 {col} 列")
+    frame = df.sort_index(kind='mergesort')
+    codes, days = day_codes_of(frame)
+    price = raw_price_path(frame)
+    closew = frame['closew'].to_numpy(dtype='float64')
+    volume = frame['volume'].to_numpy(dtype='float64')
+    turnover = frame['total_turnover'].to_numpy(dtype='float64')
+    high = frame['highw'].to_numpy(dtype='float64')
+    low = frame['loww'].to_numpy(dtype='float64')
+    clock = frame.index.hour * 100 + frame.index.minute
+    afternoon = clock > 1300
+    opening = (clock >= 931) & (clock <= 1000)
+    closing = (clock >= 1431) & (clock <= 1500)
+    out = {name: np.full(len(days), np.nan) for name in GTJA_COLUMNS}
+    anchor_w = np.full(len(days), np.nan)
+    anchor_raw = np.full(len(days), np.nan)
+    for k, (a, b) in enumerate(zip(*_day_spans(codes))):
+        p, v = price[a:b], volume[a:b]
+        if b - a < 10 or not np.isfinite(p).all() or not np.isfinite(v).all():
+            continue
+        pd_ = duration_one_day(p, price_threshold)
+        vd = duration_one_day(v, volume_threshold)
+        steps = np.arange(b - a, dtype='float64')
+        price_sd = float(np.std(p))
+        out['time_to_max_turnover'][k] = _first_position(turnover[a:b], 'max')
+        cum = np.cumsum(v)
+        if cum[-1] > 0:
+            out['time_to_half_volume'][k] = float(np.flatnonzero(cum >= 0.5 * cum[-1])[0] / (b - a - 1))
+        pm = afternoon[a:b]
+        if pm.sum() >= 2:
+            out['afternoon_high_time'][k] = _first_position(high[a:b][pm], 'max')
+        out['time_to_low'][k] = _first_position(low[a:b], 'min')
+        out['Price_duration_vol'][k] = float(np.std(pd_))
+        out['Price_duration_corr'][k] = _safe_corr(pd_, p)
+        out['Price_duration_adj_vol'][k] = float(np.std(pd_) / price_sd) if price_sd > 0 else np.nan
+        out['Price_duration_max_min'][k] = float(pd_.max() - pd_.min())
+        if v.sum() > 0:
+            out['Price_volume_persistence_ratio'][k] = float(v[pd_ >= np.quantile(pd_, 0.8)].sum() / v.sum())
+        out['Volume_duration_adj_vol'][k] = float(np.std(vd) / price_sd) if price_sd > 0 else np.nan
+        out['Volume_duration_slope'][k] = float(np.polyfit(steps, vd, 1)[0])
+        out['Volume_duration_extreme'][k] = float(np.mean(vd > vd.mean() + 2 * vd.std()))
+        o, c = opening[a:b], closing[a:b]
+        if o.any() and c.any():
+            out['Volume_duration_open_close'][k] = float(vd[c].mean() - vd[o].mean())
+        j = int(np.argmax(vd))
+        anchor_w[k], anchor_raw[k] = closew[a + j], p[j]
+    res = pd.DataFrame(out, index=days)
+    previous_w, previous_raw = pd.Series(anchor_w).shift(1).to_numpy(), pd.Series(anchor_raw).shift(1).to_numpy()
+    res['Volume_duration_return'] = (anchor_w - previous_w) / np.where(previous_raw > 0, previous_raw, np.nan)
+    res.index.name = 'trading_date'
+    return res
+
+
 TIMESTAMP_DIR_NAME = 'timestamp'
 REPORT_DIR_NAME = 'report'
 # v3: raw decimal-price durations, positive threshold, full lookback warm-up;

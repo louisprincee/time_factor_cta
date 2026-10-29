@@ -100,25 +100,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from research.index_liquidity_mechanism import tick_day_features
 
 
-def test_flow_and_residual_add_up_and_lambda_recovers_the_planted_impact():
-    rng = np.random.default_rng(0)
-    stamps = pd.date_range("2018-03-15 09:30:00", periods=7200, freq="1s")
-    signs = rng.choice([-1.0, 1.0], size=len(stamps))
-    mid = 4000 * np.exp(np.cumsum(2e-6 * signs))             # 每手买单推高中间价 2e-6（对数）
-    ticks = pd.DataFrame({"datetime": stamps, "last": mid + 0.1 * signs, "a1": mid + 0.1, "b1": mid - 0.1,
-                          "a1_v": 5.0, "b1_v": 5.0, "volume": np.arange(1, len(stamps) + 1, dtype=float)})
-    out = tick_day_features(ticks)
-    assert out["flow"] + out["resid"] == pytest.approx(out["intraday_mid"])
-    assert out["lambda"] == pytest.approx(2e-6, rel=0.25)
-    assert out["mid_first30"] == pytest.approx(
-        ticks.loc[
-            ticks["datetime"] <= stamps[0] + pd.Timedelta(30, unit="min"), "a1"
-        ].iloc[-1]
-        - 0.1
-    )
 
 
 # --- test_index_positioning_mechanism.py ---
@@ -127,23 +110,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from research import index_positioning_mechanism as P
 
 
-def test_flows_are_scaled_by_prior_open_interest_and_expiry_days_are_flagged():
-    dates = pd.bdate_range("2018-03-12", periods=4)
-    rank = pd.concat([pd.DataFrame({"symbol": s, "side": side, "trading_date": dates, "volume_change": change})
-                      for s in P.SYMBOLS for side, change in (("short", 100.0), ("long", -50.0))])
-    daily = {s: pd.DataFrame({"date": np.repeat(dates, 2), "open_interest": 500.0}) for s in P.SYMBOLS}
-    pos = P.positioning_panel(rank, daily, dates)
-    assert pos["short_flow"]["IF"].iloc[1:].tolist() == pytest.approx([0.1] * 3)      # 100 / 前一日 1000
-    assert pos["long_flow"]["IC"].iloc[0] != pos["long_flow"]["IC"].iloc[0]            # 第一天没有前一日，缺失
-    flag = P.expiry_mask(dates, pd.Series(pd.to_datetime(["2018-03-14"])))
-    assert flag.tolist() == [False, True, True, False]
-    s = pd.Series(np.arange(300, dtype=float))
-    moved = s.copy()
-    moved.iloc[-1] = -1e9
-    assert P.above_own_median(s).iloc[:-1].equals(P.above_own_median(moved).iloc[:-1])
 
 
 # --- test_tick_l1.py ---
@@ -319,3 +287,110 @@ def test_locked_download_writes_raw_ticks_without_research_summaries(tmp_path, m
     assert not (tmp_path / "locked" / "l1_close" / "IF.csv").exists()
     metadata = (symbol_root / "download_manifest.json").read_text(encoding="utf-8")
     assert '"content_not_loaded_for_analysis": true' in metadata
+
+
+from download.index.getIndexSpot import normalize_spot_minutes
+
+
+def test_qvix_split_keeps_research_dates_and_same_day_close_only(tmp_path, monkeypatch):
+    """2022 及以后只进锁定期；信号日用当天 QVIX，不用下一天。"""
+    from download.index.getQvix import load_research_qvix, split_qvix
+
+    raw = pd.DataFrame({
+        "date": pd.to_datetime(["2015-02-09", "2021-12-31", "2022-01-04"]),
+        "open": [10.0, 20.0, 30.0],
+        "high": [11.0, 21.0, 31.0],
+        "low": [9.0, 19.0, 29.0],
+        "close": [10.5, 20.5, 30.5],
+    })
+    research, holdout = split_qvix(raw)
+    assert research["date"].max() == pd.Timestamp("2021-12-31")
+    assert set(holdout["date"]) == {pd.Timestamp("2022-01-04")}
+    locked = tmp_path / "holdout_locked"
+    locked.mkdir()
+    target = locked / "qvix_50etf.csv"
+    holdout.to_csv(target, index=False)
+    monkeypatch.setattr(C, "INDEX_EXTERNAL_HOLDOUT_DIR", locked)
+    with pytest.raises(C.HoldoutViolation):
+        C.assert_research_only(target)
+    with pytest.raises(C.HoldoutViolation):
+        load_research_qvix(target)
+    research_path = tmp_path / "qvix_50etf.csv"
+    research.to_csv(research_path, index=False)
+    loaded = load_research_qvix(research_path)
+    assert loaded.loc[loaded["date"] == pd.Timestamp("2021-12-31"), "close"].iloc[0] == pytest.approx(20.5)
+    leaked = research.copy()
+    leaked.loc[len(leaked), ["date", "open", "high", "low", "close"]] = [
+        pd.Timestamp("2022-01-04"), 1, 1, 1, 1,
+    ]
+    leaked_path = tmp_path / "leaked.csv"
+    leaked.to_csv(leaked_path, index=False)
+    with pytest.raises(C.HoldoutViolation):
+        load_research_qvix(leaked_path)
+
+
+
+
+def test_spot_minute_normalize_rejects_2022():
+    raw = pd.DataFrame({
+        "datetime": pd.to_datetime(["2022-01-04 09:31:00"]),
+        "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0],
+    })
+    with pytest.raises(C.HoldoutViolation):
+        normalize_spot_minutes(raw, "IF")
+
+
+def test_read_index_2022_minutes_drops_later_years_and_rejects_2026(tmp_path, monkeypatch):
+    import backtest.engine as engine
+
+    monkeypatch.setattr(C, "INDEX_HOLDOUT_DIR", tmp_path)
+    rows = pd.DataFrame({
+        "trading_date": pd.to_datetime(["2022-01-04", "2023-01-04"]),
+        "open": [1.0, 9.0], "openw": [1.0, 9.0], "close": [1.0, 9.0],
+        "closew": [1.0, 9.0], "highw": [2.0, 9.0], "loww": [0.5, 9.0],
+    })
+    rows.to_parquet(tmp_path / "IF.parquet", index=False)
+    kept = engine.read_index_2022_minutes("IF")
+    assert kept["trading_date"].dt.year.unique().tolist() == [2022]
+    assert kept["close"].tolist() == [1.0]
+    leaked = pd.concat([rows, pd.DataFrame({"trading_date": [pd.Timestamp("2026-01-05")]})], ignore_index=True)
+    leaked.to_parquet(tmp_path / "IH.parquet", index=False)
+    with pytest.raises(C.HoldoutViolation):
+        engine.read_index_2022_minutes("IH")
+    with pytest.raises(C.HoldoutViolation):
+        engine.read_index_2022_minutes("IM")
+
+
+def test_bear_2022_records_the_ledger_before_reading_holdout(tmp_path, monkeypatch):
+    import backtest.engine as engine
+    from strategies.index_bear_reversal import BOOK as BEAR_BOOK
+
+    monkeypatch.setattr(C, "INDEX_OOS_LEDGER", tmp_path / "ledger.jsonl")
+    monkeypatch.setattr(engine, "read_index_2022_minutes", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("holdout")))
+    with pytest.raises(RuntimeError, match="holdout"):
+        engine.run_index_bear_2022(BEAR_BOOK)
+    rows = C.read_ledger(tmp_path / "ledger.jsonl")
+    assert [row["status"] for row in rows] == ["opened"]
+    assert rows[0]["strategy"] == "index_close_location_bear_short_2022"
+    assert rows[0]["test_start"] == "2022-01-01"
+    assert rows[0]["test_end"] == "2022-12-31"
+
+
+def test_index_only_the_bear_short_book_exists_and_opens_only_2022(monkeypatch):
+    import backtest.engine as engine
+
+    for removed in ("index_close_location_reversal_strict_swap", "index_close_location_reversal"):
+        with pytest.raises(SystemExit):
+            engine.main([removed, "--research"])
+    monkeypatch.setattr(
+        engine, "run_index_bear_2022",
+        lambda book: (_ for _ in ()).throw(AssertionError("不应打开熊市空头的 2023")),
+    )
+    with pytest.raises(SystemExit):
+        engine.main(["index_close_location_bear_short", "--oos"])
+    with pytest.raises(SystemExit):
+        engine.main(["index_close_location_bear_short", "--year", "2023"])
+    opened = {}
+    monkeypatch.setattr(engine, "run_index_bear_2022", lambda book: opened.setdefault("id", book.ID))
+    engine.main(["index_close_location_bear_short", "--validation"])
+    assert opened["id"] == "index_close_location_bear_short"

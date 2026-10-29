@@ -1,118 +1,8 @@
-"""Research window, protocol, and candidate-signal contracts."""
-
-# --- test_index_market_clock.py ---
+"""还在用的研究契约：展期口径、熊市空头规则、图表报告。"""
 
 import numpy as np
 import pandas as pd
 import pytest
-
-from research.index_market_clock import (
-    FACTORS,
-    SCORE_START,
-    SYMBOLS,
-    _trim_to_first_target,
-    _targets,
-    load_protocol,
-    require_index_carry_coverage,
-    write_plots,
-)
-
-
-def _synthetic_inputs(days=520):
-    index = pd.bdate_range("2015-01-01", periods=days)
-    rng = np.random.default_rng(17)
-    signed = {
-        factor: pd.DataFrame(
-            rng.normal(size=(days, len(SYMBOLS))), index=index, columns=SYMBOLS
-        )
-        for factor in FACTORS
-    }
-    close = pd.DataFrame(
-        100 * np.exp(np.cumsum(rng.normal(0.0001, 0.01, (days, len(SYMBOLS))), axis=0)),
-        index=index,
-        columns=SYMBOLS,
-    )
-    bars = {"close": close, "closew": close - 25.0}
-    carry = pd.DataFrame(0.1, index=index, columns=SYMBOLS)
-    return index, signed, bars, carry
-
-
-def test_protocol_declares_only_research_period_and_long_baseline_plus_current_book():
-    protocol = load_protocol()
-    assert protocol["status"] == "declared_test_not_a_strategy"
-    assert protocol["instruments"] == list(SYMBOLS)
-    assert protocol["books"] == ["market_clock_pool", "market_clock_slow_short_20_60_120"]
-    assert protocol["parameters"]["short_trend_windows"] == [20, 60, 120]
-    assert protocol["minimum_valid_instruments_for_market_score"] == 3
-    assert protocol["sample"].startswith("Index research calendar 2015-04-16")
-    assert SCORE_START == pd.Timestamp("2015-04-16")
-
-
-def test_index_run_writes_per_book_and_comparison_performance_plots(tmp_path):
-    index = pd.bdate_range("2015-04-16", periods=5)
-    returns = pd.DataFrame(
-        {
-            "market_clock_pool": [0.01, -0.01, 0.02, 0.0, 0.01],
-            "market_clock_slow_short_20_60_120": [0.0, -0.005, 0.01, 0.005, 0.0],
-        },
-        index=index,
-    )
-    market = pd.Series([0.005, -0.01, 0.01, 0.002, 0.0], index=index)
-
-    write_plots(returns, market, tmp_path)
-
-    assert (tmp_path / "plots" / "market_clock_pool.png").is_file()
-    assert (tmp_path / "plots" / "market_clock_slow_short_20_60_120.png").is_file()
-    assert (tmp_path / "plots" / "comparison.png").is_file()
-
-
-def test_backtest_outputs_start_on_first_nonzero_target_date():
-    index = pd.bdate_range("2015-04-16", periods=6)
-    returns = pd.DataFrame({"market": [0.1] * len(index)}, index=index)
-    targets = {
-        "long": pd.DataFrame({"IF": [0, 0, 0, 1, 0, 0]}, index=index),
-        "current": pd.DataFrame({"IF": [0, 0, 0, 0, -1, 0]}, index=index),
-    }
-
-    actual, first_signal = _trim_to_first_target(returns, targets)
-
-    assert first_signal == index[3]
-    assert actual.index.equals(index[3:])
-
-
-def test_backtest_output_start_requires_a_nonzero_target():
-    index = pd.bdate_range("2015-04-16", periods=3)
-    returns = pd.DataFrame({"market": [0.1] * len(index)}, index=index)
-    targets = {"long": pd.DataFrame({"IF": [0, 0, 0]}, index=index)}
-
-    with pytest.raises(ValueError, match="没有任何非零目标"):
-        _trim_to_first_target(returns, targets)
-
-
-def test_index_carry_coverage_fails_above_five_percent():
-    index = pd.bdate_range(SCORE_START, "2021-12-31")
-    carry = pd.DataFrame(0.1, index=index, columns=SYMBOLS)
-    require_index_carry_coverage(carry, index)
-    carry.loc[index[index.year == 2016][:16], "IH"] = np.nan
-    with pytest.raises(ValueError, match="IH 缺 6%"):
-        require_index_carry_coverage(carry, index)
-
-
-def test_index_targets_use_only_information_available_before_execution_open():
-    index, signed, bars, carry = _synthetic_inputs()
-    original = _targets(index, bars, signed, carry)
-    changed_signed = {name: frame.copy() for name, frame in signed.items()}
-    changed_bars = {name: frame.copy() for name, frame in bars.items()}
-    for frame in changed_signed.values():
-        frame.iloc[-1] = 100.0
-    for frame in changed_bars.values():
-        frame.iloc[-1] *= 2.0
-    changed_carry = carry.copy()
-    changed_carry.iloc[-1] = -1.0
-    changed = _targets(index, changed_bars, changed_signed, changed_carry)
-    for book in original:
-        pd.testing.assert_frame_equal(original[book], changed[book])
-
 
 def test_index_carry_uses_the_largest_oi_later_contract_and_the_maturity_gap():
     from download.index.getIndexRollYield import main_sub_carry
@@ -131,199 +21,109 @@ def test_index_carry_uses_the_largest_oi_later_contract_and_the_maturity_gap():
     assert row["annualized_yield"] == pytest.approx(40 / 3960 * 365 / 56)
 
 
-# --- test_index_close_location_candidate.py ---
+# --- 股指熊市空头（唯一保留的股指策略） ---
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from research.index_close_location_candidate import (
-    CANDIDATE_ID,
-    BENCHMARK_ID,
-    SYMBOLS,
-    build_targets,
-    load_protocol as load_candidate_protocol,
-)
-from strategies.index_close_location import STRICT_SWAP_BOOK, strict_swap_targets
-from strategies.catalog import BOOKS as COMMODITY_BOOKS
-from strategies.index_catalog import BOOKS as INDEX_BOOKS, book_named
+from strategies.index_bear_reversal import BOOK as BEAR_BOOK
+from strategies.index_catalog import INDEX_FROZEN_BOOKS
+from strategies.index_close_location import SYMBOLS, market_close_location
 
 
-def test_candidate_uses_prior_close_location_and_registered_binary_rule():
-    index = pd.date_range("2016-01-13", periods=4, freq="B")
-    low = pd.DataFrame(0.0, index=index, columns=SYMBOLS)
-    high = pd.DataFrame(10.0, index=index, columns=SYMBOLS)
-    close = pd.DataFrame(
-        [[2.0] * 3, [8.0] * 3, [1.0] * 3, [9.0] * 3],
-        index=index,
-        columns=SYMBOLS,
-    )
-    bars = {"loww": low, "highw": high, "closew": close}
-
-    targets, market_clv = build_targets(bars, index)
-
-    protocol = load_candidate_protocol()
-    assert protocol["status"] == "exploratory_predeclared"
-    assert protocol["parameters"]["score_start"] == "2016-01-13"
-    assert INDEX_BOOKS == (STRICT_SWAP_BOOK,)
-    assert all(book.ID != CANDIDATE_ID for book in COMMODITY_BOOKS)
-    assert market_clv.tolist() == pytest.approx([0.2, 0.8, 0.1, 0.9])
-    assert targets[CANDIDATE_ID].iloc[:, 0].tolist() == [0.0, 1.0, 0.0, 1.0]
-    assert targets[BENCHMARK_ID].eq(1.0).all().all()
-
-    changed = close.copy()
-    changed.iloc[-1] = 0.0
-    changed_targets, _ = build_targets({**bars, "closew": changed}, index)
-    pd.testing.assert_frame_equal(
-        targets[CANDIDATE_ID].iloc[:-1],
-        changed_targets[CANDIDATE_ID].iloc[:-1],
-    )
+def test_index_catalog_keeps_only_the_bear_short_book_and_clv_uses_the_day_range():
+    assert INDEX_FROZEN_BOOKS == (BEAR_BOOK,)
+    index = pd.bdate_range("2016-01-13", periods=2)
+    bars = {"loww": pd.DataFrame(0.0, index=index, columns=SYMBOLS),
+            "highw": pd.DataFrame(10.0, index=index, columns=SYMBOLS),
+            "closew": pd.DataFrame([[2.0] * 3, [9.0] * 3], index=index, columns=SYMBOLS)}
+    assert market_close_location(bars, index).tolist() == pytest.approx([0.2, 0.9])
 
 
-def test_frozen_index_strict_swap_uses_lagged_clv_and_carry():
-    index = pd.bdate_range("2015-04-16", periods=5)
-    bars = {
-        "close": pd.DataFrame(100.0, index=index, columns=SYMBOLS),
-        "closew": pd.DataFrame(100.0, index=index, columns=SYMBOLS),
-        "highw": pd.DataFrame(110.0, index=index, columns=SYMBOLS),
-        "loww": pd.DataFrame(90.0, index=index, columns=SYMBOLS),
-    }
-    carry = pd.DataFrame(0.1, index=index, columns=SYMBOLS)
-    clv = pd.Series([0.2, 0.8, 0.2, 0.8, 0.2], index=index)
+def test_bear_short_waits_for_the_next_open_and_keeps_a_weak_close_long():
+    from strategies.index_bear_reversal import THRESHOLD, bear_reversal_targets
+    INDEX_SYMBOLS = SYMBOLS
 
-    targets = strict_swap_targets(clv, bars, carry)
-
-    assert STRICT_SWAP_BOOK.frozen()["chosen"] == STRICT_SWAP_BOOK.declared()["parameters"]
-    assert targets["IF"].tolist() == [0.0, 0.0, 0.0, 1.0, 0.0]
-
-
-def test_short_leg_overrides_the_long_and_uses_only_the_previous_close():
-    from research import index_close_location_candidate as K
-
-    index = pd.bdate_range("2018-01-01", periods=200)
-    close = pd.DataFrame({s: 100 * np.exp(-0.002 * np.arange(200)) for s in K.SYMBOLS}, index=index)
-    bars = {"close": close, "closew": close - 10}
-    long_target = pd.DataFrame(1.0, index=index, columns=list(K.SYMBOLS))
-    carry = pd.DataFrame({"IF": -0.1, "IH": 0.1, "IC": -0.1}, index=index)
-    out = K.short_leg_targets(long_target, bars, carry)
-    assert out.iloc[-1].tolist() == [-1.0, 1.0, -1.0]             # 稳定下跌：熊市且趋势为负，展期为负的才做空
-    assert out.iloc[:120].eq(1.0).all().all()                     # 120 日窗口不足时没有熊市判断
-    moved = {k: v.copy() for k, v in bars.items()}
-    for v in moved.values():
-        v.iloc[-1] *= 5
-    pd.testing.assert_frame_equal(out, K.short_leg_targets(long_target, moved, carry))
-
-
-# --- test_three_strategy_clv_comparison.py ---
-
-import numpy as np
-import pandas as pd
-
-from research.commodity_close_location_reversal import (
-    attribute_positions,
-    index_close_location_targets,
-    load_protocol as load_comparison_protocol,
-)
-from research.index_market_clock import SYMBOLS
-
-
-def test_comparison_protocol_declares_three_books_and_locked_windows():
-    protocol = load_comparison_protocol()
-
-    assert protocol["books"] == [
-        "market_clock_slow_short_20_60_120",
-        "commodity_close_location_reversal_strict_swap",
-        "index_close_location_reversal_strict_swap",
-    ]
-    assert "Do not read 2022" in protocol["sample"]
-    assert "2015-04-16" in protocol["sample"]
-
-
-def test_index_close_location_target_uses_prior_close_and_preserves_carry_gate():
-    index = pd.bdate_range("2015-04-16", periods=140)
-    close = pd.DataFrame(
-        np.repeat((100.0 + np.arange(len(index), dtype=float))[:, None], len(SYMBOLS), axis=1),
-        index=index,
-        columns=SYMBOLS,
-    )
-    high = close + 2.0
+    index = pd.bdate_range("2016-01-04", periods=140)
+    level = pd.Series(np.linspace(200.0, 60.0, len(index)), index=index)
+    close = pd.DataFrame({symbol: level for symbol in INDEX_SYMBOLS})
+    high = close + 8.0
     low = close - 2.0
-    high.loc[index[20]] = close.loc[index[20]] + 3.0
-    low.loc[index[20]] = close.loc[index[20]] - 1.0
-    bars = {"close": close, "closew": close, "highw": high, "loww": low}
-    carry = pd.DataFrame(0.1, index=index, columns=SYMBOLS)
+    high.iloc[126] = close.iloc[126] + 1.0
+    low.iloc[126] = close.iloc[126] - 9.0
+    high.iloc[50] = close.iloc[50] + 1.0
+    low.iloc[50] = close.iloc[50] - 9.0
+    bars = {"close": close, "closew": close.copy(), "highw": high, "loww": low, "open": close * 0 + 100.0, "openw": close * 0 + 100.0}
+    market = ((close - low) / (high - low)).mean(axis=1)
 
-    target, market_clv = index_close_location_targets(index, bars, carry)
+    targets = bear_reversal_targets(market, bars)
 
-    assert market_clv.loc[index[20]] == 0.25
-    assert target.loc[index[20]].eq(0.0).all()
-    assert target.loc[index[21]].eq(1.0).all()
-    changed = {name: frame.copy() for name, frame in bars.items()}
-    for frame in changed.values():
-        frame.loc[index[22]:] += 100.0
-    changed_target, _ = index_close_location_targets(index, changed, carry)
-    pd.testing.assert_frame_equal(target.loc[:index[21]], changed_target.loc[:index[21]])
-
-    negative_carry = carry.copy()
-    negative_carry.loc[index[19], "IF"] = -0.1
-    filtered, _ = index_close_location_targets(index, bars, negative_carry)
-    assert filtered.at[index[21], "IF"] == 0.0
-    assert filtered.at[index[21], "IH"] == 1.0
+    assert THRESHOLD == 0.4
+    assert targets.iloc[51, 0] == 0.0
+    assert targets.iloc[126, 0] == 1.0
+    assert targets.iloc[127, 0] == -1.0
+    moved = close.copy()
+    moved.iloc[-1] = 1.0
+    unchanged = bear_reversal_targets(market, {**bars, "close": moved, "closew": moved})
+    pd.testing.assert_frame_equal(targets, unchanged)
 
 
-def test_component_attribution_reconciles_to_ledger_net_return():
+def test_vol_scale_shrinks_a_wild_market_and_ignores_the_unfinished_open():
+    from strategies.index_bear_reversal import bear_reversal_targets
+
+    index = pd.bdate_range("2016-01-04", periods=160)
+    level = pd.Series(np.linspace(200.0, 40.0, len(index)), index=index)
+    close = pd.DataFrame({symbol: level for symbol in ("IF", "IH", "IC")})
+    high = close + 8.0
+    low = close - 2.0
+    shock = np.array([0.08 if i % 2 == 0 else -0.07 for i in range(len(index))])
+    path = 100.0 * np.cumprod(1.0 + shock)
+    opened = pd.DataFrame({symbol: path for symbol in ("IF", "IH", "IC")}, index=index)
+    bars = {"close": close, "closew": close.copy(), "highw": high, "loww": low, "open": opened, "openw": opened.copy()}
+    market = ((close - low) / (high - low)).mean(axis=1)
+    targets = bear_reversal_targets(market, bars)
+    assert targets.iloc[-1, 0] > 0
+    assert targets.iloc[-1, 0] < 0.5
+    bumped = opened.copy()
+    bumped.iloc[-1] *= 2
+    pd.testing.assert_frame_equal(
+        targets,
+        bear_reversal_targets(market, {**bars, "open": bumped, "openw": bumped}),
+    )
+
+# --- strategy_report ---
+
+from research.report import strategy_report as SR
+
+def test_report_protocol_lists_the_three_frozen_books_and_locked_windows():
+    protocol = SR.load_protocol()
+    assert protocol["books"] == list(SR.BOOK_IDS)
+    assert "不读 2022" in protocol["sample"] and "不读 2026" in protocol["sample"]
+
+
+def test_report_components_rebuild_the_frozen_rule_and_short_overrides():
+    index = pd.bdate_range("2018-01-01", periods=4)
+    cols = ["A", "B"]
+    signal = pd.DataFrame([[True, True], [False, False], [True, True], [True, True]], index=index, columns=cols)
+    lagged = pd.DataFrame([[0.1, -0.1]] * 4, index=index, columns=cols)
+    trend = pd.DataFrame(-1.0, index=index, columns=cols)
+    bear = pd.Series([False, False, True, True], index=index)
+    out = SR.component_decisions(signal, lagged, trend, bear)
+    assert out["full"]["A"].tolist() == [1.0, 0.0, 1.0, 1.0]
+    assert out["full"]["B"].tolist() == [0.0, 0.0, -1.0, -1.0]
+    assert out["signal_only"]["B"].tolist() == [1.0, 0.0, 1.0, 1.0]
+    assert out["carry_only"]["A"].eq(1.0).all() and out["carry_only"]["B"].eq(0.0).all()
+    pd.testing.assert_frame_equal(out["full"], out["long_leg"] + out["short_leg"])
+
+
+def test_leg_contributions_reconcile_to_ledger_net_return():
     day = pd.Timestamp("2018-01-02")
-    daily = pd.DataFrame(
-        {
-            "期初权益": [1000.0],
-            "毛盈亏": [30.0],
-            "交易费用": [5.0],
-            "权益清零调整": [0.0],
-            "净收益": [0.025],
-        },
-        index=pd.DatetimeIndex([day]),
-    )
-    positions = pd.DataFrame(
-        {
-            "交易日": [day, day],
-            "品种": ["IF", "IH"],
-            "手数": [2, -1],
-            "合约乘数": [10.0, 5.0],
-        }
-    )
+    daily = pd.DataFrame({"期初权益": [1000.0], "毛盈亏": [30.0], "交易费用": [5.0],
+                          "权益清零调整": [0.0], "净收益": [0.025]}, index=pd.DatetimeIndex([day]))
+    positions = pd.DataFrame({"交易日": [day, day], "品种": ["IF", "IH"], "手数": [2, -1],
+                              "合约乘数": [10.0, 5.0]})
     delta = pd.DataFrame({"IF": [1.0], "IH": [-2.0]}, index=daily.index)
+    legs = SR.leg_contributions(daily, positions, delta)
+    assert legs.loc[day].tolist() == [0.02, 0.01, -0.005]
 
-    side, instruments = attribute_positions(daily, positions, delta)
-
-    assert side.loc[day, "多头腿"] == 0.02
-    assert side.loc[day, "空头腿"] == 0.01
-    assert side.loc[day, "交易成本及清零调整"] == -0.005
-    assert np.isclose(side.loc[day].sum(), daily.loc[day, "净收益"])
-    assert np.isclose(instruments.loc[day].sum(), daily.loc[day, "净收益"])
-
-
-# --- commodity L1 mechanism diagnostics ---
-
-from research.close_location_mechanism import (
-    benjamini_hochberg_qvalues,
-    load_l1_liquidity_protocol,
-    trailing_worse_state,
-)
-
-
-def test_commodity_l1_protocol_and_liquidity_states_exclude_current_day():
-    protocol = load_l1_liquidity_protocol()
-    assert protocol["parameters"]["state_lookback"] == 250
-    index = pd.date_range("2020-01-01", periods=6, freq="D")
-    spread = pd.Series([1.0, 2.0, 3.0, 4.0, 0.0, 9.0], index=index)
-    state = trailing_worse_state(spread, higher_is_worse=True, window=4, min_periods=2)
-    changed = spread.copy()
-    changed.iloc[-1] = -9.0
-    changed_state = trailing_worse_state(
-        changed, higher_is_worse=True, window=4, min_periods=2
-    )
-    pd.testing.assert_series_equal(state.iloc[:-1], changed_state.iloc[:-1])
-    assert state.iloc[-1] == 1.0
-    q_values = benjamini_hochberg_qvalues(pd.Series([3.0, 0.1, 2.0]))
-    assert q_values.between(0.0, 1.0).all()
-    assert q_values.iloc[0] < q_values.iloc[1]

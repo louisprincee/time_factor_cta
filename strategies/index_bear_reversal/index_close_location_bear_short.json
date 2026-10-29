@@ -1,0 +1,42 @@
+{
+  "id": "index_close_location_bear_short",
+  "status": "frozen",
+  "declared_at": "2026-10-28",
+  "frozen_at": "2026-10-28",
+  "sample": "IF、IH、IC。研究日历 2015-04-16 至 2021-12-31。阈值在这个全研究期上选定，不单独用 2016–2021。不读 2022 作为研究样本。用户 2026-10-28 只打开日历 2022。不读 2023–2025，不读 2026。",
+  "hypothesis": "弱收盘的下一开盘到再下一开盘仍做多。熊市里、收盘并不弱的日子做空三个品种，用来在下跌市里靠空头挣钱。熊市沿用商品账本的 20/60/120 日收益符号平均小于 0，不用展期过滤，否则股指上空头几乎不开仓。",
+  "threshold_choice": {
+    "candidates": [0.3, 0.4, 0.5],
+    "outcome": "信号日收盘之后的下一次开盘到再下一次开盘，三品种等权",
+    "criterion": "全研究期上，收盘位置低于阈值的日子减去其余日子，Newey–West t 最大",
+    "result": "0.3 的 t 为 2.45，0.4 为 3.03，0.5 为 2.76。2016 起分别是 3.78、4.03、3.69。选定 0.4。"
+  },
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "long_rule": "Equal-weight close location < 0.4, next open, weight +1. This long stays on in a bear market.",
+    "short_rule": "market_trend < 0 and equal-weight close location >= 0.4, next open, weight -1 on IF, IH and IC",
+    "trend_windows": [20, 60, 120],
+    "carry_filter": "none",
+    "conflict_rule": "long and short partition the day; a weak close is long",
+    "gross_exposure_limit": 1.0,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "position_scale": "min(1, 0.20 / trailing 20-day equal-weight open-to-open volatility); do not scale above 1",
+    "costs": "Historical index fees and one prior-year tick per side"
+  },
+  "siblings": ["long_only_0.4"],
+  "decision_note": "用户 2026-10-28：研究期不能只看 2016–2021 的上涨。阈值按次日收益的显著程度选。同一天先登记等权版本并打开 2022。随后把波动率缩放写进这条策略：过去 20 日波动高于 20% 时整本缩小，不超过原来的 1 倍。等权版本的 2022 结果作废，缩放后的规则没有重跑 2022。2023 及以后不打开。不改 A 和 B。",
+  "chosen": {
+    "instruments": ["IF", "IH", "IC"],
+    "long_rule": "Equal-weight close location < 0.4, next open, weight +1. This long stays on in a bear market.",
+    "short_rule": "market_trend < 0 and equal-weight close location >= 0.4, next open, weight -1 on IF, IH and IC",
+    "trend_windows": [20, 60, 120],
+    "carry_filter": "none",
+    "conflict_rule": "long and short partition the day; a weak close is long",
+    "gross_exposure_limit": 1.0,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "position_scale": "min(1, 0.20 / trailing 20-day equal-weight open-to-open volatility); do not scale above 1",
+    "costs": "Historical index fees and one prior-year tick per side"
+  }
+}

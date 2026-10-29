@@ -447,3 +447,27 @@ def test_night_volume_does_not_enter_the_session_ratio_or_afternoon_flag():
     assert out['vol_pm'] != out['vol_pm']  # 最大量在夜盘，不是上午/下午
     assert np.isfinite(out['vd_ratio'])
     assert out['ts_volume'] == pytest.approx(0.0)
+
+
+# --- 国泰君安股指报告因子 ---
+
+def test_gtja_factors_use_only_the_same_day():
+    from tfcta.factors import gtja_index_factors
+
+    times = [pd.Timestamp("2018-01-02 09:31") + pd.Timedelta(minutes=k) for k in range(120)]
+    times += [pd.Timestamp("2018-01-02 13:01") + pd.Timedelta(minutes=k) for k in range(120)]
+    day = pd.DatetimeIndex(times)
+    index = day.append(day + pd.DateOffset(days=1))
+    rng = np.random.default_rng(1)
+    close = 4000 + np.cumsum(rng.normal(0, 2, len(index)))
+    frame = pd.DataFrame({
+        "close": close, "closew": close - 100, "highw": close - 99, "loww": close - 101,
+        "volume": rng.integers(10, 200, len(index)).astype(float), "total_turnover": 1.0,
+        "trading_date": index.normalize(),
+    }, index=index)
+    frame.iloc[30, frame.columns.get_loc("loww")] = close[30] - 200      # 第一天最低价在第 31 分钟
+    out = gtja_index_factors(frame)
+    assert out.loc["2018-01-02", "time_to_low"] == pytest.approx(30 / 239)
+    later = frame.copy()
+    later.loc[later["trading_date"] == "2018-01-03", ["close", "volume"]] *= 3
+    assert out.loc["2018-01-02"].equals(gtja_index_factors(later).loc["2018-01-02"])

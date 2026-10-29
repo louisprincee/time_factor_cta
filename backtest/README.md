@@ -8,21 +8,21 @@ python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期
 python -m backtest.engine --research --by-year       # 每年一本新账
 python -m backtest.engine --year 2019
 python -m backtest.engine --start 2018 --end 2020
-python -m backtest.engine --validation               # 2022，策略冻结后
+python -m backtest.engine index_close_location_bear_short --research  # 熊市空头含波动率缩放，只跑 2015–2021
+python -m backtest.engine --market index --validation  # 熊市空头的 2022 已打开，只打印保存的结果
 python -m backtest.engine --year 2024                # 单年，冻结后
 python -m backtest.engine --oos [--by-year]          # 2023–2025，冻结后
 ```
 
-当前 `strategies/catalog.py` 登记两条冻结商品策略；不指定策略名时，商品入口会运行两条。股指策略由 `strategies/index_catalog.py` 独立登记，但同样由 `backtest.engine` 调用共享整数手账本运行。股指正式组合只开放 2015–2021 研究期，不读 2022+：
+当前 `strategies/commodity_catalog.py` 登记两条冻结商品策略；不指定策略名时，商品入口会运行两条。股指策略由 `strategies/index_catalog.py` 独立登记。不点名时股指入口跑熊市空头（含波动率缩放），研究期 2015–2021，`--validation` 只打印已打开的 2022。不读 2023–2025，不读 2026。
 
 ```bash
 python -m backtest.engine market_clock_slow_short_20_60_120 --research
 python -m backtest.engine 商品收盘位置策略 --research
-python -m backtest.engine 股指收盘位置策略 --research
-python -m backtest.engine 股指收盘位置策略 --research --index-individuals
+python -m backtest.engine --market index --research
 ```
 
-账本结果直接位于 `runs/strategies/<策略>/<区间>/`，不再按商品或股指增加目录层。添加 `--index-individuals` 会由同一 engine 额外执行 IF、IH、IC 三本单品种诊断账本，分别写入 `runs/strategies/<股指策略>/individual/<品种>/research/`；这些是事后诊断，不是独立策略。图表直接位于各账本的 `plots/` 下。
+账本结果直接位于 `runs/strategies/<策略>/<区间>/`，不再按商品或股指增加目录层。图表直接位于各账本的 `plots/` 下；股指熊市空头的研究期账本另写 `plots/vs_buy_hold.png` 和 `side_days.csv`。
 
 2022 及以后：点到的策略里有任何一条没冻结，整批直接拒绝，不写台账也不读行情。冻结了就先写台账再读（2022 记 `year_test`，2023 起走 `final_evaluation`，都带冻结日期、`chosen` 和代码与规格文件的哈希）。台账里已经打开过的窗口只打印旧结果；结果文件丢了，要先追加一条 `kind: void` 并写原因才能重开。不读 2026。
 
@@ -39,7 +39,7 @@ python -m backtest.engine 股指收盘位置策略 --research --index-individual
 - 无开盘价或最高等于最低（涨跌停代理）当日不成交，次日重试。持仓期间缺复权开盘变动直接报错。
 - 整本账一个峰值回撤熔断：10% 清仓、停 `halt_days`（当前策略为 10）个交易日，恢复当日把熔断用的峰值改成当时权益（`daily.csv` 的 `熔断口径回撤`）。`summary.csv` 的 `最大回撤` 从初始资金起算，不受这个重置影响。
 - 保证金按名义金额 20% 估计，超过权益就清仓。
-- 1 亿元初始权益。年化收益、波动率和 Sharpe 用每年 242 个交易日。`summary.csv` 和 `annual.csv` 同时报告 Calmar 比率，定义为年化收益 / 最大回撤绝对值；年度 Calmar 按该年度的有效交易日数年化。
+- 1 亿元初始权益。股指账本下单时再按当天的中金所非套保开仓限额截断，超出的当天不成交，之后补。年化收益、波动率和 Sharpe 用每年 242 个交易日。`summary.csv` 和 `annual.csv` 同时报告 Calmar 比率，定义为年化收益 / 最大回撤绝对值；年度 Calmar 按该年度的有效交易日数年化。
 
 手续费按历史费率：按金额 ×1.01、按手数 +0.01 元；手续费表最多向后沿用 31 天。米筐的上期所费率从 2013-10-08 才有，2011-01-01 到 2013-10-07 的 AG、AL、AU、CU、RB、RU、ZN 用各自 2013-10-08 的费率往前沿用（用户 2026-10-23 决定，`backfill_shfe_fees`），这是假设；把这段费率改成 0 或翻倍，2011–2013 年净收益变动不到 0.2 个百分点。大商所 2010 年起是真实费率。滑点是上一年估计 tick 每边 1 跳，上一年估不出时最多再沿用一年。超出就是缺成本，成交当天报错。
 
@@ -51,22 +51,11 @@ python -m backtest.engine 股指收盘位置策略 --research --index-individual
 
 绩效函数 `performance`、`sharpe_ratio`、`max_drawdown`、`newey_west_t`、`deflated_sharpe`、`pbo_cscv` 也在 `backtest/engine.py`。
 
-## 三策略收盘位置替换对照
+## 商品两本冻结策略的图表报告
 
-先用 `backtest.engine` 生成三本冻结策略账本；股指还需加 `--index-individuals` 生成 IF/IH/IC 单品种诊断账本。然后运行 `python -m research.commodity_close_location_reversal --three-book-comparison`，研究规格在 `config/research/three_strategy_clv_comparison.json`。研究脚本只读账本并做归因和绘图，不执行策略回测：
+先用 `backtest.engine` 跑两本商品冻结账本，再运行 `python -m research.report.strategy_report`（规格 `config/research/strategy_report.json`）。报告按冻结规则重算完整策略并与 engine 账本逐日核对，再在同一账本、同样成本下跑组成部分和买入持有基准：
 
-1. 商品原策略，2011–2021；
-2. 商品收盘位置策略：以池内等权收盘位置 `< 0.5` 作为多头信号，保留滞后一日 carry > 0 筛选、趋势空头、预算、执行和风控；
-3. 股指收盘位置策略：对 IF/IH/IC 使用等权收盘位置 `< 0.5`，保留 carry 筛选和趋势空头，研究日历从三品种共同上市日 2015-04-16 起，首个有目标的收益日为 2015-04-20。
+- `runs/reports/commodity/plots/`：`nav_drawdown.png`（两本商品策略净值与回撤）、`vs_buy_hold.png`（对比池内等权买入持有）、`components.png`（只保留时间信号、展期、多头腿、空头腿时的净值）。
+- 目录里另有 `summary.csv`、`annual.csv`、`leg_contributions.csv`（完整账本多头腿、空头腿、成本逐年贡献，不复利，可复算净收益）、`daily_returns.csv`。
 
-三个结果均使用 1 亿元账本、10% 回撤熔断、历史手续费和每边 1 跳滑点。股指 2015 年因 IH/IC 没有上一年估计 tick，按已核实的中金所固定 tick 0.2 点计；其后使用上一年估计 tick。实际结果（研究期、样本内）：
-
-| 策略 | 计分区间 | 年化净收益 | 净 Sharpe | 最大回撤 | 年化成本占权益 |
-|---|---|---:|---:|---:|---:|
-| 商品原策略 | 2011-01-14–2021-12-30 | 5.64% | 1.03 | −6.48% | 3.13% |
-| 商品收盘位置策略 | 2011-01-14–2021-12-30 | 6.21% | 1.12 | −5.99% | 3.16% |
-| 股指收盘位置策略 | 2015-04-20–2021-12-30 | 11.94% | 0.88 | −26.35% | 0.93% |
-
-贡献按实际整数手持仓的多头、空头毛盈亏拆分，实际交易成本单列，并校验各项可逐日复算账本净收益；IF、IH、IC 另分别拆分。年度贡献图采用“逐日 PnL / 当日期初权益”累加，不复利，因此与复利后的年度净收益不同。图表和明细位于 `runs/research/three_strategy_clv_comparison/`，所有图都直接位于 `plots/`，包括 `nav_comparison.png`、`commodity_annual_contributions.png`、`index_annual_symbol_contributions.png` 和 `cumulative_leg_contributions.png`。
-
-这些窗口都与此前研究日期重叠，不是样本外验证。股指按 1 亿元运行时未建模历史中金所开仓限额；2015–2018 年潜在手数可能超过限额，不能把该段账本结果视为可执行容量或实盘表现。研究只读取商品 2011–2021、股指 2015–2021 研究分区，不读取 2022+ 或 2026。
+组成部分是各自独立的账本，不能相加。结果都是研究期样本内描述。

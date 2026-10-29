@@ -62,25 +62,6 @@ def test_write_results_includes_calmar_in_summary_and_annual_csv(monkeypatch, tm
     saved_annual = pd.read_csv(tmp_path / "strategies" / "test" / "2019" / "annual.csv")
     assert saved_summary.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
     assert saved_annual.loc[0, "Calmar比率"] == pytest.approx(expected_calmar)
-    engine.write_results(
-        2019,
-        strategy,
-        daily,
-        pd.DataFrame(),
-        pd.DataFrame(),
-        [],
-        market="index",
-        result_subdirectory=Path("individual") / "IF",
-    )
-    assert (
-        tmp_path
-        / "strategies"
-        / "test"
-        / "individual"
-        / "IF"
-        / "2019"
-        / "summary.csv"
-    ).is_file()
 
 
 def test_annualized_metrics_and_sharpe_use_242_trading_days():
@@ -157,7 +138,7 @@ def test_cost_coverage_rejects_missing_symbols_instead_of_dropping_them():
     (["--year", "2019"], (2019, 2019, False)),
 ])
 def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
-    import research.market_clock_slow_short_20_60_120 as driver
+    import research.commodity.market_clock_slow_short_20_60_120 as driver
 
     seen = []
     monkeypatch.setattr(driver, "run_span", lambda start, end, by_year=False, book=None: seen.append(
@@ -167,7 +148,7 @@ def test_cli_maps_every_switch_to_one_span(monkeypatch, argv, window):
 
 
 def test_cli_passes_a_named_frozen_replacement_book(monkeypatch):
-    import research.market_clock_slow_short_20_60_120 as driver
+    import research.commodity.market_clock_slow_short_20_60_120 as driver
     from strategies import commodity_close_location as R
 
     seen = []
@@ -177,40 +158,11 @@ def test_cli_passes_a_named_frozen_replacement_book(monkeypatch):
     assert seen == [R.STRICT_SWAP_BOOK]
 
 
-def test_cli_routes_index_research_to_the_shared_engine(monkeypatch):
+def test_index_market_without_a_name_runs_the_bear_short_book(monkeypatch):
     seen = []
-    monkeypatch.setattr(
-        engine,
-        "run_index_research",
-        lambda start, end, by_year=False, include_individuals=False: seen.append(
-            (start, end, by_year, include_individuals)
-        ),
-    )
-
-    engine.main(["index_close_location_reversal_strict_swap", "--research"])
-
-    assert seen == [(2015, 2021, False, False)]
-
-
-def test_index_cli_can_request_single_symbol_ledgers(monkeypatch):
-    seen = []
-    monkeypatch.setattr(
-        engine,
-        "run_index_research",
-        lambda start, end, by_year=False, include_individuals=False: seen.append(
-            (start, end, include_individuals)
-        ),
-    )
-
-    engine.main(
-        [
-            "index_close_location_reversal_strict_swap",
-            "--research",
-            "--index-individuals",
-        ]
-    )
-
-    assert seen == [(2015, 2021, True)]
+    monkeypatch.setattr(engine, "run_index_bear_research", lambda start, end, by_year=False: seen.append((start, end)))
+    engine.main(["--market", "index", "--research"])
+    assert seen == [(2015, 2021)]
 
 
 def test_index_cli_rejects_later_windows_before_loading_data(monkeypatch):
@@ -248,8 +200,8 @@ def _freeze_books(monkeypatch, tmp_path, books):
 
 
 def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypatch, tmp_path):
-    import research.market_clock_slow_short_20_60_120 as driver
-    from strategies.catalog import BOOKS
+    import research.commodity.market_clock_slow_short_20_60_120 as driver
+    from strategies.commodity_catalog import BOOKS
 
     book = BOOKS[0]
     config = json.loads(book.CONFIG_PATH.read_text(encoding="utf-8"))
@@ -269,8 +221,8 @@ def test_later_windows_are_refused_before_any_ledger_write_until_frozen(monkeypa
 
 
 def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatch, tmp_path):
-    import research.market_clock_slow_short_20_60_120 as driver
-    from strategies.catalog import FROZEN_BOOKS as BOOKS
+    import research.commodity.market_clock_slow_short_20_60_120 as driver
+    from strategies.commodity_catalog import FROZEN_BOOKS as BOOKS
 
     _freeze_books(monkeypatch, tmp_path, BOOKS)
     ledger = tmp_path / "ledger.jsonl"
@@ -295,8 +247,8 @@ def test_frozen_books_ledger_before_loading_with_the_real_frozen_spec(monkeypatc
 
 
 def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monkeypatch, tmp_path):
-    import research.market_clock_slow_short_20_60_120 as driver
-    from strategies.catalog import book_named
+    import research.commodity.market_clock_slow_short_20_60_120 as driver
+    from strategies.commodity_catalog import book_named
 
     book = book_named("商品原策略")
     _freeze_books(monkeypatch, tmp_path, [book])
@@ -315,7 +267,7 @@ def test_an_opened_window_without_results_needs_a_void_before_it_can_reopen(monk
 
 
 def test_research_span_can_start_in_2011_but_not_earlier_or_across_2022(monkeypatch, tmp_path):
-    import research.market_clock_slow_short_20_60_120 as driver
+    import research.commodity.market_clock_slow_short_20_60_120 as driver
 
     monkeypatch.setattr(C, "RUNS_DIR", tmp_path / "runs")
     seen = []

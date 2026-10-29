@@ -8,15 +8,15 @@
     python -m backtest.engine --year 2024                     # 单年，冻结后才能打开，先记台账
     python -m backtest.engine --oos [--by-year]               # 2023–2025，冻结后才能打开，先记台账
 
-商品与股指整数手数回测均由此入口和账本执行；研究分析与机制检验保留在 research/。股指仅开放 2015–2021 研究期，不读 2026。
+商品与股指整数手数回测均由此入口和账本执行。股指研究期是 2015–2021；股指只保留熊市空头加波动率缩放，它的 2022 已按台账打开，--validation 只打印保存的结果。不读 2023 及以后，不读 2026。
 """
 from __future__ import annotations
 
 import argparse
 import math
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -25,12 +25,12 @@ from strategies.commodity_original import FACTORS
 from tfcta import config as C
 from tfcta.costs import (
     INDEX_MULTIPLIER, MULTIPLIER, contract_multiplier_overrides, estimate_ticks, fee_tables,
-    load_fees, load_index_fees, load_ticks, require_multipliers, slippage_tables,
+    index_open_limits, load_fees, load_index_fees, load_ticks, require_multipliers, slippage_tables,
 )
 from tfcta.data import (
     add_intraday_coords, build_universe, daily_bars, find_shard, list_shards,
     load_minutes, load_roll_calendar, load_shard, load_universe, oos_universe,
-    validation_universe,
+    read_frame, validation_universe,
 )
 from tfcta.factors import SignalSet, load, raw_price_path, timestamp_factors
 
@@ -69,6 +69,7 @@ def simulate_target_lots(
     drawdown_limit: float,
     halt_days: int,
     contract_multipliers: dict[str, dict[str, float]] | None = None,
+    open_limits: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """按目标仓位交易整数手，只成交目标与现有手数的差额。负权重做空。
 
@@ -79,6 +80,8 @@ def simulate_target_lots(
     熔断后停 halt_days 个交易日（含触发日），恢复当日把峰值改成当时权益。
     contract_multipliers 给出乘数不等于品种现行乘数的合约（如 RU1207 以前 5 吨）。持仓按所持合约的乘数算盈亏和名义；
     换月到乘数不同的合约时按名义不变换算新手数（向下取整）。
+    open_limits[t, s] 是 t 日该品种最多能开的手数（交易所日内开仓限额；不限为 inf）。新开、加仓、换月的新合约开仓、
+    多空翻转的新方向都算开仓，平仓不受限。超过额度只开到额度，之后每天按额度补到目标手数；只会少持仓。
     """
     frames = {
         "open_price": open_price, "close_price": close_price,
@@ -91,6 +94,8 @@ def simulate_target_lots(
     index, columns = targets.index, targets.columns
     if not index.is_unique or not index.is_monotonic_increasing:
         raise ValueError("交易日索引必须唯一且按升序排列")
+    if open_limits is not None:
+        frames["open_limits"] = open_limits
     for name, frame in frames.items():
         if not frame.index.equals(index) or not frame.columns.equals(columns):
             raise ValueError(f"{name} 的日期或品种索引与目标仓位表不一致")
@@ -114,7 +119,11 @@ def simulate_target_lots(
 
     high, low = adjusted_high.to_numpy(dtype="float64"), adjusted_low.to_numpy(dtype="float64")
     locked = np.isfinite(high) & np.isfinite(low) & np.isclose(high, low, rtol=0.0, atol=1e-10)
-    lots, applied = dict.fromkeys(columns, 0), dict.fromkeys(columns, 0.0)
+    lots, applied, desired = dict.fromkeys(columns, 0), dict.fromkeys(columns, 0.0), dict.fromkeys(columns, 0)
+    if open_limits is not None:
+        limit_values = open_limits.to_numpy(dtype="float64")
+        if np.isnan(limit_values).any() or (limit_values < 0).any():
+            raise ValueError("开仓限额必须是非负数，不限用 inf")
     contracts, pending_roll = dict.fromkeys(columns), set()
     last_price, last_close = dict.fromkeys(columns, np.nan), dict.fromkeys(columns, np.nan)
     equity = peak_equity = float(initial_capital)
@@ -147,7 +156,8 @@ def simulate_target_lots(
     for i, day in enumerate(index):
         day = pd.Timestamp(day)
         year = int(day.year)
-        cost = opened = closed = rolled = blocked = 0
+        cost = opened = closed = rolled = blocked = capped = 0
+        opened_today = dict.fromkeys(columns, 0)
         start_equity = equity
         if i == halt_until_i:
             peak_equity = equity
@@ -187,6 +197,7 @@ def simulate_target_lots(
                     blocked += 1
                 continue
             raw_open = float(raw_open)
+            room = np.inf if open_limits is None else float(open_limits.at[day, symbol])
             if lots[symbol] and symbol in pending_roll:
                 contract = contract_codes.at[day, symbol]
                 if not isinstance(contract, str) or not contract:
@@ -196,6 +207,13 @@ def simulate_target_lots(
                 quantity = abs(lots[symbol])
                 old_mult, new_mult = held_mult(symbol), mult_of(symbol, contract)
                 new_quantity = quantity if new_mult == old_mult else int(math.floor(quantity * old_mult / new_mult))
+                desired[symbol] = int(np.sign(lots[symbol])) * new_quantity
+                if new_quantity > room:
+                    capped += 1
+                    event(day, "开仓限额", symbol, new_quantity, raw_open,
+                          f"换月要开 {new_quantity} 手，当日上限 {room:g} 手，只换 {int(room)} 手，其余之后补")
+                    new_quantity = int(room)
+                opened_today[symbol] += new_quantity
                 cost += charge(roll_close_fee, day, symbol, quantity, prior_close, "换月平仓", old_mult)
                 cost += charge(slippage, day, symbol, quantity, prior_close, "换月平仓滑点", old_mult)
                 cost += charge(open_fee, day, symbol, new_quantity, raw_open, "换月开仓", new_mult)
@@ -208,17 +226,31 @@ def simulate_target_lots(
                 contracts[symbol] = contract if new_quantity else None
                 pending_roll.discard(symbol)
                 rolled += 1
-            if target == applied[symbol] and not (target == 0.0 and lots[symbol]):
+            if target == applied[symbol] and lots[symbol] == desired[symbol] and not (target == 0.0 and lots[symbol]):
                 continue
             want = 0
             today_mult = mult_of(symbol, contract_codes.at[day, symbol])
-            if slots and target > 0.0:
+            if target == applied[symbol] and target != 0.0:
+                want = desired[symbol]                     # 目标没变，继续补前几天受限额没成交的手数
+            elif slots and target > 0.0:
                 budget = target * exposure_limit * max(start_equity, 0.0) / slots
                 want = int(math.floor(budget / (raw_open * today_mult)))
             elif slots and target < 0.0:
                 budget = -target * exposure_limit * max(start_equity, 0.0) / slots
                 want = -int(math.floor(budget / (raw_open * today_mult)))
             current = lots[symbol]
+            desired[symbol] = wanted = want
+            left = room - opened_today[symbol]
+            if current * want >= 0 and abs(want) > abs(current):
+                opening = min(abs(want) - abs(current), left)
+                want = current + int(np.sign(want)) * int(opening)
+            elif current * want < 0:
+                want = int(np.sign(want)) * int(min(abs(want), left))
+            if want != wanted:
+                capped += 1
+                event(day, "开仓限额", symbol, abs(wanted - want), raw_open,
+                      f"目标 {wanted} 手，当日上限 {room:g} 手，只做到 {want} 手，其余之后补")
+            opened_today[symbol] += abs(want) if current * want < 0 else max(0, abs(want) - abs(current))
             if current >= 0 and want >= 0:
                 change = want - current
                 if current and not want:
@@ -242,7 +274,7 @@ def simulate_target_lots(
                     cost += charge(slippage, day, symbol, -change, raw_open, "减仓滑点", held_mult(symbol))
                     closed += 1
                     event(day, "减仓", symbol, -change, raw_open, f"目标权重 {target:.2f}")
-                if target > 0.0 and not want:
+                if target > 0.0 and not wanted:
                     event(day, "不足一手", symbol, detail=f"目标权重 {target:.2f}")
             else:
                 def close_lots(quantity, kind, detail=""):
@@ -285,7 +317,7 @@ def simulate_target_lots(
                         close_lots(change, "减空", f"目标权重 {target:.2f}")
                 elif want > 0 and current == 0:
                     open_lots(want, "开仓", f"目标权重 {target:.2f}")
-                if target < 0.0 and not want:
+                if target < 0.0 and not wanted:
                     event(day, "不足一手", symbol, detail=f"目标权重 {target:.2f}")
             lots[symbol] = want
             applied[symbol] = target
@@ -320,7 +352,7 @@ def simulate_target_lots(
             "保证金权益占用": margin / equity if equity > 0 else np.nan,
             "持仓品种数": sum(value != 0 for value in lots.values()),
             "持仓总手数": sum(abs(value) for value in lots.values()), "开仓笔数": opened,
-            "平仓笔数": closed, "换月笔数": rolled, "受阻委托数": blocked,
+            "平仓笔数": closed, "换月笔数": rolled, "受阻委托数": blocked, "开仓受限数": capped,
             "停止新开仓": bool(halted), "强制清仓待执行": bool(halted),
             "保证金追缴": bool(margin_call),
         })
@@ -859,10 +891,17 @@ def _simulate_index_targets(
     exposure_limit: float,
     drawdown_limit: float,
     halt_days: int,
+    fee_partition: str = "research",
+    initial_capital: float = INITIAL_CAPITAL,
+    open_limits: bool = False,
 ):
+    """股指整数手账本。open_limits=True 时按中金所每日开仓限额成交（tfcta.costs.CFFEX_OPEN_LIMITS）。"""
+    if scored_index.empty:
+        raise ValueError("股指目标仓位没有可计分的交易日")
     prices = bars["open"].reindex(index=scored_index, columns=symbols)
-    fee_table = load_index_fees("research")
-    fee_table = fee_table[fee_table["trading_date"] <= INDEX_RESEARCH_END]
+    fee_table = load_index_fees(fee_partition)
+    if fee_partition == "research":
+        fee_table = fee_table[fee_table["trading_date"] <= INDEX_RESEARCH_END]
     open_fee, close_fee, roll_fee = fee_tables(fee_table, prices)
     slippage = slippage_tables(ticks[ticks["year"] < end_year], prices)
     selected_contracts = contracts.reindex(index=scored_index, columns=symbols)
@@ -891,163 +930,286 @@ def _simulate_index_targets(
         close_fee,
         roll_fee,
         slippage,
-        initial_capital=INITIAL_CAPITAL,
+        initial_capital=initial_capital,
         margin_rate=MARGIN_RATE,
         exposure_limit=exposure_limit,
         drawdown_limit=drawdown_limit,
         halt_days=halt_days,
+        open_limits=index_open_limits(scored_index, symbols) if open_limits else None,
     )
 
 
-def _run_index_individuals(
-    index: pd.DatetimeIndex,
-    bars: dict[str, pd.DataFrame],
-    contracts: pd.DataFrame,
-    carry: pd.DataFrame,
-    ticks: pd.DataFrame,
-) -> None:
-    from strategies.index_close_location import (
-        STRICT_SWAP_BOOK,
-    )
-
-    clv = (
-        bars["closew"].reindex(index=index, columns=INDEX_SYMBOLS)
-        - bars["loww"].reindex(index=index, columns=INDEX_SYMBOLS)
-    ) / (
-        bars["highw"].reindex(index=index, columns=INDEX_SYMBOLS)
-        - bars["loww"].reindex(index=index, columns=INDEX_SYMBOLS)
-    )
-    if not np.isfinite(clv.to_numpy()).all() or not clv.stack().between(0.0, 1.0).all():
-        raise ValueError("IF/IH/IC 单品种收盘位置必须有效且位于 [0, 1]")
-    all_returns = (
-        (bars["openw"].shift(-1) - bars["openw"])
-        / bars["open"].where(bars["open"] > 0)
-    ).dropna(how="any")
-    C.assert_no_holdout_dates(all_returns.index, what="股指单品种回测收益")
-    for symbol in INDEX_SYMBOLS:
-        target = STRICT_SWAP_BOOK.targets(clv[symbol], bars, carry)[[symbol]]
-        active = target[symbol].ne(0.0)
-        if not active.any():
-            raise ValueError(f"{symbol} 独立 CLV 规则没有非零目标")
-        first_active = active.index[active][0]
-        scored_index = all_returns.index[all_returns.index >= first_active]
-        daily, positions, events = _simulate_index_targets(
-            target.reindex(scored_index).fillna(0.0),
-            scored_index,
-            bars,
-            contracts,
-            ticks,
-            INDEX_RESEARCH_END.year,
-            (symbol,),
-            exposure_limit=STRICT_SWAP_BOOK.GROSS,
-            drawdown_limit=STRICT_SWAP_BOOK.DRAWDOWN_LIMIT,
-            halt_days=STRICT_SWAP_BOOK.HALT_DAYS,
-        )
-        individual = SimpleNamespace(
-            ID=STRICT_SWAP_BOOK.ID,
-            NAME=f"{symbol} 单品种收盘位置策略",
-            DETAIL=(
-                "事后单品种诊断：该品种收盘位置替代共同市场分数；"
-                "多头保留滞后正展期，空头沿用 IF/IH/IC 共同市场熊市门槛"
-            ),
-            GROSS=STRICT_SWAP_BOOK.GROSS,
-        )
-        write_results(
-            "index_research",
-            individual,
-            daily,
-            positions,
-            events,
-            [symbol],
-            market="index",
-            result_subdirectory=Path("individual") / symbol,
-        )
-
-
-def run_index_research(
-    start: int,
-    end: int,
-    *,
-    by_year: bool = False,
-    include_individuals: bool = False,
-) -> None:
-    """以共享整数手账本运行冻结股指策略；严格限制在 2015–2021 研究期。"""
+def run_index_bear_research(start: int, end: int, *, by_year: bool = False) -> None:
+    """收盘位置低于 0.4 就做多，熊市且收盘不弱才做空。1 亿元，开仓按当日中金所限额。只读研究期。多头对照一起报，不另开策略。"""
     if start < INDEX_RESEARCH_START.year or end > INDEX_RESEARCH_END.year or start > end:
         raise C.HoldoutViolation(
-            f"股指回测仅允许 {INDEX_RESEARCH_START.year}–{INDEX_RESEARCH_END.year} 研究期"
+            f"熊市空头只允许 {INDEX_RESEARCH_START.year}–{INDEX_RESEARCH_END.year} 研究期"
         )
-    from strategies.index_close_location import STRICT_SWAP_BOOK
-
-    STRICT_SWAP_BOOK.frozen()
-    index, bars, contracts, carry, ticks = _load_index_research_inputs()
-    returns = (bars["openw"].shift(-1) - bars["openw"]) / bars["open"].where(
-        bars["open"] > 0
-    )
-    returns = returns.loc[
-        (returns.index.year >= start) & (returns.index.year <= end)
-    ].dropna(how="any")
-    if returns.empty:
-        raise ValueError("股指研究区间没有完整的下一开盘收益")
-    C.assert_no_holdout_dates(returns.index, what="股指整数手数回测收益")
-    missing = carry.reindex(returns.index).isna().mean()
-    bad = missing[missing > 0.05]
-    if not bad.empty:
-        detail = "、".join(f"{symbol} 缺 {share:.0%}" for symbol, share in bad.items())
-        raise ValueError(f"股指展期收益覆盖不足（阈值 5%）：{detail}")
-
-    strategy_bars = {
-        key: frame.reindex(index=index, columns=INDEX_SYMBOLS)
-        for key, frame in bars.items()
-    }
+    from strategies.index_bear_reversal import BOOK as BEAR_BOOK, long_only_targets
     from strategies.index_close_location import market_close_location
 
-    market_clv = market_close_location(strategy_bars, index)
-    targets = STRICT_SWAP_BOOK.targets(market_clv, strategy_bars, carry)
-    active = targets.reindex(returns.index).ne(0.0).any(axis=1)
-    if not active.any():
-        raise ValueError("股指收盘位置策略在请求区间没有非零目标")
-    scored_index = returns.index[returns.index >= active.index[active][0]]
-    if include_individuals and (start, end) != (
-        INDEX_RESEARCH_START.year,
-        INDEX_RESEARCH_END.year,
-    ):
-        raise ValueError("--index-individuals 仅支持完整的 2015–2021 研究期")
+    book = BEAR_BOOK
+    book.declared()
     if by_year and start != end:
-        if include_individuals:
-            raise ValueError("--index-individuals 不能与 --by-year 同时使用")
         for year in range(start, end + 1):
-            run_index_research(year, year)
+            run_index_bear_research(year, year)
         return
+    index, bars, contracts, _carry, ticks = _load_index_research_inputs()
+    returns = (bars["openw"].shift(-1) - bars["openw"]) / bars["open"].where(bars["open"] > 0)
+    returns = returns.loc[(returns.index.year >= start) & (returns.index.year <= end)].dropna(how="any")
+    C.assert_no_holdout_dates(returns.index, what="熊市空头研究期收益")
+    strategy_bars = {key: frame.reindex(index=index, columns=INDEX_SYMBOLS) for key, frame in bars.items()}
+    market_clv = market_close_location(strategy_bars, index)
+    targets = book.targets(market_clv, strategy_bars)
+    long_targets = long_only_targets(market_clv)
+    scored = returns.index
+    books = (("熊市空头", targets), ("只做多0.4", long_targets))
+    for label, target in books:
+        daily, positions, events = _simulate_index_targets(
+            target.reindex(index=scored, columns=INDEX_SYMBOLS).fillna(0.0),
+            scored, bars, contracts, ticks, end, INDEX_SYMBOLS,
+            exposure_limit=book.GROSS, drawdown_limit=book.DRAWDOWN_LIMIT,
+            halt_days=book.HALT_DAYS, initial_capital=INITIAL_CAPITAL, open_limits=True,
+        )
+        held = target.reindex(scored).fillna(0.0)
+        print(
+            f"{label} 做多 {(held.iloc[:, 0] > 0).sum()} 天，做空 {(held.iloc[:, 0] < 0).sum()} 天",
+            flush=True,
+        )
+        if label == "熊市空头":
+            period = "index_research" if (start, end) == (
+                INDEX_RESEARCH_START.year, INDEX_RESEARCH_END.year,
+            ) else start if start == end else (start, end)
+            write_results(
+                period, book, daily, positions, events, list(INDEX_SYMBOLS),
+                initial_capital=INITIAL_CAPITAL, market="index",
+            )
+            out = C.RUNS_DIR / "strategies" / book.ID / (
+                "research" if period == "index_research" else str(start) if start == end else f"{start}-{end}"
+            )
+            counts = pd.DataFrame({
+                "年份": held.index.year,
+                "方向": np.where(held.iloc[:, 0] > 0, "多", np.where(held.iloc[:, 0] < 0, "空", "空仓")),
+            })
+            counts.groupby(["年份", "方向"]).size().unstack(fill_value=0).to_csv(
+                out / "side_days.csv", encoding="utf-8-sig",
+            )
+            bench_daily, _, _ = _simulate_index_targets(
+                pd.DataFrame(1.0, index=scored, columns=list(INDEX_SYMBOLS)),
+                scored, bars, contracts, ticks, end, INDEX_SYMBOLS,
+                exposure_limit=book.GROSS, drawdown_limit=0.99, halt_days=book.HALT_DAYS,
+                initial_capital=INITIAL_CAPITAL, open_limits=True,
+            )
+            from research.report.strategy_report import BENCH, SERIES, _save, _title, _two_panel, plot_nav_drawdown, stats
 
-    target = targets.reindex(index=scored_index, columns=INDEX_SYMBOLS).fillna(0.0)
+            bench_net = bench_daily["净收益"].fillna(0.0)
+            bench_metrics = performance(bench_net)
+            print(
+                "买入持有"
+                f" 年化 {bench_metrics['ann_return']:.4f}"
+                f" 波动 {bench_metrics['ann_vol']:.4f}"
+                f" 回撤 {max_drawdown(bench_daily['权益'], INITIAL_CAPITAL):.4f}"
+                f" Sharpe {sharpe_ratio(bench_net):.4f}"
+                f" Calmar {bench_metrics['calmar']:.4f}",
+                flush=True,
+            )
+            fig, axes = _two_panel()
+            plot_nav_drawdown(axes[0, 0], axes[1, 0], [
+                (book.NAME, daily["净收益"].fillna(0.0), SERIES[0], stats(daily, bench_net), {}),
+                ("IF/IH/IC 等权买入持有", bench_net, BENCH, stats(bench_daily), {"lw": 1.6}),
+            ])
+            _title(
+                fig, f"{book.NAME}与 IF/IH/IC 等权买入持有",
+                f"{daily.index[0]:%Y-%m-%d} 至 {daily.index[-1]:%Y-%m-%d}｜"
+                "基准：三品种等权 1 倍做多、同样成本和当日开仓限额、不设熔断、不再平衡｜研究期样本内",
+            )
+            _save(fig, out / "plots" / "vs_buy_hold.png")
+            bench_rows = []
+            for year, part in bench_daily.groupby(bench_daily.index.year):
+                opening = float(part["期初权益"].iloc[0])
+                year_metrics = performance(part["净收益"].fillna(0.0))
+                bench_rows.append({
+                    "策略": "IF/IH/IC 等权买入持有",
+                    "年份": int(year),
+                    "净收益": float(part["权益"].iloc[-1] / opening - 1.0),
+                    "Sharpe": sharpe_ratio(part["净收益"].fillna(0.0)),
+                    "Calmar比率": year_metrics["calmar"],
+                    "期末权益": float(part["权益"].iloc[-1]),
+                    "年度内最大回撤": max_drawdown(part["权益"], opening),
+                    "开仓笔数": int(part["开仓笔数"].sum()),
+                    "平仓笔数": int(part["平仓笔数"].sum()),
+                })
+            pd.DataFrame(bench_rows).to_csv(out / "buy_hold_annual.csv", index=False, encoding="utf-8-sig", float_format="%.10f")
+        else:
+            daily = daily.copy()
+            daily["账本"] = label
+            daily.to_csv(out / "long_only_daily.csv", encoding="utf-8-sig")
+            metrics = performance(daily["净收益"].fillna(0.0))
+            pd.DataFrame([{
+                "账本": label,
+                "年化收益": metrics["ann_return"],
+                "Sharpe": sharpe_ratio(daily["净收益"].fillna(0.0)),
+                "最大回撤": max_drawdown(daily["权益"], INITIAL_CAPITAL),
+                "Calmar比率": metrics["calmar"],
+            }]).to_csv(out / "long_only_summary.csv", index=False, encoding="utf-8-sig")
+            print(pd.read_csv(out / "long_only_summary.csv").to_string(index=False), flush=True)
+
+
+def read_index_2022_minutes(
+    symbol: str, *, open_interest: bool = False, columns: list[str] | None = None,
+) -> pd.DataFrame:
+    """读锁定分钟文件里的 IF/IH/IC，立刻只留 2022。文件里更晚的日期不进入返回值。"""
+    if symbol not in INDEX_SYMBOLS:
+        raise C.HoldoutViolation(f"2022 只读 IF/IH/IC，收到 {symbol}")
+    directory = C.INDEX_HOLDOUT_DIR / "open_interest" if open_interest else C.INDEX_HOLDOUT_DIR
+    path = find_shard(directory, symbol)
+    if path is None:
+        raise FileNotFoundError(f"找不到 {symbol} 的 2022 锁定分片: {directory}")
+    if columns is None:
+        columns = (
+            ["dominant_id", "trading_date"]
+            if open_interest
+            else ["trading_date", "open", "openw", "close", "closew", "highw", "loww"]
+        )
+    frame = read_frame(path, columns)
+    frame["trading_date"] = pd.to_datetime(frame["trading_date"]).dt.normalize()
+    if frame["trading_date"].ge(pd.Timestamp("2026-01-01")).any():
+        raise C.HoldoutViolation("不读 2026")
+    kept = frame.loc[frame["trading_date"].dt.year == C.VALIDATION_YEAR].copy()
+    del frame
+    C.assert_validation_2022_dates(kept["trading_date"], f"{symbol} 2022 分钟")
+    if kept.empty:
+        raise ValueError(f"{symbol} 在 2022 年没有分钟行情")
+    return kept.sort_index(kind="mergesort")
+
+
+def _index_2022_ticks() -> pd.DataFrame:
+    """2022 的滑点用 2021 年研究分片估计的 tick，不用当年行情反推。"""
+    parts = []
+    for symbol in INDEX_SYMBOLS:
+        minute = load_shard(
+            symbol, directory=C.INDEX_RESEARCH_DIR, columns=["close", "trading_date"],
+        )
+        dates = pd.to_datetime(minute["trading_date"])
+        mask = dates.dt.year == C.RESEARCH_END.year
+        estimated = estimate_ticks(minute.loc[mask, "close"], dates.loc[mask])
+        if estimated.empty or estimated["tick"].isna().any():
+            raise ValueError(f"{symbol} 的 {C.RESEARCH_END.year} 年 tick 估计为空")
+        estimated.insert(0, "symbol", symbol)
+        parts.append(estimated)
+    return pd.concat(parts, ignore_index=True)
+
+
+def _index_ledger_state(name: str, ledger) -> str:
+    state = "none"
+    for entry in C.read_ledger(ledger):
+        if entry.get("strategy") == name:
+            state = "void" if entry.get("kind") == "void" else entry.get("status", state)
+    return state
+
+
+def run_index_bear_2022(book) -> None:
+    """只跑冻结熊市空头的 2022。1 亿元，开仓按当日中金所限额。120 日趋势用研究期预热，计分只留这一年。"""
+    config = book.frozen()
+    if book.ID != "index_close_location_bear_short":
+        raise C.HoldoutViolation("这个入口只跑熊市空头的 2022")
+    name = f"{book.ID}_2022"
+    ledger = C.INDEX_OOS_LEDGER
+    state = _index_ledger_state(name, ledger)
+    if state in ("opened", "finished"):
+        summary = C.RUNS_DIR / "strategies" / book.ID / "2022" / "summary.csv"
+        if summary.is_file():
+            print(pd.read_csv(summary).to_string(index=False), flush=True)
+            print(f"2022 已经跑过，结果在 {summary.parent}", flush=True)
+            if state == "opened":
+                C.append_ledger({
+                    "kind": "year_test", "status": "finished",
+                    "run_at": datetime.now().isoformat(timespec="seconds"),
+                    "strategy": name, "scored_start": 2022, "scored_end": 2022,
+                    "note": "结果文件已经在，没有重读行情。",
+                }, ledger)
+            return
+        raise C.HoldoutViolation(
+            f"{name} 在台账里已经打开过，但结果文件不在。要重跑先在台账里作废（追加 kind=void）并写明原因。"
+        )
+    C.append_ledger({
+        "kind": "year_test", "status": "opened",
+        "run_at": datetime.now().isoformat(timespec="seconds"),
+        "strategy": name, "frozen_at": config["frozen_at"], "chosen": config["chosen"],
+        "test_start": "2022-01-01", "test_end": "2022-12-31",
+        "sha256": C.file_hashes(book.FILES),
+        "note": "只计 2022。趋势用 2021 及以前的研究期日线预热。锁定分钟文件中更晚的日期读入后立即删除。不读 2026。最后一个交易日没有下一开盘，不计入。",
+    }, ledger)
+
+    frames, contracts_by_symbol = {}, {}
+    for symbol in INDEX_SYMBOLS:
+        minute = read_index_2022_minutes(symbol)
+        daily = daily_bars(minute)
+        C.assert_validation_2022_dates(daily.index, f"{symbol} 2022 日线")
+        frames[symbol] = daily
+        oi = read_index_2022_minutes(symbol, open_interest=True)
+        dates = pd.to_datetime(oi["trading_date"]).dt.normalize()
+        contracts = oi["dominant_id"].groupby(dates, sort=True).first()
+        contracts.index = pd.DatetimeIndex(contracts.index)
+        contracts_by_symbol[symbol] = contracts
+    from tfcta.data import load_daily_bars
+    from strategies import commodity_original as trend_rules
+    from strategies.index_close_location import market_close_location
+
+    research = load_daily_bars(list(INDEX_SYMBOLS), directory=C.INDEX_RESEARCH_DIR)
+    ready = pd.Series(True, index=research["close"].index)
+    for field in ("open", "openw", "close", "closew", "highw", "loww"):
+        ready &= research[field].notna().all(axis=1)
+    research_index = research["close"].index[ready]
+    research_index = research_index[research_index <= pd.Timestamp(C.RESEARCH_END)]
+    C.assert_no_holdout_dates(research_index, "熊市空头 2022 的趋势预热")
+    year_index = pd.DatetimeIndex(sorted(set.intersection(*(set(frame.index) for frame in frames.values()))))
+    C.assert_validation_2022_dates(year_index, "2022 日线")
+    full = research_index.append(year_index)
+    if full.has_duplicates or not full.is_monotonic_increasing or full.max() >= pd.Timestamp("2023-01-01"):
+        raise C.HoldoutViolation("2022 账本不能带上 2023 及以后，也不能和预热日期重叠")
+    bars = {}
+    for field in ("open", "openw", "close", "closew", "highw", "loww"):
+        left = research[field].reindex(index=research_index, columns=list(INDEX_SYMBOLS))
+        right = pd.DataFrame(
+            {symbol: frames[symbol][field].reindex(year_index) for symbol in INDEX_SYMBOLS},
+            index=year_index,
+        )
+        bars[field] = pd.concat([left, right])
+        if bars[field].isna().any().any():
+            raise ValueError(f"2022 {field} 行情未完全对齐")
+    trend = trend_rules.market_trend(
+        trend_rules.close_return(bars, INDEX_SYMBOLS).mean(axis=1)
+    )
+    if pd.isna(trend.loc[research_index[-1]]):
+        raise ValueError("2022 开年时 120 日熊市趋势没有预热")
+    contracts = pd.DataFrame(
+        {symbol: contracts_by_symbol[symbol].reindex(year_index) for symbol in INDEX_SYMBOLS},
+        index=year_index,
+    )
+    if contracts.isna().any().any():
+        raise ValueError("2022 股指主力合约代码覆盖不完整")
+    market_clv = market_close_location(bars, full)
+    targets = book.targets(market_clv, bars)
+    returns = (bars["openw"].shift(-1) - bars["openw"]) / bars["open"].where(bars["open"] > 0)
+    scored = returns.loc[returns.index.year == C.VALIDATION_YEAR].dropna(how="any").index
+    C.assert_validation_2022_dates(scored, "2022 计分日")
+    if full[full.get_indexer([scored[0]])[0] - 1].year != C.RESEARCH_END.year:
+        raise ValueError("2022 第一个计分日的信号必须来自 2021 年的收盘")
+    target = targets.reindex(index=scored, columns=list(INDEX_SYMBOLS)).fillna(0.0)
     daily, positions, events = _simulate_index_targets(
-        target,
-        scored_index,
-        bars,
-        contracts,
-        ticks,
-        end,
-        INDEX_SYMBOLS,
-        exposure_limit=STRICT_SWAP_BOOK.GROSS,
-        drawdown_limit=STRICT_SWAP_BOOK.DRAWDOWN_LIMIT,
-        halt_days=STRICT_SWAP_BOOK.HALT_DAYS,
+        target, scored, bars, contracts, _index_2022_ticks(), C.VALIDATION_YEAR, INDEX_SYMBOLS,
+        exposure_limit=book.GROSS, drawdown_limit=book.DRAWDOWN_LIMIT, halt_days=book.HALT_DAYS,
+        initial_capital=INITIAL_CAPITAL, open_limits=True,
+        fee_partition="validation_2022",
     )
-    period = "index_research" if (start, end) == (
-        INDEX_RESEARCH_START.year,
-        INDEX_RESEARCH_END.year,
-    ) else start if start == end else (start, end)
-    write_results(
-        period,
-        STRICT_SWAP_BOOK,
-        daily,
-        positions,
-        events,
-        list(INDEX_SYMBOLS),
-        market="index",
-    )
-    if include_individuals:
-        _run_index_individuals(index, bars, contracts, carry, ticks)
-
+    write_results(C.VALIDATION_YEAR, book, daily, positions, events, list(INDEX_SYMBOLS),
+                  initial_capital=INITIAL_CAPITAL, market="index")
+    C.append_ledger({
+        "kind": "year_test", "status": "finished",
+        "run_at": datetime.now().isoformat(timespec="seconds"),
+        "strategy": name, "scored_start": 2022, "scored_end": 2022,
+    }, ledger)
 
 
 # --------------------------------------------------------------------------
@@ -1132,7 +1294,6 @@ def write_results(
     initial_capital=INITIAL_CAPITAL,
     *,
     market="commodity",
-    result_subdirectory: Path | None = None,
 ):
     """写一条策略在一个区间的汇总、分年、逐日、持仓和事件，返回汇总行和分年行。"""
     start, end, folder, title = period_layout(period)
@@ -1196,10 +1357,7 @@ def write_results(
             "平仓笔数": int(part["平仓笔数"].sum()),
         })
 
-    result_dir = C.RUNS_DIR / "strategies" / strategy.ID
-    if result_subdirectory is not None:
-        result_dir /= result_subdirectory
-    result_dir /= folder
+    result_dir = C.RUNS_DIR / "strategies" / strategy.ID / folder
     result_dir.mkdir(parents=True, exist_ok=True)
     plot_performance(
         returns.rename(label),
@@ -1228,7 +1386,7 @@ def write_results(
 # --------------------------------------------------------------------------
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="商品和股指统一整数手数回测入口。股指仅开放 IF/IH/IC 2015–2021 研究期；不读 2026。"
+            description="商品和股指统一整数手数回测入口。股指只有熊市空头加波动率缩放，研究期 2015–2021，2022 已打开。不读 2026。"
     )
     parser.add_argument("strategy", nargs="?", help="策略 ID 或中文名，不给就是冻结策略")
     parser.add_argument(
@@ -1245,11 +1403,6 @@ def main(argv=None):
     period.add_argument("--start", type=int, help="区间起始年，和 --end 一起用；最早 2011（2016 以前只能在研究期里）")
     parser.add_argument("--end", type=int, help="区间结束年，和 --start 一起用")
     parser.add_argument("--by-year", action="store_true", help="区间里每年一本新的 1 亿元账")
-    parser.add_argument(
-        "--index-individuals",
-        action="store_true",
-        help="股指共同组合之外，额外运行 IF/IH/IC 单品种诊断账本（仅 2015–2021）",
-    )
     args = parser.parse_args(argv)
     if (args.start is None) != (args.end is None):
         parser.error("--start 和 --end 要一起给")
@@ -1267,7 +1420,7 @@ def main(argv=None):
         parser.error("要指定 --research、--validation、--oos、--year 或 --start/--end")
     if args.by_year and window[0] == window[1]:
         parser.error("--by-year 需要跨年的区间")
-    from strategies.catalog import book_named as commodity_book_named
+    from strategies.commodity_catalog import book_named as commodity_book_named
     from strategies.index_catalog import book_named as index_book_named
     market = args.market
     try:
@@ -1281,32 +1434,31 @@ def main(argv=None):
                 if market == "index":
                     raise ValueError(f"{args.strategy!r} 是商品策略，不能用于股指回测")
         elif market == "index":
-            from strategies.index_close_location import STRICT_SWAP_BOOK
+            from strategies.index_bear_reversal import BOOK as BEAR_BOOK
 
-            book = index_book_named(STRICT_SWAP_BOOK.ID)
+            # 用户 2026-10-29：股指默认只用熊市空头加波动率缩放
+            book = index_book_named(BEAR_BOOK.ID)
         else:
             book = None
     except ValueError as error:
         parser.error(str(error))
 
     if market == "index":
+        if book.ID != "index_close_location_bear_short":
+            parser.error("股指只保留熊市空头加波动率缩放这一条策略")
+        if window == (C.VALIDATION_YEAR, C.VALIDATION_YEAR) and not args.by_year:
+            run_index_bear_2022(book)
+            return
+        if window[1] > INDEX_RESEARCH_END.year or window[0] > INDEX_RESEARCH_END.year:
+            parser.error("熊市空头的样本外只打开 2022 这一年，不看 2023 及以后")
         if args.research and args.start is None:
             window = (INDEX_RESEARCH_START.year, INDEX_RESEARCH_END.year)
-        if (
-            window[0] < INDEX_RESEARCH_START.year
-            or window[1] > INDEX_RESEARCH_END.year
-        ):
-            parser.error("股指策略仅允许 IF/IH/IC 2015–2021 研究期；不读取样本外数据")
-        run_index_research(
-            *window,
-            by_year=args.by_year,
-            include_individuals=args.index_individuals,
-        )
+        if window[0] < INDEX_RESEARCH_START.year or window[1] > INDEX_RESEARCH_END.year:
+            parser.error("熊市空头只允许 2015–2021 研究期")
+        run_index_bear_research(*window, by_year=args.by_year)
         return
-    if args.index_individuals:
-        parser.error("--index-individuals 只能用于股指回测")
 
-    from research import market_clock_slow_short_20_60_120 as driver
+    from research.commodity import market_clock_slow_short_20_60_120 as driver
 
     driver.run_span(*window, by_year=args.by_year, book=book)
 

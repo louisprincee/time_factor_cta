@@ -1,6 +1,6 @@
 """按池宽1倍加三窗口趋势空头：按区间跑账本，算相对池子的 beta 和 alpha，管 2022 及以后的台账。
 
-    python -m research.market_clock_slow_short_20_60_120  # 研究期 2011–2021
+    python -m research.commodity.market_clock_slow_short_20_60_120  # 研究期 2011–2021
     python -m backtest.engine --research            # 同上，命令行入口
 
 研究期不写台账。2022 及以后：策略没冻结直接拒绝；冻结了先记台账再读；已经打开过的窗口只打印旧结果，
