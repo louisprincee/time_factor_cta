@@ -1,0 +1,128 @@
+{
+  "name": "国泰君安股指时间维度因子 23 条配对规则在 IF/IH/IC 研究期的复现和迁移",
+  "status": "declared_test_not_a_strategy",
+  "declared_at": "2026-10-28",
+  "sample": "IF、IH、IC 股指研究分钟分片。因子从 2015-04-16 起计算，2015 年只做滚动标准化预热；计分 2016-01-04 至 2021-12-31（研报起点；2016 起交易时段固定 9:30–15:00，开盘/收盘 30 分钟窗口才和研报一致）。研报样本 2016-01-04 至 2025-02-25 包含我们锁定的 2022–2025，所以只能复现它与研究期重叠的部分。不读 2022，不读 2023–2025，不读 2026。",
+  "known_before": "研报每个品种从大量因子和配对中挑出展示的 9/7/7 条（IH/IF/IC），全部在 2016–2025 样本内挑选，双边万二、无滑点、无熔断。我们的研究期里 ts_low、ts_high、dfp 已测过，股指上都被收盘位置吸收。研报里 IC 的 time_to_low>0（低点晚）、IF 的 afternoon_high_time<0（午后高点早）预期都和收盘偏低高度相关。",
+  "duration": {
+    "price": "单日内逐分钟：对分钟 j，往回找最近一个 |P_j − P_i| ≥ 3 点的分钟 i，持续期 = j − i 分钟；找不到记为 j 距当日第一根的分钟数。P 为原始分钟收盘价",
+    "volume": "同上，用分钟成交量，阈值 50 手",
+    "thresholds": "研报展示用的固定阈值：价格 3 点、成交量 50 手，三品种相同，不调"
+  },
+  "factors": {
+    "time_to_max_turnover": "当日成交额最大一分钟的位置，按当日日盘分钟数归一化到 0–1",
+    "time_to_half_volume": "累计成交量首次达到全天 50% 的位置，归一化到 0–1",
+    "afternoon_high_time": "下午时段最高价首次出现的位置，按下午分钟数归一化到 0–1",
+    "time_to_low": "当日最低价首次出现的位置，归一化到 0–1",
+    "Price_duration_vol": "当日价格持续期的标准差（研报公式少写平方，按文字取标准差）",
+    "Price_duration_corr": "当日价格持续期与分钟收盘价的相关系数",
+    "Price_duration_adj_vol": "价格持续期标准差 / 分钟收盘价标准差",
+    "Price_duration_max_min": "价格持续期最大值 − 最小值",
+    "Price_volume_persistence_ratio": "价格持续期 ≥ 当日 80% 分位的分钟的成交量 / 全天成交量",
+    "Volume_duration_adj_vol": "成交量持续期标准差 / 分钟收盘价标准差",
+    "Volume_duration_slope": "成交量持续期对分钟序号的 OLS 斜率",
+    "Volume_duration_return": "成交量持续期最长那一分钟的价格相对前一日同一定义价格的收益（复权价差 / 前一日原始价）",
+    "Volume_duration_extreme": "成交量持续期大于当日均值加 2 倍标准差的分钟占比",
+    "Volume_duration_open_close": "主口径按研报文字：收盘前 14:31–15:00 平均成交量持续期 − 开盘后 9:31–10:00 平均。研报公式写反（开盘 − 收盘），作为声明过的对照另报，只影响含这一项的 IC2、IC5、IC7"
+  },
+  "standardization": "每个品种每个因子，过去 250 个交易日（不含当天，至少 125 日）的均值和标准差做 z 值；条件里的 >0 / <0 指 z 值",
+  "rules": {
+    "IH1": [
+      "time_to_max_turnover<0",
+      "Volume_duration_adj_vol>0"
+    ],
+    "IH2": [
+      "time_to_max_turnover<0",
+      "Price_volume_persistence_ratio<0"
+    ],
+    "IH3": [
+      "time_to_max_turnover<0",
+      "Volume_duration_slope>0"
+    ],
+    "IH4": [
+      "time_to_half_volume<0",
+      "Volume_duration_adj_vol>0"
+    ],
+    "IH5": [
+      "time_to_half_volume<0",
+      "Price_volume_persistence_ratio<0"
+    ],
+    "IH6": [
+      "time_to_half_volume<0",
+      "Volume_duration_slope>0"
+    ],
+    "IH7": [
+      "Volume_duration_adj_vol>0",
+      "Price_volume_persistence_ratio<0"
+    ],
+    "IH8": [
+      "Volume_duration_adj_vol>0",
+      "Volume_duration_slope>0"
+    ],
+    "IH9": [
+      "Price_volume_persistence_ratio<0",
+      "Volume_duration_slope>0"
+    ],
+    "IF1": [
+      "afternoon_high_time<0",
+      "time_to_half_volume<0"
+    ],
+    "IF2": [
+      "afternoon_high_time<0",
+      "Volume_duration_return>0"
+    ],
+    "IF3": [
+      "afternoon_high_time<0",
+      "Price_duration_vol<0"
+    ],
+    "IF4": [
+      "afternoon_high_time<0",
+      "Price_duration_corr<0"
+    ],
+    "IF5": [
+      "time_to_half_volume<0",
+      "Volume_duration_return>0"
+    ],
+    "IF6": [
+      "Volume_duration_return>0",
+      "Price_duration_corr<0"
+    ],
+    "IF7": [
+      "Price_duration_vol<0",
+      "Price_duration_corr<0"
+    ],
+    "IC1": [
+      "time_to_low>0",
+      "Volume_duration_extreme<0"
+    ],
+    "IC2": [
+      "time_to_low>0",
+      "Volume_duration_open_close<0"
+    ],
+    "IC3": [
+      "time_to_low>0",
+      "Price_duration_adj_vol<0"
+    ],
+    "IC4": [
+      "time_to_low>0",
+      "Price_duration_max_min<0"
+    ],
+    "IC5": [
+      "Volume_duration_extreme<0",
+      "Volume_duration_open_close<0"
+    ],
+    "IC6": [
+      "Volume_duration_extreme<0",
+      "Price_duration_max_min<0"
+    ],
+    "IC7": [
+      "Volume_duration_open_close<0",
+      "Price_duration_max_min<0"
+    ]
+  },
+  "signal": "收盘 t：两个条件同时满足 → 下一交易日开盘目标 +1；两个条件同时反向 → −1；其余 0。目标不变就留仓",
+  "ledger": "每条规则在每个品种上单独一本 1 亿元整数手账本，1 倍敞口，历史股指手续费加每边 1 跳（前一年估计 tick），不设熔断（这是因子检验，不是策略）。另报无成本的 位置 × 开盘到开盘收益 作对照",
+  "report": "23 条规则 × 3 个品种 = 69 格全部报告（加 IC2/IC5/IC7 公式口径 9 格）：净年化、净 Sharpe、最大回撤、多空持仓日占比、毛 Sharpe；研报自己挑的品种（对角格）和迁移到另两个品种的格分开汇总。另报：每格规则位置与该品种收盘位置反转信号 sign(0.5 − clv) 的相关；开盘到开盘收益 ~ 规则位置 + clv 的规则位置 NW t（滞后 5），看规则在收盘位置之外有没有增量。按全部格数做 Benjamini–Hochberg 和 Bonferroni，并报对角格净 Sharpe 的 DSR",
+  "pass": "只报告，不作为策略入选。一条规则只有在对角格净 Sharpe > 0、控制 clv 后 NW t ≥ 2、且至少一个迁移品种净 Sharpe > 0 时，才记为“值得作为新候选另行登记”。",
+  "limitations": "研报选规则用的样本覆盖我们 2016–2021 全部，这里不是独立验证；三品种高度相关，迁移格也不是独立样本；研报的部分公式有歧义（已注明取法）。"
+}

@@ -83,10 +83,26 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 
 ## 还在用的研究代码
 
-已经做完的机制检验脚本在 2026-10-29 删除，结论留在 [`docs/guide.md`](docs/guide.md) 和 [`docs/index_guide.md`](docs/index_guide.md)。现在 `research/` 只留两类：
+商品账本和图表：
 
 - `research/commodity/`：商品冻结策略的研究期账本，由 `backtest.engine` 调用。
 - `research/report/`：商品两本冻结策略的图表，`python -m research.report.strategy_report`。
+
+股指机制检验在 `research/`，只读研究期，不读 2022 及以后。结论在 [`docs/guide.md`](docs/guide.md) 和 [`docs/index_guide.md`](docs/index_guide.md)。
+
+```bash
+python -m research.index_close_location_mechanism            # L1 盘口
+python -m research.index_close_location_mechanism --shape    # 相对位置还是绝对幅度
+python -m research.index_close_location_mechanism --channels # 哪一段在反转、资金流
+python -m research.index_close_location_mechanism --provision
+python -m research.index_close_location_mechanism --forced
+python -m research.index_liquidity_mechanism                  # 期现基差和库存
+python -m research.index_positioning_mechanism                # 前 20 名会员持仓；--unabsorbed 另跑
+python -m research.index_spot_open_pressure                   # 现货开盘半小时
+python -m research.index_qvix_reversal                        # 50ETF 隐含波动
+```
+
+国泰君安 23 条规则的复现入口 `research/index_time_factors.py` 没有进过 git，本地也没有快照，这次没能找回。因子计算在 `tfcta.factors.gtja_index_factors`，预登记在 `config/research/index_time_factor_replication.json`，结果还在 `runs/index/index_time_factor_replication/`。
 
 数据下载还在 `download/`：
 

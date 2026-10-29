@@ -1,0 +1,47 @@
+{
+  "name": "Index close-location reversal mechanism",
+  "status": "declared_test_not_a_strategy",
+  "sample": "IF, IH, and IC only. Download main-contract L1 ticks from the common listing date 2015-04-16 through 2021-12-31; use 2015 only as warmup and score 2016-01-13 through 2021-12-31 to align with the first nonzero strategy target. Read only index research minute shards and L1 tick downloads in this date range. Do not read 2022 or 2026; do not read 2023-2025 locked partitions.",
+  "hypotheses": {
+    "close_location_reversal": {
+      "predictor": "Equal-weight mean of per-contract close location from last trade, (last-low)/(high-low), at the close",
+      "outcome": "Equal-weight mean of next-session intraday return, next-session close minus next-session open, divided by next-session open",
+      "expected_direction": "negative",
+      "interpretation": "Descriptive index-transfer test; also report next-session gap and next-open-to-next-open returns separately."
+    },
+    "bid_ask_bounce": {
+      "predictor": "Repeat close-location test using the final valid L1 midpoint instead of last trade",
+      "outcome": "Same as close_location_reversal",
+      "expected_direction": "Midpoint slope should remain negative and close to the trade-price slope; the close-to-next-open gap should not contain the reversal."
+    },
+    "daily_range": {
+      "predictor": "Equal-weight mean of each contract's (daily high-low)/previous close",
+      "outcomes": "Same-day close-to-close return and next-session intraday/open-to-open returns",
+      "expected_direction": "Report signed slopes and Newey-West statistics as an index transfer diagnostic; do not tune the strategy from this test."
+    },
+    "liquidity_pressure": {
+      "predictor": "Last-30-minute relative spread/day relative spread, last-30-minute L1 depth/day depth, and signed tick-rule volume imbalance",
+      "outcome": "Next-session intraday return and its interaction with close location",
+      "expected_direction": "Wider relative spread and thinner relative depth on low-close days; a steeper negative close-location slope when tail liquidity is worse. Signed imbalance is reported descriptively without a directional pass criterion."
+    }
+  },
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "warmup_start": "2015-04-16",
+    "score_start": "2016-01-13",
+    "score_end": "2021-12-31",
+    "aggregation": "Equal-weight mean across IF, IH, and IC; all three must be present",
+    "hac_lags": 5,
+    "tail_window": "14:30-15:00",
+    "liquidity_ratios": "last-30-minute mean divided by full-day mean; depth uses L1 ask1+bid1 displayed volume",
+    "daily_range": "(daily highw-loww)/previous raw close; same-day return is closew minus prior closew divided by prior raw close",
+    "costs": "No trading costs; mechanism outcomes are return diagnostics, not a strategy backtest."
+  },
+  "decision_rules": [
+    "Treat |NW t| >= 2 as descriptive evidence, not proof; show coefficients and t statistics for all predeclared outcomes.",
+    "Bid-ask bounce is disfavored only if midpoint close location retains the negative next-session intraday relation while the gap does not account for it.",
+    "Liquidity pressure is supported only if both low-close days show worse tail spread/depth and the predeclared close-location interaction has the expected sign with |NW t| >= 2; signed imbalance alone is not sufficient.",
+    "A nonsignificant result is inconclusive, not evidence that the mechanism is absent."
+  ],
+  "limitations": "The index strategy transfer sample has already been examined. These L1 mechanism tests are exploratory on the same 2016-2021 period, not clean out-of-sample validation. RiceQuant historical futures ticks expose Level-1 quotes only; no L2 order-book or order-by-order inference is claimed."
+}

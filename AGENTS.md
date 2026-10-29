@@ -269,15 +269,20 @@ backtest/engine.py  simulate_target_lots ledger, metrics (performance, sharpe, m
                     deflated_sharpe, pbo_cscv), load_research / load_through_year / ledger_inputs, write_results, CLI
 research/           commodity/: the commodity book runner (spans, beta/alpha, ledger, freeze gate);
                     report/: charts for the two frozen commodity books.
-                    Finished one-off study scripts were removed 2026-10-29; their numbers stay in the log above.
-config/research/    strategy_report.json plus the sector map in time_factor_screen.json
+                    Index mechanism scripts stay here: index_close_location_mechanism
+                    (L1, --shape, --channels, --provision, --forced), index_liquidity_mechanism,
+                    index_positioning_mechanism, index_spot_open_pressure, index_qvix_reversal,
+                    plus index_market_clock and time_factor_screen, which those scripts import.
+                    The GTJA replication runner index_time_factors.py was never committed and had no
+                    local snapshot, so it is not in the tree; its spec and results remain.
+config/research/    strategy_report.json, the sector map in time_factor_screen.json, and the index mechanism specs
 download/           RiceQuant downloaders (commodity minute/external/fees, index minute, index roll yield)
 tests/              pytest, synthetic data only (generator in tests/synthetic.py)
 docs/               the two broker reports + guide.md (commodity and research history) + index_guide.md (the default index book)
 data/, runs/        gitignored; data inputs and all outputs
 ```
 
-`download/index/getTickL1Close.py` saves historical main-contract L1 ticks for IF/IH/IC during the research period to `data/index/external_rqdata/l1_ticks/` and produces daily L1 summaries. Its `--partition oos_locked` mode only prefetches raw 2022–2025 ticks to `data/index/external_rqdata/holdout_locked/l1_ticks/`, without summarizing or analyzing them. RiceQuant's historical index-futures API does not provide usable multi-level L2 depth. The index close-location mechanism write-up is in the research log above; the script was removed with the other finished studies.
+`download/index/getTickL1Close.py` saves historical main-contract L1 ticks for IF/IH/IC during the research period to `data/index/external_rqdata/l1_ticks/` and produces daily L1 summaries. Its `--partition oos_locked` mode only prefetches raw 2022–2025 ticks to `data/index/external_rqdata/holdout_locked/l1_ticks/`, without summarizing or analyzing them. RiceQuant's historical index-futures API does not provide usable multi-level L2 depth. The index close-location mechanism script is `research/index_close_location_mechanism.py`.
 
 The two frozen commodity strategies are registered in `strategies/commodity_catalog.py`. The single frozen IF/IH/IC book (bear-short, frozen 2026-10-28) is registered separately in `strategies/index_catalog.py`. Both markets' formal strategy ledgers run through `backtest.engine`. Index research remains 2015–2021. The bear-short book’s equal-weight 2022 run was voided when the vol scale was written into the rule; the scaled rule then opened 2022 (ledger 2026-10-28 17:18). It is the default and only index book in use. The original unfiltered `commodity_close_location_reversal` candidate remains exploratory and is not in the frozen registry. Both commodity books still require explicit user authorization before any 2022+ window is opened. 2023–2025 and 2026 stay closed.
 

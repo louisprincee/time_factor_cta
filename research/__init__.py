@@ -1,4 +1,4 @@
-"""还在用的研究代码：商品账本在 commodity/，图表在 report/。已经做完的机制检验脚本已删除。2022 及以后只走冻结和台账。"""
+"""商品账本在 commodity/，图表在 report/。股指机制检验脚本在本目录。2022 及以后只走冻结和台账。"""
 import sys
 from pathlib import Path
 
