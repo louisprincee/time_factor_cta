@@ -5,6 +5,10 @@ If the code and this file disagree, trust the code, then update this file in the
 
 **Research sample default (user decision 2026-10-26):** New commodity experiments, data pulls, and backtests default to the full 2011–2021 research window. For a comparable IF/IH/IC index panel, the research calendar starts on 2015-04-16, when all three are listed; exclude IM. Actual scored dates still depend on available data and required factor warmup; declare and report those limits. Existing preregistered results retain their original sample labels.
 
+**Current lock (user decision 2026-10-29):** Keep all 2022–2026 market, factor, ledger and tick files closed, including previously saved 2022 results, until the user explicitly authorizes a named window. Historical authorization does not authorize rereading them for new research.
+
+**Research cleanup (user decision 2026-10-29):** Findings and rejected exploratory work are consolidated in `docs/index_research_review.md`. This round's uncommitted diagnostic extensions, state filters, path/anchor sizing, execution-audit extensions and global-drawdown/duration-normalization implementations were removed; pre-existing committed code and frozen books remain. Historical local outputs document already inspected samples, not independent validation or active candidates. Research the economic mechanism and its applicability first; do not turn a discussion direction into batches of backtests, new thresholds or permanent-stop rules without a clearly scoped user request.
+
 ## 1. What the project is
 
 We build time-dimension ("when did it happen inside the day") factor strategies for Chinese futures.

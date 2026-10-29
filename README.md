@@ -7,6 +7,7 @@
 - 冻结只表示规则固定，不代表干净验证或实盘优势。商品两条的 2022 年及以后窗口仍须用户明确授权后才能开启。
 - 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。
 - 商品策略和全部研究记录见 [`docs/guide.md`](docs/guide.md)；股指策略的规则和证据见 [`docs/index_guide.md`](docs/index_guide.md)，`--market index` 不点名就跑它。
+- 股指已查指标、阴性结果、样本限制及撤回的过度实现统一记录在 [`docs/index_research_review.md`](docs/index_research_review.md)。本轮2022–2026全部封闭，已有2022结果也不得自行重读；不因研究记录而启动新回测。
 
 ## 环境
 

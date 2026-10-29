@@ -1,5 +1,7 @@
 # 回测
 
+2026-10-29清理：未提交的全局回撤预算、状态过滤及锚价缩放等实验扩展已撤回，原账本与冻结策略规则不变。已做研究见 [`docs/index_research_review.md`](../docs/index_research_review.md)。当前2022–2026全部封闭，包括已有结果；下文历史OOS命令不构成重新运行或读取授权。
+
 入口是 `python -m backtest.engine`，区间必须显式指定：
 
 ```bash
