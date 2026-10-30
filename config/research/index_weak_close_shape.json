@@ -1,0 +1,48 @@
+{
+  "name": "弱收盘日的日内形态：哪种弱收盘之后反弹（暂时性价格偏离），哪种之后继续跌（持续性抛售）",
+  "status": "declared_exploratory_research",
+  "declared_at": "2026-10-30",
+  "question": "等权收盘位置 CLV < 0.4 的弱收盘日里，能否用收盘时已知的日内形态区分下一开盘段反弹的日子和继续下跌的日子？这一区分是否对应“暂时性价格偏离（流动性）”与“持续性抛售（信息/趋势）”两种经济机制？",
+  "known_before": "运行前已看过（都是研究期事后结果）：用户的 index_price_extremes 显示弱收盘日 high_open（日内高点相对开盘的偏离，60 日标准化）每 1 个标准差对应下一开盘段 +37bp（IF 2011–2021，t 4.25）和 +72bp（IF/IH/IC 2015–2021，t 2.83），range、TWAP 偏离不显著。index_close_discriminators 的 8 个常用量价变量（5/20 日收益、跳空、日内收益、相对振幅、成交量、带符号成交量、Amihud）在 CLV 之上都没有稳健增量（BH q 0.94）。研报 23 组时间因子配对控制 CLV 后没有增量。流动性渠道里：低收盘日尾盘价差变宽、融资净偿还、北向净卖出都和弱收盘同时出现，但都不放大反弹；反弹随 QVIX（相对过去一年的恐慌）变强。H1 直接来自 high_open 的发现，属于事后；H2–H4 的方向在本文件里由经济逻辑先写定。",
+  "hypotheses": {
+    "logic": "同样收在低位，暂时性价格偏离和持续性抛售的日内路径不同。暂时性偏离：价格先上冲或在高位成交，后来被一段集中的抛售砸到低位，收盘远离当天大部分成交所在的价格；这类偏离由急于成交的卖方造成，次日会被补回（流动性提供补偿，Nagel 2012；价格冲击的暂时部分）。持续性抛售：从开盘就一路被卖，价格在低位停留很久、价值区间本身下移，下跌由许多小幅同向变动组成；这类下跌更像信息逐步反映进价格，次日倾向延续（信息连续到达导致反应不足，Da、Gurun、Warachka 2014，frog in the pan）。",
+    "H1_open_location": "开盘在当天区间中的位置 OL = (openw − loww)/(highw − loww)。OL 低（开在低位、先涨后跌回）= 失败的上冲，暂时性偏离 → 反弹更大；OL 高（开在高位、全天下跌）= 持续抛售 → 延续。预测：弱收盘日下一开盘段收益对 OL 的斜率 < 0。注意 high_open / 区间 = 1 − OL，所以 H1 与用户的 high_open 结果高度相关，是事后检验",
+    "H2_high_time": "日内最高价首次出现的位置 ts_high（0 = 第一根分钟，1 = 最后一根）。弱收盘日高点出现得晚 = 尾段被集中砸下 → 暂时性偏离 → 反弹更大。预测：斜率 > 0。这与研报“高点晚偏空”的先验方向相反，两种方向都报告",
+    "H3_value_displacement": "dfp_top3 = (持续期最长的 3 个价格的均值 − 收盘价) / 收盘价，用冻结策略的 N250/M55 持续期定义；即收盘低于当天“停留最久的价格”（价值区）多少。预测：斜率 > 0（收盘远离价值区 → 偏离 → 回归）。方向与 config.FACTOR_SIGNS['dfp_top3'] = +1 一致",
+    "H4_low_dwell": "当天分钟收盘价落在日内区间最低 20% 的分钟占比。停留在低位越久 = 价值区下移 → 延续。预测：斜率 < 0",
+    "H5_information_discreteness": "ID = sign(开盘到收盘收益) × (下跌分钟占比 − 上涨分钟占比)，分钟收益用加法复权收盘价差，第一根相对开盘价；平盘分钟计入分母。ID 高 = 变动集中在少数大幅分钟（离散、显眼）→ 反转；ID 低 = 许多小幅同向分钟（连续）→ 延续。预测：斜率 > 0"
+  },
+  "samples": {
+    "common": "IF/IH/IC 共同市场，信号日 2015-04-16 至 2021-12-31，每个特征先逐品种计算、再等权平均，三品种都要有值。dfp_top3 需要 250 日持续期阈值预热，IH/IC 从 2015-04-16 才有分钟数据，所以含 dfp 的检验约从 2016-04 起；其余特征需要 60 日标准化预热。只读三品种股指研究分片。",
+    "if_replication": "IF 单品种，信号日 2011-01-01 至 2015-04-14（IH/IC 上市前），用 IF 自己的 CLV。读专用 IF 历史分片 data/index/if_before_ih_ic/minute_shards/IF.parquet（2010-04-16 起，2010 只做预热），与研究分片在重叠日期的分钟行情须一致后拼接。这一段与共同市场样本不重叠，用作复制样本；但 high_open 已在 IF 2011–2021 上看过，H1 在这里也不是干净复制。",
+    "locked": "不读 2022，不读 2023–2025，不读 2026，不读取任何 holdout_locked 或 validation_2022 数据。"
+  },
+  "definitions": {
+    "weak_close": "CLV < 0.4，沿用冻结规则阈值，不重新选择",
+    "outcome": "信号日 t 收盘后下一开盘到再下一开盘：(openw[t+2] − openw[t+1]) / open[t+1]，共同市场为三品种等权；以 bp 报告，未扣成本",
+    "standardization": "回归里各特征逐品种用此前 60 个交易日（至少 40 日，不含当天）的均值和标准差标准化后再等权；分组用原始值",
+    "controls": "所有回归都控制 CLV"
+  },
+  "tests": {
+    "T0_decomposition": "弱收盘日：outcome ~ high_open_z + CLV（复述用户结果）；~ OL + CLV；~ high_open_z + OL + range_open_z + CLV；~ OL + intraday_return_z + range_open_z + CLV。看 high_open 的作用是不是开盘位置，而不是振幅或日内涨跌",
+    "T1_slopes": "对 H1–H5 的 5 个特征：(a) 弱收盘日子样本 outcome ~ f_z + CLV 的斜率；(b) 全部日子 outcome ~ CLV + weak + f_z + weak×f_z 的交互项。HAC(5) t；每个样本内对 5 个特征做 BH 校正",
+    "T2_terciles": "弱收盘日按特征原始值分三组，切点只用此前年份的弱收盘日计算（扩展窗口，此前样本至少 60 天，切点相等时报错）。共同市场预测 2016–2021，IF 复制预测 2012–2015。报告每组天数、正收益比例、平均和中位 bp；报告高组减低组的逐年符号",
+    "T3_correlations": "弱收盘日 5 个特征与 high_open_z、ts_low 的 Spearman 相关矩阵，看它们是不是同一个维度",
+    "T4_liquidity_link": "共同市场弱收盘日：(a) 每个特征与流动性代理的 Spearman 相关——L1 尾盘/全天价差比和深度比（runs/index/index_close_location_mechanism/daily.csv，2016-01-13 起）、年内标准化 QVIX（研究期 qvix_50etf.csv）、两市融资净买入（market_flows.csv）；(b) outcome ~ f_z + CLV + 价差比 + QVIX 年内 z，看特征的作用在控制流动性代理后是否还在。用来回答“反弹型弱收盘是不是流动性压力更大的日子”"
+  },
+  "verdict_rule": "一个特征记为“能区分”需同时满足：共同市场 T1(a) 方向与预测一致且 |t| ≥ 2；IF 复制样本 T1(a) 方向一致；T2 高组减低组在共同市场至少 4/6 个预测年份方向一致。机制判断：若能区分的特征指向“暂时性偏离”一侧，且该侧与流动性代理（价差更宽、QVIX 更高、融资偿还更多）同向，记“支持弱收盘反弹是流动性偏离”；否则只记为描述性区分。",
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "weak_close_threshold": 0.4,
+    "rolling_window": 60,
+    "rolling_minimum": 40,
+    "hac_lags": 5,
+    "low_dwell_band": 0.2,
+    "dfp_lookback": 250,
+    "dfp_percentile": 55.0,
+    "features": ["open_location", "high_time", "dfp_top3", "low_dwell", "info_discreteness"],
+    "predicted_sign": {"open_location": -1, "high_time": 1, "dfp_top3": 1, "low_dwell": -1, "info_discreteness": 1}
+  },
+  "pass": "只报告，不选阈值、不改冻结规则、不做回测。",
+  "sample_boundary": "明确不读2022、不读2023–2025、不读2026，不读取锁定分区。"
+}

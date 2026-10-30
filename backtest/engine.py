@@ -70,6 +70,7 @@ def simulate_target_lots(
     halt_days: int,
     contract_multipliers: dict[str, dict[str, float]] | None = None,
     open_limits: pd.DataFrame | None = None,
+    open_slippage: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """按目标仓位交易整数手，只成交目标与现有手数的差额。负权重做空。
 
@@ -82,6 +83,9 @@ def simulate_target_lots(
     换月到乘数不同的合约时按名义不变换算新手数（向下取整）。
     open_limits[t, s] 是 t 日该品种最多能开的手数（交易所日内开仓限额；不限为 inf）。新开、加仓、换月的新合约开仓、
     多空翻转的新方向都算开仓，平仓不受限。超过额度只开到额度，之后每天按额度补到目标手数；只会少持仓。
+    open_slippage {"buy", "sell"} 给出按开盘价成交的买入、卖出各自的成本率（可为负）；不给时两边都用 slippage。
+    可再给 "auction_lots"：当日该品种前这么多手（各开盘成交腿合计）按 slippage 成交（集合竞价），其余按买卖成本率。
+    换月旧合约按前收平仓，始终用 slippage。
     """
     frames = {
         "open_price": open_price, "close_price": close_price,
@@ -96,6 +100,17 @@ def simulate_target_lots(
         raise ValueError("交易日索引必须唯一且按升序排列")
     if open_limits is not None:
         frames["open_limits"] = open_limits
+    if open_slippage is not None:
+        frames["open_slippage_buy"], frames["open_slippage_sell"] = open_slippage["buy"], open_slippage["sell"]
+        if "auction_lots" in open_slippage:
+            frames["auction_lots"] = open_slippage["auction_lots"]
+            auction = open_slippage["auction_lots"].to_numpy(dtype="float64")
+            if (
+                not np.isfinite(auction).all()
+                or (auction < 0).any()
+                or not np.equal(auction, np.floor(auction)).all()
+            ):
+                raise ValueError("集合竞价可成交手数必须是非负有限整数")
     for name, frame in frames.items():
         if not frame.index.equals(index) or not frame.columns.equals(columns):
             raise ValueError(f"{name} 的日期或品种索引与目标仓位表不一致")
@@ -149,6 +164,37 @@ def simulate_target_lots(
             raise ValueError(f"{day.date()} {symbol} 的{description}费用或价格缺失")
         return quantity * mult * price * rate
 
+    def open_cost(direction, day, symbol, quantity, price, description, mult):
+        """按开盘价成交那一腿的滑点；集合竞价额度先用完，再按买卖成本率。"""
+        nonlocal opening_slippage_cost, auction_slippage_cost, other_open_slippage_cost
+        nonlocal opening_tick_cost_base
+        if quantity <= 0:
+            return 0.0
+        opening_lots[symbol] += int(quantity)
+        opening_tick_cost_base += charge(
+            slippage, day, symbol, quantity, price, f"{description}一跳基准", mult
+        )
+        if open_slippage is None:
+            cost = charge(slippage, day, symbol, quantity, price, description, mult)
+            opening_slippage_cost += cost
+            other_open_slippage_cost += cost
+            return cost
+        room = 0
+        if "auction_lots" in open_slippage:
+            room = max(0, int(open_slippage["auction_lots"].at[day, symbol]) - auction_used[symbol])
+        first = min(int(quantity), room)
+        auction_used[symbol] += first
+        auction_cost = charge(slippage, day, symbol, first, price, description, mult) if first else 0.0
+        opening_slippage_cost += auction_cost
+        auction_slippage_cost += auction_cost
+        other_cost = 0.0
+        if quantity > first:
+            table = open_slippage["buy" if direction > 0 else "sell"]
+            other_cost = charge(table, day, symbol, quantity - first, price, description, mult)
+            opening_slippage_cost += other_cost
+            other_open_slippage_cost += other_cost
+        return auction_cost + other_cost
+
     def mark(day, symbol):
         price = open_price.at[day, symbol]
         return float(price) if np.isfinite(price) else last_price[symbol]
@@ -158,6 +204,10 @@ def simulate_target_lots(
         year = int(day.year)
         cost = opened = closed = rolled = blocked = capped = 0
         opened_today = dict.fromkeys(columns, 0)
+        auction_used = dict.fromkeys(columns, 0)
+        opening_lots = dict.fromkeys(columns, 0)
+        opening_slippage_cost = auction_slippage_cost = other_open_slippage_cost = 0.0
+        opening_tick_cost_base = 0.0
         start_equity = equity
         if i == halt_until_i:
             peak_equity = equity
@@ -217,7 +267,7 @@ def simulate_target_lots(
                 cost += charge(roll_close_fee, day, symbol, quantity, prior_close, "换月平仓", old_mult)
                 cost += charge(slippage, day, symbol, quantity, prior_close, "换月平仓滑点", old_mult)
                 cost += charge(open_fee, day, symbol, new_quantity, raw_open, "换月开仓", new_mult)
-                cost += charge(slippage, day, symbol, new_quantity, raw_open, "换月开仓滑点", new_mult)
+                cost += open_cost(np.sign(lots[symbol]), day, symbol, new_quantity, raw_open, "换月开仓滑点", new_mult)
                 detail = f"{contracts[symbol]} -> {contract}"
                 if new_mult != old_mult:
                     detail += f"；乘数 {old_mult:g} -> {new_mult:g}，手数 {quantity} -> {new_quantity}"
@@ -255,7 +305,7 @@ def simulate_target_lots(
                 change = want - current
                 if current and not want:
                     cost += charge(close_fee, day, symbol, current, raw_open, "平仓", held_mult(symbol))
-                    cost += charge(slippage, day, symbol, current, raw_open, "平仓滑点", held_mult(symbol))
+                    cost += open_cost(-1, day, symbol, current, raw_open, "平仓滑点", held_mult(symbol))
                     closed += 1
                     event(day, "清仓" if halted else "平仓", symbol, current, raw_open)
                 elif change > 0:
@@ -263,7 +313,7 @@ def simulate_target_lots(
                     if not isinstance(contract, str) or not contract:
                         raise ValueError(f"{day.date()} {symbol} 开仓缺少主力合约代码")
                     cost += charge(open_fee, day, symbol, change, raw_open, "开仓", today_mult)
-                    cost += charge(slippage, day, symbol, change, raw_open, "开仓滑点", today_mult)
+                    cost += open_cost(1, day, symbol, change, raw_open, "开仓滑点", today_mult)
                     opened += 1
                     if not current:
                         contracts[symbol] = contract
@@ -271,16 +321,16 @@ def simulate_target_lots(
                           f"目标权重 {target:.2f}")
                 elif change < 0:
                     cost += charge(close_fee, day, symbol, -change, raw_open, "减仓", held_mult(symbol))
-                    cost += charge(slippage, day, symbol, -change, raw_open, "减仓滑点", held_mult(symbol))
+                    cost += open_cost(-1, day, symbol, -change, raw_open, "减仓滑点", held_mult(symbol))
                     closed += 1
                     event(day, "减仓", symbol, -change, raw_open, f"目标权重 {target:.2f}")
-                if target > 0.0 and not wanted:
+                if target != 0.0 and not wanted:
                     event(day, "不足一手", symbol, detail=f"目标权重 {target:.2f}")
             else:
                 def close_lots(quantity, kind, detail=""):
                     nonlocal cost, closed
                     cost += charge(close_fee, day, symbol, quantity, raw_open, "平仓", held_mult(symbol))
-                    cost += charge(slippage, day, symbol, quantity, raw_open, "平仓滑点", held_mult(symbol))
+                    cost += open_cost(-np.sign(lots[symbol]), day, symbol, quantity, raw_open, "平仓滑点", held_mult(symbol))
                     closed += 1
                     event(day, kind, symbol, quantity, raw_open, detail)
 
@@ -290,7 +340,7 @@ def simulate_target_lots(
                     if not isinstance(contract, str) or not contract:
                         raise ValueError(f"{day.date()} {symbol} 开仓缺少主力合约代码")
                     cost += charge(open_fee, day, symbol, quantity, raw_open, "开仓", today_mult)
-                    cost += charge(slippage, day, symbol, quantity, raw_open, "开仓滑点", today_mult)
+                    cost += open_cost(np.sign(want), day, symbol, quantity, raw_open, "开仓滑点", today_mult)
                     opened += 1
                     if not lots[symbol]:
                         contracts[symbol] = contract
@@ -352,6 +402,12 @@ def simulate_target_lots(
             "保证金权益占用": margin / equity if equity > 0 else np.nan,
             "持仓品种数": sum(value != 0 for value in lots.values()),
             "持仓总手数": sum(abs(value) for value in lots.values()), "开仓笔数": opened,
+            "开盘成交手数": sum(opening_lots.values()),
+            "集合竞价成交手数": sum(auction_used.values()),
+            "开盘滑点成本": opening_slippage_cost,
+            "集合竞价滑点成本": auction_slippage_cost,
+            "非竞价开盘滑点成本": other_open_slippage_cost,
+            "开盘一跳基准费用": opening_tick_cost_base,
             "平仓笔数": closed, "换月笔数": rolled, "受阻委托数": blocked, "开仓受限数": capped,
             "停止新开仓": bool(halted), "强制清仓待执行": bool(halted),
             "保证金追缴": bool(margin_call),
@@ -894,8 +950,10 @@ def _simulate_index_targets(
     fee_partition: str = "research",
     initial_capital: float = INITIAL_CAPITAL,
     open_limits: bool = False,
+    open_slippage: dict[str, pd.DataFrame] | None = None,
 ):
-    """股指整数手账本。open_limits=True 时按中金所每日开仓限额成交（tfcta.costs.CFFEX_OPEN_LIMITS）。"""
+    """股指整数手账本。open_limits=True 时按中金所每日开仓限额成交（tfcta.costs.CFFEX_OPEN_LIMITS）。
+    open_slippage 见 simulate_target_lots；给出时按计分日、品种对齐。"""
     if scored_index.empty:
         raise ValueError("股指目标仓位没有可计分的交易日")
     prices = bars["open"].reindex(index=scored_index, columns=symbols)
@@ -936,6 +994,9 @@ def _simulate_index_targets(
         drawdown_limit=drawdown_limit,
         halt_days=halt_days,
         open_limits=index_open_limits(scored_index, symbols) if open_limits else None,
+        open_slippage=None if open_slippage is None else {
+            side: table.reindex(index=scored_index, columns=symbols) for side, table in open_slippage.items()
+        },
     )
 
 

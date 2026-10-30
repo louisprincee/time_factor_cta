@@ -25,6 +25,8 @@
 
 股指熊市空头 `index_close_location_bear_short`（2026-10-28 冻结）在 `index_bear_reversal/`。阈值 0.4。收盘位置低于 0.4 次日做多，熊市里也做多；20/60/120 日趋势为熊且收盘位置不低于 0.4 时，三个品种次日做空。仓位按过去 20 日等权波动缩小，不超过 1 倍。下单按当天的中金所非套保开仓限额成交。研究期年化 13.0%、Sharpe 1.26、最大回撤 −11.1%。2022 是 +16.8%、Sharpe 1.11、最大回撤 −12.1%。说明见 [`docs/index_guide.md`](../docs/index_guide.md)。
 
+探索期变体 `index_bear_short_rally_residual` 在 `index_bear_short_rally_residual/`，未冻结、不在登记表里：弱收盘日只在扣掉当天涨跌和收盘位置后冲高仍偏高时做多，否则空仓；空头腿同熊市空头。开盘按 L1 前 30 分钟买卖一价成交时研究期年化 5.6%、Sharpe 0.70，不如同等平均仓位天天持有（6.7%、1.05），登记的保留条件都没过。命令 `python -m research.index_rally_residual`，说明见 [`docs/index_research_review.md`](../docs/index_research_review.md)。
+
 ## 本次研究结果
 
 三条冻结策略的正式账本由 `backtest.engine` 运行。商品两条由 `python -m research.report.strategy_report` 按冻结规则重算并逐日核对，画净值回撤、对比买入持有、只保留某一部分时的净值三类图，结果在 `runs/reports/commodity/`。股指熊市空头的净值回撤和对比买入持有图由 `backtest.engine --market index --research` 直接写在账本的 `plots/` 下。

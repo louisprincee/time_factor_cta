@@ -199,3 +199,47 @@ def test_cffex_open_limits_follow_the_schedule():
     assert index_open_limits(days, ["IF"])["IF"].tolist() == [
         np.inf, 600.0, 100.0, 10.0, 20.0, 50.0, 500.0,
     ]
+
+
+def test_open_slippage_charges_buys_and_sells_separately():
+    # 买 10 手；翻空平 10 手、按 9900 权益开 9 手，都是卖；再买 9 手平空。买入成本率 1%，卖出 −0.5%（成交比开盘有利）
+    targets, inputs = _inputs([1.0, -1.0, 0.0])
+    side = {"buy": pd.DataFrame(0.01, index=targets.index, columns=targets.columns),
+            "sell": pd.DataFrame(-0.005, index=targets.index, columns=targets.columns)}
+    daily, _, _ = simulate_target_lots(targets, **inputs, open_slippage=side)
+    assert daily["交易费用"].tolist() == pytest.approx([100.0, -95.0, 90.0])
+    side["buy"].iloc[2, 0] = np.nan
+    with pytest.raises(ValueError, match="平仓滑点"):
+        simulate_target_lots(targets, **inputs, open_slippage=side)
+
+
+def test_auction_allowance_is_shared_by_the_day_and_filled_first():
+    # 第 1 天买 10 手：4 手走集合竞价（1 跳 0.1%），6 手按卖一 1%；第 2 天翻空卖 10+9 手共用 4 手额度
+    targets, inputs = _inputs([1.0, -1.0])
+    inputs["slippage"] = inputs["slippage"] + 0.001
+    side = {"buy": pd.DataFrame(0.01, index=targets.index, columns=targets.columns),
+            "sell": pd.DataFrame(0.01, index=targets.index, columns=targets.columns),
+            "auction_lots": pd.DataFrame(4.0, index=targets.index, columns=targets.columns)}
+    daily, _, _ = simulate_target_lots(targets, **inputs, open_slippage=side)
+    assert daily["交易费用"].iloc[0] == pytest.approx(4 * 1.0 + 6 * 10.0)
+    assert daily["交易费用"].iloc[1] == pytest.approx(4 * 1.0 + 15 * 10.0)
+    assert daily["开盘成交手数"].tolist() == [10, 19]
+    assert daily["集合竞价成交手数"].tolist() == [4, 4]
+    assert daily["开盘滑点成本"].tolist() == pytest.approx([64.0, 154.0])
+
+
+def test_auction_lots_must_be_whole_and_sub_lot_events_include_shorts():
+    targets, inputs = _inputs([0.0, -1.0])
+    inputs["initial_capital"] = 500.0
+    side = {
+        "buy": pd.DataFrame(0.01, index=targets.index, columns=targets.columns),
+        "sell": pd.DataFrame(0.01, index=targets.index, columns=targets.columns),
+        "auction_lots": pd.DataFrame(0.0, index=targets.index, columns=targets.columns),
+    }
+    daily, _, events = simulate_target_lots(targets, **inputs, open_slippage=side)
+    assert events["事件"].tolist() == ["不足一手"]
+    assert daily["开盘成交手数"].sum() == 0
+
+    side["auction_lots"].iloc[0, 0] = 0.5
+    with pytest.raises(ValueError, match="非负有限整数"):
+        simulate_target_lots(targets, **inputs, open_slippage=side)

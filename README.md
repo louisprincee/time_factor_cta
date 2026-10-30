@@ -101,6 +101,9 @@ python -m research.index_liquidity_mechanism                  # 期现基差和�
 python -m research.index_positioning_mechanism                # 前 20 名会员持仓；--unabsorbed 另跑
 python -m research.index_spot_open_pressure                   # 现货开盘半小时
 python -m research.index_qvix_reversal                        # 50ETF 隐含波动
+python -m research.index_intraday_cost_regime                 # IF 平今成本与日内修复机制
+python -m research.index_execution_10m                        # 1000 万、竞价 10% + L1 执行试算，2015–2021
+python -m research.index_execution_10m --early-if             # 同一口径只做 IF，计分 2011 至 IH/IC 上市前
 ```
 
 国泰君安 23 条规则的复现入口 `research/index_time_factors.py` 没有进过 git，本地也没有快照，这次没能找回。因子计算在 `tfcta.factors.gtja_index_factors`，预登记在 `config/research/index_time_factor_replication.json`，结果还在 `runs/index/index_time_factor_replication/`。

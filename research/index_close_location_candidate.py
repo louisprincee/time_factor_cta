@@ -863,86 +863,10 @@ def run_bear_overlays() -> None:
     print(f"结果：{BEAR_OVERLAY_OUT}")
 
 
-BEAR_OVERLAY_PATH = C.CONFIG_DIR / "research" / "index_bear_overlays.json"
-BEAR_OVERLAY_OUT = C.RUNS_DIR / "index" / "index_bear_overlays"
-BEAR_OVERLAY_KEYS = ("equal", "vol_parity", "rolling_strength", "vol_target")
-VOL_TARGET = 0.20
-VOL_TARGET_WINDOW = 20
-
-
-def book_vol_scale(returns: pd.DataFrame) -> pd.Series:
-    """收盘 t 已知的整本乘数：过去 20 段已实现的等权波动，不超过 1。"""
-    done = returns.reindex(columns=list(SYMBOLS)).mean(axis=1).shift(1)
-    realized = done.rolling(VOL_TARGET_WINDOW, min_periods=VOL_TARGET_WINDOW).std() * np.sqrt(C.TRADING_DAYS_PER_YEAR)
-    return (VOL_TARGET / realized).clip(upper=1.0)
-
-
-def run_bear_overlays() -> None:
-    """熊市空头的方向不动，只改品种权重或整本缩放。四档都报，不读 2022。"""
-    from backtest.engine import _load_index_research_inputs, _simulate_index_targets, deflated_sharpe
-    from strategies.index_bear_reversal import BOOK as BEAR_BOOK
-    from strategies.index_close_location import market_close_location
-
-    spec = json.loads(BEAR_OVERLAY_PATH.read_text(encoding="utf-8"))
-    if (list(spec.get("weights", {})) != list(BEAR_OVERLAY_KEYS) or "不读 2022" not in spec.get("sample", "")
-            or "不读 2026" not in spec.get("sample", "") or spec.get("base") != BEAR_BOOK.ID):
-        raise ValueError("熊市空头权重登记与实现不一致")
-    index, bars, contracts, _carry, ticks = _load_index_research_inputs()
-    all_returns = (bars["openw"].shift(-1) - bars["openw"]) / bars["open"].where(bars["open"] > 0)
-    returns = all_returns.dropna(how="any")
-    C.assert_no_holdout_dates(returns.index, what="熊市空头权重收益")
-    market_clv = market_close_location(bars, index)
-    base = BEAR_BOOK.targets(market_clv, bars)
-    multipliers = tilt_multipliers(index, all_returns, market_clv)
-    scale = book_vol_scale(all_returns).reindex(index)
-    targets = {
-        "equal": base,
-        "vol_parity": base * multipliers["vol_parity"].shift(1).fillna(1.0),
-        "rolling_strength": base * multipliers["rolling_strength"].shift(1).fillna(1.0),
-        "vol_target": base.mul(scale.shift(1).fillna(1.0), axis=0),
-    }
-    rows, annual = [], []
-    for label, start in (("2015-04-16 起", pd.Timestamp("2015-04-16")), ("2016-01-04 起", pd.Timestamp("2016-01-04"))):
-        scored = returns.index[returns.index >= start]
-        simulate = lambda target, limit: _simulate_index_targets(            # noqa: E731
-            target.reindex(index=scored, columns=list(SYMBOLS)).fillna(0.0), scored, bars, contracts, ticks,
-            SCORE_END.year, tuple(SYMBOLS), exposure_limit=BEAR_BOOK.GROSS,
-            drawdown_limit=limit, halt_days=BEAR_BOOK.HALT_DAYS)
-        nets = {}
-        for key in BEAR_OVERLAY_KEYS:
-            daily, _, _ = simulate(targets[key], BEAR_BOOK.DRAWDOWN_LIMIT)
-            net = daily["净收益"].fillna(0.0)
-            nets[key] = net
-            stats = performance(net)
-            rows.append({
-                "起点": label, "权重": key, "年化净收益": stats["ann_return"], "年化波动": stats["ann_vol"],
-                "净Sharpe": sharpe_ratio(net), "最大回撤": max_drawdown(daily["权益"], INITIAL_CAPITAL),
-                "Calmar": stats["calmar"], "平均敞口": float(daily["敞口倍数"].mean()),
-            })
-            for year, part in net.groupby(net.index.year):
-                annual.append({"起点": label, "权重": key, "年份": int(year), "净收益": float((1 + part).prod() - 1)})
-        trials = [sharpe_ratio(n) for n in nets.values()]
-        for row in rows:
-            if row["起点"] == label:
-                diff = nets[row["权重"]] - nets["equal"]
-                row["相对equal配对t"] = newey_west_t(diff, 10) if diff.abs().sum() > 0 else np.nan
-                row["DSR"] = deflated_sharpe(nets[row["权重"]], trials, n_trials=len(trials))["dsr"]
-    BEAR_OVERLAY_OUT.mkdir(parents=True, exist_ok=True)
-    table, annual = pd.DataFrame(rows), pd.DataFrame(annual)
-    table.to_csv(BEAR_OVERLAY_OUT / "summary.csv", index=False, encoding="utf-8-sig")
-    annual.to_csv(BEAR_OVERLAY_OUT / "annual.csv", index=False, encoding="utf-8-sig")
-    (BEAR_OVERLAY_OUT / "protocol.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    pd.set_option("display.width", 240)
-    print(table.round(3).to_string(index=False))
-    print(annual.pivot_table(index=["起点", "权重"], columns="年份", values="净收益").round(3).to_string())
-    print(f"结果：{BEAR_OVERLAY_OUT}")
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="IF/IH/IC 收盘位置长仓候选研究回测")
     parser.add_argument("--candidates", action="store_true", help="股指策略候选（index_strategy_candidates.json）")
     parser.add_argument("--tilt", action="store_true", help="IF/IH/IC 敞口分配（index_product_tilt.json）")
-    parser.add_argument("--bear-overlays", action="store_true", help="熊市空头上的波动率和预测强弱权重")
     parser.add_argument("--bear-overlays", action="store_true", help="熊市空头上的波动率和预测强弱权重")
     parser.add_argument("--variants", action="store_true", help="登记的收盘位置变体网格（index_close_location_variants.json）")
     parser.add_argument("--overwrite", action="store_true", help="重写同一预登记方案的研究输出")
@@ -953,8 +877,6 @@ if __name__ == "__main__":
         run_candidates()
     elif cli.tilt:
         run_tilt()
-    elif cli.bear_overlays:
-        run_bear_overlays()
     elif cli.bear_overlays:
         run_bear_overlays()
     elif cli.variants:

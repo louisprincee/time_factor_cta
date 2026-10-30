@@ -1,0 +1,36 @@
+{
+  "id": "index_bear_short_rally_residual",
+  "status": "exploratory_predeclared",
+  "declared_at": "2026-10-30",
+  "sample": "IF、IH、IC 研究期 2015-04-16 至 2021-12-31（共同样本）；复制样本为 IH/IC 上市前的 IF 2010-04-16 至 2015-04-15。L1 只读 data/index/external_rqdata/l1_ticks/ 下 2015–2021 研究目录。不读取2022及2023年以后，不读 2022，不读 2026，不读取任何 holdout_locked 或 validation_2022 数据（包括已保存的 2022 结果）。探索期策略，未冻结，不能打开样本外。",
+  "hypothesis": "收盘位置、冲高幅度、开盘到收盘涨跌三个量放在一起看：同样是弱收盘（CLV < 0.4）、同样的开盘到收盘跌幅，盘中曾冲得越高，说明几小时前市场还愿意在高得多的价格成交，后段的下跌相对当天已显示的买方意愿是更大的价格偏离，更可能是一时的卖压超过了可用的承接，次日修复；冲高很小、从开盘一路下滑的弱收盘更像价格逐步重定价，修复更少。所以只在“扣掉跌幅和 CLV 之后冲高仍偏高”的弱收盘日做多，其余弱收盘日空仓。空头腿不变。",
+  "known_before": "规则在看过研究期结果之后写定，属于事后。弱收盘日 下一开盘段 ~ 冲高_z + 开盘到收盘涨跌_z + CLV：冲高系数共同样本 +72bp/SD（t 2.58）、2016 起 +29（t 2.90）、早期 IF +30（t 3.19）；开盘到收盘涨跌系数三段分别 +0.2（t 0.02）、+6.8（t 0.80）、−27.9（t −2.21），方向不一致，所以只作控制变量，不单独给方向。冲高_z 与涨跌_z 在弱收盘日相关 0.32–0.44。上一版“冲高 z < 0 就半仓”（index_bear_short_rally_scaled，同日运行后删除）在弱收盘日 80% 的日子减仓，相对固定仓位对照 t 0.40 / −0.57 / 0.54，基本只是减仓；本版改用扣掉跌幅后的残差，避免把“跌得多”误当成“冲得低”。",
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "base_book": "index_close_location_bear_short",
+    "trend_windows": [20, 60, 120],
+    "weak_close": "Equal-weight close location < 0.4",
+    "rally_feature": "Per instrument (highw − openw) / open on the signal day, z-scored against the prior 60 trading days (min 40, excluding the signal day); equal-weight mean",
+    "return_feature": "Per instrument (closew − openw) / open on the signal day, same z-score; equal-weight mean",
+    "feature_window": 60,
+    "feature_minimum": 40,
+    "residual": "On each weak-close signal day, OLS of rally_z on [1, return_z, close location] fitted on weak-close days strictly before it (expanding); residual = rally_z − fitted",
+    "residual_minimum_days": 60,
+    "long_rule": "Weak close and residual > 0 → long next open; weak close and residual <= 0 → flat; residual unavailable → long (same as base book)",
+    "residual_cut": 0.0,
+    "short_rule": "market_trend < 0 and equal-weight close location >= 0.4 → short IF, IH and IC next open (same as base book)",
+    "position_scale": "min(1, 0.20 / trailing 20-day equal-weight open-to-open volatility); do not scale above 1",
+    "gross_exposure_limit": 1.0,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "open_limits": "CFFEX non-hedge daily open limit in force that day",
+    "initial_capital": 100000000,
+    "execution": "l1_30m: every leg that trades at the open is worked evenly over the first 30 minutes of continuous trading (09:15 in 2015, 09:30 from 2016), buying at the level-1 ask and selling at the level-1 bid; cost = side × (mean quote − open). The old contract on a roll still closes at the prior close with one tick. Fees as base book. Early IF has no L1 and uses one tick"
+  },
+  "controls": {
+    "frozen": "index_close_location_bear_short (long on every weak close)",
+    "constant_share": "Long on every weak close with constant weight = share of scored weak-close long days the new rule keeps in that sample; separates selection from holding less"
+  },
+  "report": "共同 2015 起：三本账 × {1 跳, l1_30m}；共同 2016 起：三本账 × l1_30m；早期 IF：三本账 × 1 跳。年化、波动、最大回撤、Sharpe、Calmar、平均敞口、逐年净收益；新规则相对 frozen、相对 constant_share 的配对日收益差 NW t（滞后 10）和逐年为正数；弱收盘日按残差 > 0 / ≤ 0 / 未知分组的天数、下一开盘段正收益比例、平均和中位毛收益（逐年）；开盘成交成本（跳）和占 30 分钟成交量的参与率。",
+  "pass": "只报告，不冻结。保留为前瞻候选需同时满足：共同 2015 起 l1_30m 下相对 constant_share 的配对 NW t ≥ 2；早期 IF 1 跳下同一配对差 > 0；共同样本残差 > 0 组的平均毛收益至少 5/7 年高于 ≤ 0 组。是否冻结由用户决定。"
+}

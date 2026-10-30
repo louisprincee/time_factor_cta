@@ -1,0 +1,51 @@
+{
+  "name": "股指日内高低点相对开盘与TWAP偏离对下一开盘段收益的关系",
+  "status": "declared_exploratory_research",
+  "declared_at": "2026-10-30",
+  "question": "信号日的日内高点、低点及全日区间相对开盘价或分钟典型价TWAP代理的位置/宽度，是否与下一开盘段收益相关；这些关系是否在弱收盘日不同？",
+  "samples": {
+    "if_full": "IF单品种，信号日为2011-01-01至2021-12-31。只读专用IF历史分片2010-04-16至2015-04-16及IF/IH/IC研究分片中IF截至2021-12-31的数据。2010仅用于滚动预热；早期与研究分片重叠日期先核验日线字段一致，计分时不重复。不得读取锁定分区。信号日需有下一日及再下一日开盘用于计算下一开盘段收益。",
+    "common_if_ih_ic": "IF/IH/IC共同上市样本，信号日为2015-04-16至2021-12-31，实际结束日受下一开盘段收益数据覆盖限制。只读三品种研究分片。信号日及收益日均须三品种齐全，按品种等权合成。不得读取锁定分区。",
+    "locked_data": "两个样本均不读2022、2023–2025、2026，不读取任何holdout_locked或validation_2022数据。"
+  },
+  "definitions": {
+    "open_relative": "信号日高点、低点分别相对信号日开盘的有符号偏离：(highw-openw)/open、(loww-openw)/open；全日区间为(highw-loww)/open。结果以bp表示。highw/loww/openw使用同日RiceQuant加法复权价格，分母open为原始开盘价。",
+    "fair_value_proxy": "本地分钟分片的total_turnover来自主力连续序列88，而volume来自全品种聚合序列99，两者不能构成有效VWAP。本研究按用户确认改用分钟K线典型价TWAP代理：对每个交易日，对所有有效分钟的(highw+loww+closew)/3作等权平均。它是时间等权的价格路径代理，不是真实公允价值或成交量加权VWAP。",
+    "twap_relative": "高点与低点分别相对当日分钟典型价TWAP的有符号偏离：(highw-twapw)/twapw、(loww-twapw)/twapw；全日区间为(highw-loww)/twapw。以bp表示。",
+    "feature_standardization": "每个品种各特征按此前60个交易日的均值和标准差标准化，至少40个有效前值；shift(1)，当天不进入基准统计。共同市场样本再对三品种等权平均标准化特征。",
+    "outcome": "信号日t收盘后可交易的下一开盘段收益，即(openw[t+2]-openw[t+1])/open[t+1]。以bp报告，未扣成本。严格对齐交易日序列，不按自然日重采样。",
+    "clv": "(closew-loww)/(highw-loww)，用于控制信号日收盘在区间中的位置。",
+    "primary_model": "每项候选分别估计 outcome ~ feature_z + CLV + intercept，Newey-West/HAC 5阶；系数报告为每1个特征标准差对应的下一开盘段bp变化。分别给IF 2011–2021及IF/IH/IC 2015–2021合并结果，并对各样本内6项主检验作BH校正。",
+    "weak_close_model": "次要检验 outcome ~ feature_z + CLV + weak_close + feature_z×weak_close + intercept，weak_close定义为CLV<0.4。报告交互系数及HAC(5) t值；各样本内6个交互检验分别作BH校正。此检验不选择阈值。",
+    "yearly_diagnostic": "报告各日历年主模型候选系数及HAC(5) t值，仅描述方向跨年一致性；不据此调整定义或选择年份。"
+  },
+  "candidate_features": {
+    "high_open": "信号日最高价相对开盘价的有符号偏离。",
+    "low_open": "信号日最低价相对开盘价的有符号偏离。",
+    "range_open": "信号日全日高低区间相对开盘价的宽度。",
+    "high_twap": "信号日最高价相对当日分钟典型价TWAP代理的有符号偏离。",
+    "low_twap": "信号日最低价相对当日分钟典型价TWAP代理的有符号偏离。",
+    "range_twap": "信号日全日高低区间相对当日分钟典型价TWAP代理的宽度。"
+  },
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "if_sample_start": "2011-01-01",
+    "if_sample_end": "2021-12-31",
+    "common_sample_start": "2015-04-16",
+    "common_sample_end": "2021-12-31",
+    "rolling_window": 60,
+    "rolling_minimum": 40,
+    "hac_lags": 5,
+    "weak_close_threshold": 0.4,
+    "feature_names": [
+      "high_open",
+      "low_open",
+      "range_open",
+      "high_twap",
+      "low_twap",
+      "range_twap"
+    ]
+  },
+  "interpretation": "本研究为已被查看研究期上的探索性条件相关，不识别因果或可交易收益。TWAP为分钟典型价的等权均值，不是真实公允价值或成交量加权VWAP；收益未扣费。统计显著性与跨年稳定性均不等于策略有效。",
+  "sample_boundary": "明确不读2022、不读2023–2025、不读2026，不读取锁定分区。"
+}
