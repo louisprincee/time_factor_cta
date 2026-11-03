@@ -1,0 +1,69 @@
+{
+  "id": "market_clock_slow_short_20_60_120",
+  "status": "frozen",
+  "declared_at": "2026-10-22",
+  "frozen_at": "2026-10-23",
+  "sample": "20/60/120 窗口于 2026-10-23 按用户决定设为唯一当前策略；该窗口此前已在商品 2011–2021 研究期及 2014–2015 压力窗口看过，属于样本内、事后选择，不是新预登记或独立验证。2022–2024 对同一规则家族已看过；任何 2022 及以后窗口仅在用户当轮明确要求后，使用本 ID 的独立台账打开。2025 未打开。不读 2026。",
+  "hypothesis": "多头腿同按池宽1倍：五因子收盘市场分数大于 0，并且该品种滞后一个交易日的主力对次主力年化展期收益严格大于 0，权重 +1。空头腿只在市场趋势小于 0 时启用：品种自身趋势向下（时间序列动量）并且滞后一日展期收益为负（远月高于近月、库存宽松，carry），两者同时成立的品种权重 −1。品种自身趋势 = 20、60、120 个交易日收益符号的平均，收益 = (复权收盘_t − 复权收盘_{t−n}) / 原始收盘_{t−n}。市场趋势 = 池内等权收盘到收盘日收益累计 20、60、120 日后的符号平均，小于 0 记为熊市，窗口不足时不是熊市。全部在收盘 t 已知，下一交易日第一根开盘成交，有夜盘是夜盘开盘。两条腿都按当年池宽分 1 倍名义敞口，目标权重不变就继续持有，只成交手数差额。回撤 10% 清仓并停 10 个交易日。",
+  "parameters": {
+    "factors": [
+      "ts_low",
+      "ts_high",
+      "dfp_top3",
+      "ts_low_pm",
+      "ts_high_pm"
+    ],
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.0,
+    "gross_split": "pool",
+    "rebalance_on_count_change": false,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "short_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "short_rule": "symbol_trend < 0 and lagged annualized_yield < 0",
+    "short_weight": -1.0,
+    "bear_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "bear_rule": "market_trend < 0"
+  },
+  "chosen": {
+    "factors": [
+      "ts_low",
+      "ts_high",
+      "dfp_top3",
+      "ts_low_pm",
+      "ts_high_pm"
+    ],
+    "roll_yield": "annualized_yield",
+    "roll_yield_lag_days": 1,
+    "gross_exposure_limit": 1.0,
+    "gross_split": "pool",
+    "rebalance_on_count_change": false,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "short_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "short_rule": "symbol_trend < 0 and lagged annualized_yield < 0",
+    "short_weight": -1.0,
+    "bear_trend_windows": [
+      20,
+      60,
+      120
+    ],
+    "bear_rule": "market_trend < 0"
+  },
+  "costs": "历史手续费，按金额 ×1.01、按手数 +0.01 元；滑点为上一年估计 tick 每边 1 跳",
+  "prior_information": "研究期结果（1 亿元、历史手续费加每边 1 跳滑点）：2016–2021 净 Sharpe 1.29、年化净收益 7.22%、最大回撤 −5.71%；2011–2021 净 Sharpe 1.03、年化净收益 5.64%、最大回撤 −6.48%、Calmar 0.87。研究期结果为样本内，不是独立样本外验证。",
+  "decision_note": "2026-10-23 用户将此前已比较过的 20/60/120 三窗口参数选为唯一当前策略。该选择是事后选择；所列研究结果是已看过的样本内结果，不是新运行或样本外验证。新 ID 用于隔离旧策略的结果目录与台账。"
+}

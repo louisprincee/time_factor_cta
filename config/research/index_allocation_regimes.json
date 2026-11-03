@@ -1,0 +1,93 @@
+{
+  "id": "index_allocation_regimes",
+  "status": "declared_test_not_a_strategy",
+  "declared_at": "2026-11-03",
+  "research_question": "在默认策略的 pooled CLV 信号、冲高与波动缩放不变时，对比等权、近期相对收益排名权重和逆波动率权重，并与现有固定权重基准比较；同时保留已登记的动量预测、跨品种状态和年度差异诊断。",
+  "authorization": "用户于2026-11-03明确要求回测等权、近期收益率权重和波动率权重方案。本事后研究只更换品种预算分配，使用2015–2021研究期；不更改冻结策略、默认路由或OOS权限。",
+  "sample": "仅用IF/IH/IC研究期分钟分片和既有研究期账本，研究日历2015-04-16至2021-12-31，结果持有段截至2021-12-30。20日动量和60日相关使用各自历史预热；所有信号只取决于决策日收盘及更早数据。不读 2022，不读 2023–2025，不读 2026，不读取任何OOS数据。",
+  "parameters": {
+    "symbols": [
+      "IF",
+      "IH",
+      "IC"
+    ],
+    "clv_threshold": 0.4,
+    "relative_momentum_lookback": 20,
+    "pairwise_return_correlation_lookback": 60,
+    "pairwise_return_correlation_minimum": 45,
+    "hac_lags": 5,
+    "study_years": [
+      2018,
+      2021
+    ],
+    "allocation_shrinkage": {
+      "formula": "w(lambda) = (1-lambda)*fixed_multipliers + lambda*equal_multipliers",
+      "levels": [
+        0.0,
+        0.5,
+        1.0
+      ],
+      "fixed_multipliers": {
+        "IF": 0.891744548286604,
+        "IH": 0.623831775700935,
+        "IC": 1.484423676012461
+      },
+      "equal_multipliers": {
+        "IF": 1.0,
+        "IH": 1.0,
+        "IC": 1.0
+      },
+      "preserve_total_multiplier": 3.0
+    },
+    "allocation_backtests": {
+      "signal_book": "index_clv_rally_fixed_long pooled CLV<0.4 signal",
+      "lookback_sessions": 20,
+      "weight_sum": 3.0,
+      "max_multiplier": 2.0,
+      "execution_lag_sessions": 1,
+      "methods": [
+        "fixed_current",
+        "equal",
+        "relative_return_rank_20d",
+        "inverse_volatility_20d"
+      ],
+      "relative_return_definition": "(closew_t - closew_(t-20)) / raw_close_(t-20), ranked cross-sectionally; multipliers are 3*rank/sum(rank), average ranks for ties",
+      "volatility_definition": "sample standard deviation of the last 20 close-to-close returns through signal close t; multipliers proportional to inverse volatility",
+      "concentration_cap_rule": "cap each multiplier at 2 and redistribute excess proportionally across uncapped symbols while preserving total weight 3",
+      "warmup_rule": "use equal multipliers until the 20-session allocation estimator is available",
+      "execution_costs": "same frozen l1_30m index ledger, fees, CFFEX open limits, integer lots, roll-close one tick, drawdown breaker"
+    },
+    "strategy_ids": [
+      "index_clv_rally_fixed_long",
+      "index_clv_pooled_equal_long",
+      "index_clv_individual_equal_long"
+    ]
+  },
+  "hypotheses": [
+    "在pooled CLV<0.4的信号日，过去20日相对收益较强的品种，其下一开盘段相对收益可能延续；以每日截面Spearman秩相关和NW t报告，不把结果直接变成仓位规则。",
+    "过去60日三品种平均两两收益相关、当日CLV离散度和单品种弱收盘信号数可能描述汇总信号书与单品种信号书的相对净收益；用全样本单变量HAC斜率和年度描述，不择阈值。",
+    "2018与2021策略差异可能来自触发日期、信号广度、品种持仓贡献和跨品种状态的组合差异；逐项报告而不作因果结论。",
+    "固定乘数向等权收缩可降低对全样本风格倾斜的依赖；在固定CLV信号、冲高因子、波动缩放、总权重、执行和成本完全相同时，对lambda=0、0.5、1.0全部报告，不按收益挑选档位。",
+    "在 pooled CLV<0.4 信号不变时，等权、20日相对收益横截面排名和20日逆波动率可以形成不同的品种预算；仅比较预先定义的三种动态/中性配置与当前固定权重，不据研究结果挑选参数。"
+  ],
+  "pass_criteria": "本检验是由已查看结果引出的事后描述性探索，不设统计显著性通过门槛、不择指标或阈值。交付标准是报告全部已声明的结果，固定和等权两个端点逐日复现既有账本，并验证按品种重建的毛盈亏与账本一致；任何结果都不改变策略或授予OOS权限。",
+  "outputs": [
+    "annual_strategy_returns.csv",
+    "annual_regime_features.csv",
+    "momentum_rank_predictiveness.csv",
+    "regime_return_spreads.csv",
+    "product_market_returns.csv",
+    "product_gross_contributions.csv",
+    "allocation_shrinkage_summary.csv",
+    "allocation_shrinkage_annual.csv",
+    "allocation_shrinkage_paired_differences.csv",
+    "allocation_shrinkage_weights.csv",
+    "allocation_backtest_summary.csv",
+    "allocation_backtest_annual.csv",
+    "allocation_backtest_paired_differences.csv",
+    "allocation_weights_daily.csv",
+    "allocation_backtest_daily.csv",
+    "protocol.json"
+  ],
+  "limitations": "本研究问题由已查看的2015–2021策略表现引出，属于事后探索和同样本诊断。三品种横截面很小；相关、动量或CLV离散度关系不能证明可交易的仓位分配优势。权重回测只用于研究期策略比较，不用于冻结或OOS授权；全部规则/参数在同一研究样本内检查，不能证明独立样本外泛化。未做其他阈值搜索或独立样本外验证。"
+}

@@ -1,0 +1,77 @@
+{
+  "name": "时间戳与公允价偏离的单因子预测性检验",
+  "status": "declared_screen_not_a_strategy",
+  "declared_at": "2026-10-16",
+  "sample": "信号日只使用 2016-01-01 至 2021-12-31。更早的研究期分钟只用于 250 日持续期阈值预热。不读 2022，不读 2023–2025。本文件不构造配对，也不写入成交量时戳的方向。",
+  "pass": {
+    "abs_t": 2.0,
+    "hac_lags": 5,
+    "min_years_same_sign": 5,
+    "n_years": 6,
+    "min_sectors_same_sign": 4,
+    "sectors": ["农产品", "黑色", "有色", "贵金属", "能源", "化工"],
+    "min_days_per_year": 40,
+    "min_days_per_sector": 60,
+    "min_names_ic": 8,
+    "min_names_regression": 12,
+    "min_symbol_obs": 30,
+    "index_quintile_lookback": 250,
+    "index_quintile_min_obs": 60,
+    "note": "商品单因子 t 是逐日截面 Spearman 的 Newey–West t；控制 t 是逐日截面秩回归系数的 Newey–West t。股指两者都是单合约时间序列的 HAC t。年份和板块不足最小天数则记为不足，不算同号。成交量时戳没有预期符号，只记录全样本符号是否在年份和板块上稳定，不能据此进入配对。"
+  },
+  "duration": {
+    "lookback": 250,
+    "percentile": 50.0,
+    "fixed_price_threshold": 3.0,
+    "fixed_markets": ["index"],
+    "note": "主规格是过去 250 个交易日、不含当天的分钟价格绝对变动的 50% 分位数。固定 3 个点只作为股指对照。商品不用固定点数。"
+  },
+  "sectors": {
+    "农产品": ["A", "B", "C", "CS", "M", "Y", "P", "JD", "LH", "RR", "AP", "CF", "CY", "SR", "OI", "RM", "RS", "PK", "CJ", "WH", "PM", "RI", "LR", "JR"],
+    "黑色": ["I", "J", "JM", "RB", "HC", "WR", "SS", "SF", "SM", "ZC"],
+    "有色": ["CU", "AL", "ZN", "PB", "NI", "SN", "BC", "AO", "AD", "SI", "LC", "PS"],
+    "贵金属": ["AU", "AG"],
+    "能源": ["BU", "FU", "LU", "SC", "PG"],
+    "化工": ["L", "V", "PP", "EG", "EB", "RU", "NR", "BR", "SP", "TA", "MA", "FG", "SA", "UR", "PF", "PX", "PR", "SH"],
+    "建材": ["BB", "FB", "LG"],
+    "航运": ["EC"]
+  },
+  "decisions": {
+    "commodity": [
+      {"id": "10:00", "entry": "next_minute", "exit": "11:30", "kind": "intraday"},
+      {"id": "11:30", "entry": "next_session_bar", "exit": "15:00", "kind": "intraday"},
+      {"id": "close", "entry": "next_trading_open", "exit": "next_trading_open", "kind": "next_session"}
+    ],
+    "index": [
+      {"id": "10:00", "entry": "next_minute", "exit": "15:00", "kind": "intraday"},
+      {"id": "11:30", "entry": "next_session_bar", "exit": "15:00", "kind": "intraday"},
+      {"id": "close", "entry": "next_trading_open", "exit": "next_trading_open", "kind": "next_session"}
+    ]
+  },
+  "target": {
+    "primary": "进场价到退出价。加法复权价之差除以进场原始价。商品有夜盘时，收盘后的下一笔可交易开盘是下一交易日的第一根，也就是当晚夜盘开盘；没有夜盘才是次日日盘开盘。股指是次日 09:31 开盘。隔时段主目标是这一开盘到再下一交易日的开盘。",
+    "diagnostics": "隔时段另记进场前跳空、持仓日上午、下午、以及收盘到退出开盘。这些不参与通过判定。10:00 的进场必须正好是下一分钟；11:30 的进场是午休后的第一根。"
+  },
+  "controls": ["决策窗口内的复权涨跌幅", "收盘在该窗口高低点区间中的位置", "窗口成交量的对数"],
+  "factors": [
+    {"id": "ts_high", "expected": -1, "decisions": ["10:00", "11:30", "close"], "window": "upto"},
+    {"id": "ts_low", "expected": 1, "decisions": ["10:00", "11:30", "close"], "window": "upto"},
+    {"id": "ts_low_minus_high", "expected": 1, "decisions": ["10:00", "11:30", "close"], "window": "upto"},
+    {"id": "ts_high_am", "expected": -1, "decisions": ["11:30", "close"], "window": "am"},
+    {"id": "ts_low_am", "expected": 1, "decisions": ["11:30", "close"], "window": "am"},
+    {"id": "ts_high_pm", "expected": -1, "decisions": ["close"], "window": "pm"},
+    {"id": "ts_low_pm", "expected": 1, "decisions": ["close"], "window": "pm"},
+    {"id": "dfp_max", "expected": 1, "decisions": ["close"], "window": "dfp"},
+    {"id": "dfp_top3", "expected": 1, "decisions": ["close"], "window": "dfp"},
+    {"id": "dfp_max_fixed", "expected": 1, "decisions": ["close"], "window": "dfp_fixed", "markets": ["index"]},
+    {"id": "dfp_top3_fixed", "expected": 1, "decisions": ["close"], "window": "dfp_fixed", "markets": ["index"]},
+    {"id": "ts_volume", "expected": null, "decisions": ["10:00", "11:30", "close"], "window": "upto"},
+    {"id": "ts_turnover", "expected": null, "decisions": ["10:00", "11:30", "close"], "window": "upto"},
+    {"id": "ts_half_volume", "expected": null, "decisions": ["10:00", "11:30", "close"], "window": "upto"},
+    {"id": "pmt", "expected": -1, "decisions": ["close"], "window": "report"},
+    {"id": "vmt", "expected": -1, "decisions": ["close"], "window": "report"},
+    {"id": "vd_ratio", "expected": 1, "decisions": ["close"], "window": "report"},
+    {"id": "spike_am", "expected": 1, "decisions": ["close"], "window": "report"},
+    {"id": "vol_pm", "expected": 1, "decisions": ["close"], "window": "report"}
+  ]
+}
