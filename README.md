@@ -3,10 +3,10 @@
 根据兴业和国泰君安两份研报（`docs/` 下）开展商品和股指期货研究。回测使用整数手数账本，扣历史手续费和每边 1 跳滑点。
 
 - 商品登记两条冻结策略：商品原策略和商品收盘位置策略。规则和实现分别见 [`strategies/commodity_original`](strategies/commodity_original/) 和 [`strategies/commodity_close_location`](strategies/commodity_close_location/)。
-- 股指唯一注册策略是 **`index_clv_rally_base_long`**：21/63/126 日多头票数决定0至半仓多头底仓，剩余预算只在 pooled CLV<0.4 时启用，冲高只放大 CLV部分，风控前目标最高1.5倍，完全不做空。研究期年化16.82%、Sharpe1.44、最大回撤−14.50%，平均实际敞口48.02%。相对上一多空版收益差NW t2.45，但回撤加深，整体改进门槛未通过。未冻结，不运行样本外。规则、逐年表和52.47%仓位审计见 [`docs/index_guide.md`](docs/index_guide.md)。
-- 已冻结的 `index_clv_rally_equal_up_long` 退出注册，JSON 保留不改。`index_clv_rally_equal_long` 与 `index_clv_adaptive_long` 的实现已移除。历史记录见 [`docs/index_research_review.md`](docs/index_research_review.md)。
+- 股指唯一注册策略是已冻结但尚未做样本外验证的 **`index_clv_rally_base_long_2x`**：21/63/126 日多头票数决定0至半仓底仓，剩余预算只在 pooled CLV<0.4 时启用，冲高z>0时只将CLV部分乘2，风控前目标最高2倍，完全不做空。原1.5倍版本已移除实现，仅保留历史对照结果。冻结只锁定规则，不代表已通过样本外或可部署验证；规则、研究登记和结果见 [`docs/index_guide.md`](docs/index_guide.md)。
+- `index_clv_rally_equal_up_long` 已按用户要求删除实现和配置，历史研究结果仍保留。`index_clv_rally_equal_long` 与 `index_clv_adaptive_long` 的实现也已移除。历史记录见 [`docs/index_research_review.md`](docs/index_research_review.md)。
 - 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。
-- 商品策略和全部研究记录见 [`docs/guide.md`](docs/guide.md)；股指当前规则和参数研究见 [`docs/index_guide.md`](docs/index_guide.md)。`--market index --research` 运行唯一的股指策略，也可用 ID 点名。
+- 商品策略和全部研究记录见 [`docs/guide.md`](docs/guide.md)；股指当前规则和参数研究见 [`docs/index_guide.md`](docs/index_guide.md)。`--market index --research` 运行当前冻结的股指策略。
 - 股指历史研究在 [`docs/index_research_review.md`](docs/index_research_review.md)；当前策略规则、研究期结果和证据边界见[`股指策略说明`](docs/index_guide.md)。
 
 ## 环境
@@ -54,8 +54,8 @@ python -m backtest.engine --research --by-year       # 每年一本新的 1 亿�
 python -m backtest.engine --start 2018 --end 2020
 python -m backtest.engine 商品收盘位置策略 --research
 python -m research.report.strategy_report       # 商品两本冻结策略的图表报告，先跑上面的账本
-python -m backtest.engine --market index --research # 股指常驻多头，2015–2021；固定1000万、L1
-python -m backtest.engine index_clv_rally_base_long --research
+python -m backtest.engine --market index --research # 股指冻结策略，2015–2021；固定1000万、L1；固定1000万、L1
+python -m backtest.engine index_clv_rally_base_long_2x --research
 python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
 ```
@@ -83,7 +83,7 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 
 股指测试统一维护在 `tests/test_index.py`，不再按研究任务新增测试文件。日常只维护 `main` 分支。
 
-股指研究统一放在 `research/index/`。在用策略位于 `strategies/index_clv_rally_base_long/`，账本由 `backtest.engine` 执行；逐年曲线在 `runs/index/strategies/index_clv_rally_base_long/research/plots/`。历史部件拆分：`python -m research.index.index_adaptive_attribution`；历史底仓对照用 `--base-momentum`，当前多头预算转移与仓位审计用 `--budget-transfer`。
+股指研究统一放在 `research/index/`。当前策略位于 `strategies/index_clv_rally_base_long_2x/`，账本由 `backtest.engine` 执行；逐年曲线在 `runs/index/strategies/index_clv_rally_base_long_2x/research/plots/`。历史部件拆分：`python -m research.index.index_adaptive_attribution`；历史底仓对照用 `--base-momentum`，预算转移历史对照与仓位审计用 `--budget-transfer`。
 
 ```bash
 python -m research.index.index_allocation_regimes # 历史配置研究与状态诊断，不登记可运行策略

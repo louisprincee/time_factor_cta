@@ -396,7 +396,7 @@ import numpy as qvix__np
 import pandas as qvix__pd
 from scipy.stats import spearmanr as qvix__spearmanr
 from research.time_factor_screen import ols_hac as qvix__ols_hac
-from strategies.index_close_location import market_close_location as qvix__market_close_location
+from strategies.index_common import market_close_location as qvix__market_close_location
 from tfcta import config as qvix__C
 qvix__CONFIG_PATH = qvix__C.CONFIG_DIR / 'research' / 'index_qvix_reversal.json'
 qvix__OUT = qvix__C.study_dir('index', 'index_qvix_reversal')

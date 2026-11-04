@@ -51,6 +51,7 @@ def test_index_cli_rejects_unknown_books_and_years_outside_2015_2025(monkeypatch
         ["--market", "index", "--year", "2026"],
         ["index_close_location_bear_short", "--research"],
         ["index_clv_rally_equal_long", "--research"],
+        ["index_clv_rally_base_long", "--research"],
         ["index_clv_rally_equal_up_long", "--research"],
         ["index_clv_adaptive_long", "--research"],
         ["--market", "index", "--start", "2022", "--end", "2026"],
@@ -59,19 +60,29 @@ def test_index_cli_rejects_unknown_books_and_years_outside_2015_2025(monkeypatch
             engine.main(args)
 
 
-def test_index_registry_contains_only_the_base_long_book():
-    from strategies.index_catalog import DEFAULT_BOOK, INDEX_BOOKS, INDEX_FROZEN_BOOKS, book_named
-    from strategies.index_clv_rally_base_long import BOOK
+def test_index_registry_contains_only_the_frozen_2x_book():
+    from strategies.index_catalog import (
+        DEFAULT_BOOK,
+        INDEX_BOOKS,
+        INDEX_FROZEN_BOOKS,
+        book_named,
+    )
+    from strategies.index_clv_rally_base_long_2x import BOOK as DEFAULT_2X_BOOK
 
-    assert DEFAULT_BOOK is BOOK
-    assert INDEX_BOOKS == (BOOK,)
-    assert INDEX_FROZEN_BOOKS == ()
-    assert BOOK.STATUS == "exploratory_predeclared"
-    assert BOOK.declared()["chosen"] == BOOK.declared()["parameters"]
-    assert BOOK.declared()["parameters"]["base_gross"] == 0.5
-    assert BOOK.declared()["parameters"]["momentum_windows"] == [21, 63, 126]
-    assert BOOK.declared()["parameters"]["short_rule"] == "none"
-    assert book_named(BOOK.ID) is BOOK
+    assert DEFAULT_BOOK is DEFAULT_2X_BOOK
+    assert INDEX_BOOKS == (DEFAULT_2X_BOOK,)
+    assert INDEX_FROZEN_BOOKS == (DEFAULT_2X_BOOK,)
+    assert DEFAULT_2X_BOOK.STATUS == "frozen"
+    assert DEFAULT_2X_BOOK.declared()["frozen_at"] == "2026-11-04"
+    assert DEFAULT_2X_BOOK.declared()["chosen"] == DEFAULT_2X_BOOK.declared()["parameters"]
+    assert DEFAULT_2X_BOOK.declared()["parameters"]["rally_multiplier"] == 2.0
+    assert DEFAULT_2X_BOOK.declared()["parameters"]["maximum_pre_vol_target"] == 2.0
+    assert DEFAULT_2X_BOOK.declared()["parameters"]["base_gross"] == 0.5
+    assert DEFAULT_2X_BOOK.declared()["parameters"]["momentum_windows"] == [21, 63, 126]
+    assert DEFAULT_2X_BOOK.declared()["parameters"]["short_rule"] == "none"
+    assert book_named(DEFAULT_2X_BOOK.ID) is DEFAULT_2X_BOOK
+    with pytest.raises(ValueError, match="未知股指策略"):
+        book_named("index_clv_rally_base_long")
     with pytest.raises(ValueError, match="未知股指策略"):
         book_named("index_clv_rally_equal_long")
     with pytest.raises(ValueError, match="未知股指策略"):
@@ -81,7 +92,7 @@ def test_index_registry_contains_only_the_base_long_book():
 
 
 def _priced_bars(days, level):
-    from strategies.index_clv_rally_base_long import BOOK
+    from strategies.index_clv_rally_base_long_2x import BOOK
 
     symbols = list(BOOK.SYMBOLS)
     level = np.asarray(level, dtype=float).reshape(-1)
@@ -99,7 +110,7 @@ def _priced_bars(days, level):
 
 
 def test_base_momentum_reduces_longs_and_transfers_the_budget_to_clv():
-    from strategies.index_clv_rally_base_long import BOOK
+    from strategies.index_clv_rally_base_long_2x import BOOK
 
     days = pd.bdate_range("2018-01-02", periods=320)
     rise = _priced_bars(days, 100.0 + np.arange(len(days)))
@@ -116,7 +127,7 @@ def test_base_momentum_reduces_longs_and_transfers_the_budget_to_clv():
     assert targets.iloc[20].eq(0.5).all()
     assert targets.iloc[280].eq(0.5).all()
     assert targets.iloc[281].eq(1.0).all()
-    assert targets.iloc[283].eq(1.25).all()
+    assert targets.iloc[283].eq(1.5).all()
     assert targets.iloc[285].eq(0.5).all()
 
     fall = _priced_bars(days, 400.0 - np.arange(len(days)))
@@ -128,13 +139,13 @@ def test_base_momentum_reduces_longs_and_transfers_the_budget_to_clv():
     assert down.iloc[127].eq(0.0).all()
     assert down.iloc[280].eq(0.0).all()
     assert down.iloc[281].eq(1.0).all()
-    assert down.iloc[283].eq(1.5).all()
+    assert down.iloc[283].eq(2.0).all()
     assert down.iloc[285].eq(0.0).all()
-    assert down.ge(0).all().all() and down.le(1.5).all().all()
+    assert down.ge(0).all().all() and down.le(2.0).all().all()
 
 
 def test_base_momentum_does_not_cross_the_research_oos_price_basis():
-    from strategies.index_clv_rally_base_long import _base_budget, _by_partition, _close_to_close
+    from strategies.index_clv_rally_base_long_2x import _base_budget, _by_partition, _close_to_close
 
     research = pd.bdate_range("2020-09-01", periods=300)
     oos = pd.bdate_range("2022-01-03", periods=90)
@@ -154,7 +165,7 @@ def test_base_momentum_does_not_cross_the_research_oos_price_basis():
 
 
 def test_base_momentum_counts_votes_instead_of_switching_the_whole_base():
-    from strategies.index_clv_rally_base_long import _base_budget
+    from strategies.index_clv_rally_base_long_2x import _base_budget
 
     days = pd.bdate_range("2018-01-02", periods=351)
     returns = pd.Series([np.nan] + [0.005] * 300 + [0.0001] * 50, index=days)
@@ -170,7 +181,7 @@ def test_base_momentum_counts_votes_instead_of_switching_the_whole_base():
 
 
 def test_base_momentum_zero_return_vote_warmup_and_future_invariance():
-    from strategies.index_clv_rally_base_long import _base_budget
+    from strategies.index_clv_rally_base_long_2x import _base_budget
 
     days = pd.bdate_range("2018-01-02", periods=350)
     zero = pd.Series(0.0, index=days)
@@ -188,7 +199,7 @@ def test_base_momentum_zero_return_vote_warmup_and_future_invariance():
 
 
 def test_base_components_keep_unused_clv_cash_and_do_not_look_ahead():
-    from strategies.index_clv_rally_base_long import BOOK
+    from strategies.index_clv_rally_base_long_2x import BOOK
 
     days = pd.bdate_range("2018-01-02", periods=170)
     bars = _priced_bars(days, 400.0 - np.arange(len(days)))
@@ -199,9 +210,9 @@ def test_base_components_keep_unused_clv_cash_and_do_not_look_ahead():
     assert parts.iloc[140]["底仓预算"] == 0.0
     assert parts.iloc[140]["CLV预算"] == 1.0
     assert parts.iloc[140]["合计"] == 0.0
-    assert parts.iloc[141]["合计"] == 1.5
+    assert parts.iloc[141]["合计"] == 2.0
     assert parts.iloc[141]["底仓"] == 0.0
-    assert parts.iloc[141]["择时"] == 1.5
+    assert parts.iloc[141]["择时"] == 2.0
     np.testing.assert_allclose((parts["底仓预算"] + parts["CLV预算"]).iloc[1:], 1.0)
     for frame in bars.values():
         frame.iloc[145:] *= 2
@@ -291,7 +302,7 @@ def test_exposure_audit_does_not_require_rebalancing_after_a_blocked_target():
     ("closew", np.inf), ("closew", -np.inf), ("open", np.inf),
 ])
 def test_base_rejects_invalid_prices_instead_of_treating_them_as_warmup(field, value):
-    from strategies.index_clv_rally_base_long import BOOK
+    from strategies.index_clv_rally_base_long_2x import BOOK
 
     days = pd.bdate_range("2018-01-02", periods=320)
     bars = _priced_bars(days, 400.0 - np.arange(len(days)))
@@ -300,81 +311,25 @@ def test_base_rejects_invalid_prices_instead_of_treating_them_as_warmup(field, v
         BOOK.targets(pd.Series(0.6, index=days), bars, rally_z=pd.Series(-1.0, index=days))
 
 
-def test_rally_up_candidate_only_adds_the_declared_signal_and_lags_execution():
-    from strategies.index_clv_rally_equal_up_long import BOOK
+def test_2x_rally_multiplier_changes_only_the_tactical_budget():
+    from strategies.index_clv_rally_base_long_2x import BOOK as BOOK_2X
 
-    days = pd.bdate_range("2018-01-02", periods=80)
-    symbols = list(BOOK.SYMBOLS)
-    price = pd.DataFrame(100.0, index=days, columns=symbols)
-    bars = {
-        "open": price.copy(),
-        "openw": price.copy(),
-        "closew": price.copy(),
-        "highw": price + 2.0,
-        "loww": price.copy(),
-    }
-
-    # Body > 0.7 and CLV >= 0.8: signal is executed on the next session.
-    bars["openw"].iloc[20] = 100.2
-    bars["closew"].iloc[20] = 101.8
-    bars["highw"].iloc[20] = 102.0
-    # Strong body without the CLV gate must not signal.
-    bars["openw"].iloc[22] = 100.2
-    bars["closew"].iloc[22] = 101.78
-    bars["highw"].iloc[22] = 102.0
-    # Body exactly 0.7 does not pass the strict body threshold.
-    bars["openw"].iloc[24] = 100.2
-    bars["closew"].iloc[24] = 101.6
-    bars["highw"].iloc[24] = 102.0
-
-    clv = pd.Series(0.5, index=days)
-    clv.iloc[20] = 0.8
-    clv.iloc[22] = 0.79
-    clv.iloc[24] = 0.8
-    clv.iloc[40] = 0.1
-    rally = pd.Series(-1.0, index=days)
-    rally.iloc[20] = 1.0
-    targets = BOOK.targets(clv, bars, rally_z=rally)
-
-    assert targets.iloc[20].eq(0).all()
-    assert targets.iloc[21].eq(1.5).all()
-    assert targets.iloc[23].eq(0).all()
-    assert targets.iloc[25].eq(0).all()
-    assert targets.iloc[41].eq(1.0).all()
-    assert BOOK.GROSS == 1.0
-
-
-def test_rally_up_frozen_book_uses_oos_warmup_only_within_oos_partition():
-    from strategies.index_clv_rally_equal_up_long import BOOK
-
-    research_days = pd.bdate_range("2021-10-01", periods=50)
-    oos_days = pd.bdate_range("2022-01-03", periods=24)
-    days = research_days.append(oos_days)
-    symbols = list(BOOK.SYMBOLS)
-    research_price = pd.DataFrame(100.0, index=research_days, columns=symbols)
-    oos_price = pd.DataFrame(1000.0, index=oos_days, columns=symbols)
-    price = pd.concat([research_price, oos_price])
-    bars = {
-        "open": price.copy(),
-        "openw": price.copy(),
-        "closew": price.copy(),
-        "highw": price + 2.0,
-        "loww": price - 2.0,
-    }
+    days = pd.bdate_range("2018-01-02", periods=320)
+    bars = _priced_bars(days, 400.0 - np.arange(len(days)))
     clv = pd.Series(0.1, index=days)
     rally = pd.Series(-1.0, index=days)
+    rally.iloc[200] = 1.0
 
-    targets = BOOK.targets(clv, bars, rally_z=rally)
+    targets_2x = BOOK_2X.targets(clv, bars, rally_z=rally)
 
-    # The adjusted-price jump at the partition boundary must not contaminate OOS volatility.
-    assert targets.loc[oos_days[0]].eq(1.0).all()
-    assert targets.loc[oos_days[1]].eq(1.0).all()
+    assert targets_2x.iloc[201].eq(2.0).all()
+    assert targets_2x.iloc[202].eq(1.0).all()
+    assert targets_2x.ge(0).all().all() and targets_2x.le(2.0).all().all()
 
 
-def test_index_oos_routes_to_data_loader_for_frozen_book(monkeypatch):
+def test_index_oos_routes_only_the_frozen_book_before_loading(monkeypatch):
     import backtest.engine as engine
-    from strategies.index_clv_rally_base_long import BOOK as ACTIVE_BOOK
-    from strategies.index_clv_rally_equal_up_long import BOOK as FROZEN_BOOK
+    from strategies.index_clv_rally_base_long_2x import BOOK as DEFAULT_BOOK
 
     monkeypatch.setattr(
         engine,
@@ -382,11 +337,18 @@ def test_index_oos_routes_to_data_loader_for_frozen_book(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("到达股指数据加载入口")),
     )
     with pytest.raises(AssertionError, match="到达股指数据加载入口"):
-        engine.run_index(2022, 2022, book=FROZEN_BOOK)
-    with pytest.raises(C.HoldoutViolation, match="未冻结"):
-        engine.run_index(2022, 2022, book=ACTIVE_BOOK)
-    with pytest.raises(SystemExit):
-        engine.main(["--market", "index", "--oos"])
+        engine.run_index(2022, 2022, book=DEFAULT_BOOK)
+
+    routed = []
+    monkeypatch.setattr(
+        engine,
+        "run_index",
+        lambda start, end, **kwargs: routed.append((start, end, kwargs.get("book"))),
+    )
+    engine.main(["--market", "index", "--oos"])
+    assert [(start, end, book.ID) for start, end, book in routed] == [
+        (2022, 2025, DEFAULT_BOOK.ID)
+    ]
 
 
 def test_annual_index_plots_are_written_for_each_year(tmp_path):

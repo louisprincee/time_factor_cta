@@ -20,18 +20,12 @@ from backtest.engine import (
 )
 from research.time_factor_screen import ols_hac
 from research.index.index_execution_10m import opening_quotes, l1_slippage
-from strategies.index_close_location import (
-    BOOK as FIXED_BOOK,
-    FIXED_MULTIPLIERS,
+from strategies.index_common import (
     SYMBOLS,
     close_vol_scale,
     high_open_z,
     market_close_location,
 )
-from strategies.index_clv_individual_equal import individual_close_locations
-from strategies.index_clv_pooled_equal import BOOK as POOLED_EQUAL_BOOK
-from strategies.index_clv_return_rank_20d import BOOK as RETURN_RANK_BOOK
-from strategies.index_clv_inverse_vol_20d import BOOK as INVERSE_VOL_BOOK
 from strategies.index_allocation import allocation_multipliers
 from tfcta import config as C
 
@@ -44,6 +38,10 @@ BOOK_IDS = (
 )
 YEARS = (2018, 2021)
 CAPITAL = 10_000_000.0
+FIXED_MULTIPLIERS = (0.891744548286604, 0.623831775700935, 1.484423676012461)
+GROSS = 1.0
+DRAWDOWN_LIMIT = 0.10
+HALT_DAYS = 10
 MOMENTUM_LOOKBACK = 20
 CORRELATION_LOOKBACK = 60
 CORRELATION_MINIMUM = 45
@@ -58,6 +56,34 @@ ALLOCATION_METHODS = (
     "relative_return_rank_20d",
     "inverse_volatility_20d",
 )
+
+
+def _individual_close_locations(bars, index):
+    close = bars["closew"].reindex(index=index, columns=SYMBOLS)
+    high = bars["highw"].reindex(index=index, columns=SYMBOLS)
+    low = bars["loww"].reindex(index=index, columns=SYMBOLS)
+    width = high - low
+    if close.isna().any().any() or width.isna().any().any() or width.le(0).any().any():
+        raise ValueError("股指单品种收盘位置行情未完全对齐")
+    values = (close - low) / width
+    if not np.isfinite(values.to_numpy()).all() or values.lt(0).any().any() or values.gt(1).any().any():
+        raise ValueError("股指单品种收盘位置无效")
+    return values
+
+
+def _legacy_targets(market_clv, bars, rally_z, multipliers):
+    """为历史配置研究复现已退役书的固定信号与风险预算。"""
+    index = market_clv.index
+    opened = bars["open"].reindex(index=index, columns=SYMBOLS)
+    adjusted = bars["openw"].reindex(index=index, columns=SYMBOLS)
+    open_returns = ((adjusted.shift(-1) - adjusted) / opened).mean(axis=1, skipna=False)
+    scale = close_vol_scale(open_returns).fillna(1.0)
+    tilt = pd.Series(np.where(rally_z.reindex(index).gt(0), 1.5, 1.0), index=index)
+    budget = market_clv.lt(0.4).astype(float) * scale * tilt
+    return pd.DataFrame(
+        {symbol: budget * multiplier for symbol, multiplier in zip(SYMBOLS, multipliers)},
+        index=index,
+    ).shift(1).fillna(0.0)
 
 
 def load_protocol() -> dict:
@@ -122,7 +148,7 @@ def _forward_returns(bars: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 def _features(bars: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame]:
     index = bars["close"].index
-    clv = individual_close_locations(bars, index)
+    clv = _individual_close_locations(bars, index)
     pooled_clv = market_close_location(bars, index)
     close_returns = (bars["closew"] - bars["closew"].shift(1)) / bars["close"].shift(1)
     rolling_corr = []
@@ -330,9 +356,11 @@ def _allocation_shrinkage(
         & (returns.index.year <= INDEX_RESEARCH_END.year)
     ].index
     pooled_clv = market_close_location(bars, index)
-    fixed_targets = FIXED_BOOK.targets(pooled_clv, bars, rally_z=rally_z).reindex(scored)
-    equal_targets = POOLED_EQUAL_BOOK.targets(
-        pooled_clv, bars, rally_z=rally_z
+    fixed_targets = _legacy_targets(
+        pooled_clv, bars, rally_z, FIXED_MULTIPLIERS
+    ).reindex(scored)
+    equal_targets = _legacy_targets(
+        pooled_clv, bars, rally_z, (1.0, 1.0, 1.0)
     ).reindex(scored)
     if not np.allclose(
         fixed_targets.sum(axis=1).to_numpy(),
@@ -360,9 +388,9 @@ def _allocation_shrinkage(
             ticks,
             INDEX_RESEARCH_END.year,
             INDEX_SYMBOLS,
-            exposure_limit=FIXED_BOOK.GROSS,
-            drawdown_limit=FIXED_BOOK.DRAWDOWN_LIMIT,
-            halt_days=FIXED_BOOK.HALT_DAYS,
+            exposure_limit=GROSS,
+            drawdown_limit=DRAWDOWN_LIMIT,
+            halt_days=HALT_DAYS,
             initial_capital=CAPITAL,
             open_limits=True,
             open_slippage=slippage,
@@ -518,32 +546,20 @@ def _allocation_backtests(
         & (returns.index.year <= INDEX_RESEARCH_END.year)
     ].index
     pooled_clv = market_close_location(bars, index)
-    fixed_targets = FIXED_BOOK.targets(pooled_clv, bars, rally_z=rally_z).reindex(scored)
+    fixed_targets = _legacy_targets(
+        pooled_clv, bars, rally_z, FIXED_MULTIPLIERS
+    ).reindex(scored)
     base_budget = fixed_targets.sum(axis=1) / ALLOCATION_WEIGHT_SUM
     if not base_budget.between(0.0, 1.5, inclusive="both").all():
         raise ValueError("固定股指信号总预算超出预期范围")
 
     multipliers, weights_daily = _allocation_multipliers(bars)
     targets = {"fixed_current": fixed_targets}
-    official_books = {
-        "relative_return_rank_20d": RETURN_RANK_BOOK,
-        "inverse_volatility_20d": INVERSE_VOL_BOOK,
-    }
     for method in ALLOCATION_METHODS[1:]:
-        shifted = multipliers[method].shift(1).reindex(scored).fillna(1.0)
-        targets[method] = shifted.mul(base_budget, axis=0)
-        book = official_books.get(method)
-        if book is None:
-            continue
-        official = book.targets(pooled_clv, bars, rally_z=rally_z).reindex(scored).fillna(0.0)
-        if not np.allclose(
-            official.to_numpy(dtype="float64"),
-            targets[method].to_numpy(dtype="float64"),
-            rtol=0.0,
-            atol=1e-12,
-        ):
-            raise ValueError(f"{method}策略目标与同一总预算下的品种分配不一致")
-        targets[method] = official
+        targets[method] = (
+            multipliers[method].shift(1).reindex(scored).fillna(1.0)
+            .mul(base_budget, axis=0)
+        )
 
     quotes = load_opening_quotes()
     slippage, _, _ = l1_slippage(quotes, bars, contracts, scored)
@@ -562,9 +578,9 @@ def _allocation_backtests(
             ticks,
             INDEX_RESEARCH_END.year,
             INDEX_SYMBOLS,
-            exposure_limit=FIXED_BOOK.GROSS,
-            drawdown_limit=FIXED_BOOK.DRAWDOWN_LIMIT,
-            halt_days=FIXED_BOOK.HALT_DAYS,
+            exposure_limit=GROSS,
+            drawdown_limit=DRAWDOWN_LIMIT,
+            halt_days=HALT_DAYS,
             initial_capital=CAPITAL,
             open_limits=True,
             open_slippage=slippage,

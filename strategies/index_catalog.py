@@ -1,19 +1,10 @@
-"""股指冻结策略注册表；默认仍使用原有固定品种权重策略。"""
-from strategies.index_close_location import BOOK
-from strategies.index_clv_individual_equal import BOOK as INDIVIDUAL_EQUAL_BOOK
-from strategies.index_clv_pooled_equal import BOOK as POOLED_EQUAL_BOOK
-from strategies.index_clv_return_rank_20d import BOOK as RETURN_RANK_BOOK
-from strategies.index_clv_inverse_vol_20d import BOOK as INVERSE_VOL_BOOK
+"""股指策略注册表。"""
+from strategies.index_clv_rally_base_long_2x import BOOK as RALLY_BASE_2X_BOOK
 
-DEFAULT_BOOK = BOOK
-INDEX_FROZEN_BOOKS = (
-    BOOK,
-    INDIVIDUAL_EQUAL_BOOK,
-    POOLED_EQUAL_BOOK,
-    RETURN_RANK_BOOK,
-    INVERSE_VOL_BOOK,
-)
-INDEX_BOOKS = INDEX_FROZEN_BOOKS
+DEFAULT_BOOK = RALLY_BASE_2X_BOOK
+INDEX_BOOKS = (RALLY_BASE_2X_BOOK,)
+# 只有冻结的策略能跑样本外；冻结状态以各自 JSON 为准。
+INDEX_FROZEN_BOOKS = tuple(book for book in INDEX_BOOKS if book.STATUS == "frozen")
 BOOKS = INDEX_BOOKS
 
 

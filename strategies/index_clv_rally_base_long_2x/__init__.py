@@ -1,4 +1,4 @@
-"""股指多头底仓分档减仓，释放预算交给弱收盘冲高。"""
+"""股指多头底仓CLV预算转移，冲高时择时预算乘2。"""
 from __future__ import annotations
 
 import json
@@ -10,12 +10,12 @@ import pandas as pd
 from strategies.index_common import SYMBOLS, THRESHOLD, close_vol_scale
 from tfcta import config as C
 
-ID = "index_clv_rally_base_long"
-NAME = "股指多头底仓CLV预算转移"
+ID = "index_clv_rally_base_long_2x"
+NAME = "股指多头底仓CLV预算转移2倍"
 GROSS = 1.0
 DRAWDOWN_LIMIT = 0.10
 HALT_DAYS = 10
-RALLY_MULTIPLIER = 1.5
+RALLY_MULTIPLIER = 2.0
 BASE_GROSS = 0.5
 TACTICAL_GROSS = 0.5
 MOMENTUM_WINDOWS = (21, 63, 126)
@@ -32,7 +32,7 @@ PARAMETERS = {
     "momentum_windows": list(MOMENTUM_WINDOWS),
     "base_rule": "each complete window votes 1 for compounded return > 0, 0 otherwise; incomplete windows vote 1; base = 0.5 * votes / 3, never short",
     "tactical_minimum_gross": TACTICAL_GROSS,
-    "tactical_budget_rule": "1 minus base budget; use only on CLV < 0.4, multiply this part by 1.5 on rally z > 0",
+    "tactical_budget_rule": "1 minus base budget; use only on CLV < 0.4, multiply this part by 2.0 on rally z > 0",
     "allocation_rule": "equal multipliers 1/1/1",
     "short_rule": "none",
     "rally_window": 60,
@@ -45,7 +45,7 @@ PARAMETERS = {
     "vol_scale_cap": 1.0,
     "vol_warmup": "scale 1 until the 20-session estimate exists",
     "gross_exposure_limit": GROSS,
-    "maximum_pre_vol_target": 1.5,
+    "maximum_pre_vol_target": 2.0,
     "drawdown_breaker": DRAWDOWN_LIMIT,
     "halt_days": HALT_DAYS,
     "initial_capital": 10000000,
@@ -61,17 +61,19 @@ def declared_config():
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     if (
         config.get("id") != ID
-        or config.get("status") != "exploratory_predeclared"
+        or config.get("status") != "frozen"
         or config.get("declared_at") != "2026-11-04"
+        or config.get("frozen_at") != "2026-11-04"
         or config.get("parameters") != PARAMETERS
         or config.get("chosen") != PARAMETERS
-        or config.get("parameters", {}).get("base_gross") != BASE_GROSS
         or config.get("sample") is None
         or "2015-04-16" not in config["sample"]
         or "2021-12-30" not in config["sample"]
-        or "不运行OOS" not in config["sample"]
+        or "未读取2022至2025" not in config["sample"]
+        or "2026及以后数据" not in config["sample"]
+        or "OOS尚未运行" not in config["sample"]
     ):
-        raise ValueError("股指双半仓参数与实现不一致")
+        raise ValueError("股指2倍策略冻结配置与实现不一致")
     return config
 
 
@@ -95,14 +97,20 @@ def _base_budget(close_to_close: pd.Series) -> pd.Series:
         momentum = (1.0 + close_to_close).rolling(window, min_periods=window).apply(
             np.prod, raw=True
         ) - 1.0
-        votes.append(pd.Series(
-            np.where(momentum.isna() | momentum.gt(0), 1.0, 0.0),
-            index=close_to_close.index,
-        ))
-    return pd.concat(votes, axis=1).sum(axis=1) * (BASE_GROSS / len(MOMENTUM_WINDOWS))
+        votes.append(
+            pd.Series(
+                np.where(momentum.isna() | momentum.gt(0), 1.0, 0.0),
+                index=close_to_close.index,
+            )
+        )
+    return pd.concat(votes, axis=1).sum(axis=1) * (
+        BASE_GROSS / len(MOMENTUM_WINDOWS)
+    )
 
 
-def _by_partition(index: pd.DatetimeIndex, frames: dict[str, pd.DataFrame], build) -> pd.Series:
+def _by_partition(
+    index: pd.DatetimeIndex, frames: dict[str, pd.DataFrame], build
+) -> pd.Series:
     oos_mask = index >= pd.Timestamp(C.OOS_START)
     if not oos_mask.any():
         return build(frames)
@@ -116,11 +124,12 @@ def _by_partition(index: pd.DatetimeIndex, frames: dict[str, pd.DataFrame], buil
     return pd.concat(parts)
 
 
-def rally_base_components(
+def budget_transfer_components(
     market_clv: pd.Series,
     bars: dict[str, pd.DataFrame],
     *,
-    rally_z: pd.Series | None = None,
+    rally_z: pd.Series | None,
+    rally_multiplier: float,
 ) -> pd.DataFrame:
     index = market_clv.index
     if not isinstance(index, pd.DatetimeIndex):
@@ -147,6 +156,8 @@ def rally_base_components(
     ).any().any():
         raise ValueError("常驻多头价格区间无效")
 
+    if not np.isfinite(rally_multiplier) or rally_multiplier <= 0:
+        raise ValueError("冲高乘数必须为正的有限数")
     if rally_z is None:
         from strategies.index_common import high_open_z
 
@@ -157,9 +168,10 @@ def rally_base_components(
     scale = _by_partition(
         index, frames, lambda subset: close_vol_scale(_open_to_open(subset)).fillna(1.0)
     )
-    base = _by_partition(index, frames, lambda subset: _base_budget(_close_to_close(subset)))
-    # 释放的底仓预算只在弱收盘时启用；冲高仅放大动态CLV预算。
-    tilt = pd.Series(np.where(rally_z.gt(0), RALLY_MULTIPLIER, 1.0), index=index)
+    base = _by_partition(
+        index, frames, lambda subset: _base_budget(_close_to_close(subset))
+    )
+    tilt = pd.Series(np.where(rally_z.gt(0), rally_multiplier, 1.0), index=index)
     tactical = market_clv.lt(THRESHOLD).astype(float) * (1.0 - base) * tilt
     parts = pd.DataFrame({
         "底仓预算": base, "CLV预算": 1.0 - base, "未缩放底仓": base,
@@ -170,8 +182,19 @@ def rally_base_components(
     return parts.shift(1).fillna(0.0)
 
 
-def rally_base_targets(market_clv, bars, *, rally_z=None):
-    parts = rally_base_components(market_clv, bars, rally_z=rally_z)
+def components(
+    market_clv: pd.Series,
+    bars: dict[str, pd.DataFrame],
+    *,
+    rally_z: pd.Series | None = None,
+) -> pd.DataFrame:
+    return budget_transfer_components(
+        market_clv, bars, rally_z=rally_z, rally_multiplier=RALLY_MULTIPLIER
+    )
+
+
+def targets(market_clv, bars, *, rally_z=None):
+    parts = components(market_clv, bars, rally_z=rally_z)
     return pd.DataFrame({symbol: parts["合计"] for symbol in SYMBOLS}, index=parts.index)
 
 
@@ -179,11 +202,11 @@ class Book:
     ID, NAME, SYMBOLS = ID, NAME, SYMBOLS
     GROSS, DRAWDOWN_LIMIT, HALT_DAYS = GROSS, DRAWDOWN_LIMIT, HALT_DAYS
     CONFIG_PATH = CONFIG_PATH
-    DETAIL = "21/63/126日多头票数决定0至半仓底仓；剩余预算在CLV弱收盘时启用，冲高只放大CLV；无空头"
+    DETAIL = "21/63/126日多头底仓分档；CLV弱收盘时使用剩余预算，冲高只将择时预算乘2；无空头"
     declared = staticmethod(declared_config)
     frozen = staticmethod(declared_config)
-    targets = staticmethod(rally_base_targets)
-    components = staticmethod(rally_base_components)
+    targets = staticmethod(targets)
+    components = staticmethod(components)
 
     @property
     def STATUS(self):
@@ -191,7 +214,11 @@ class Book:
 
     @property
     def FILES(self):
-        return [Path(__file__), Path(__file__).parents[1] / "index_common.py", CONFIG_PATH]
+        return [
+            Path(__file__),
+            Path(__file__).parents[1] / "index_common.py",
+            CONFIG_PATH,
+        ]
 
 
 BOOK = Book()

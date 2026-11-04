@@ -88,7 +88,7 @@ def main() -> int:
         print(f"{symbol}: {len(frame)} 天，{frame.index.get_level_values('date').min().date()}.."
               f"{frame.index.get_level_values('date').max().date()}，倒挂 {int((frame['gap_days'] < 0).sum())} 天",
               flush=True)
-    print(f"研究期展期收益保存在 {OUT / 'roll_yield'}", flush=True)
+    print(f"研究期展期收益保存在 {ROLL_YIELD_OUT}", flush=True)
     return 0
 
 

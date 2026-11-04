@@ -211,7 +211,7 @@ from pathlib import Path as spot_pressure__Path
 import numpy as spot_pressure__np
 import pandas as spot_pressure__pd
 from research.time_factor_screen import ols_hac as spot_pressure__ols_hac
-from strategies.index_close_location import market_close_location as spot_pressure__market_close_location
+from strategies.index_common import market_close_location as spot_pressure__market_close_location
 from tfcta import config as spot_pressure__C
 spot_pressure__CONFIG_PATH = spot_pressure__C.CONFIG_DIR / 'research' / 'index_spot_open_pressure.json'
 spot_pressure__OUT = spot_pressure__C.study_dir('index', 'index_spot_open_pressure')

@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from strategies.index_close_location import SYMBOLS, close_vol_scale
+from strategies.index_common import SYMBOLS, close_vol_scale
 from tfcta import config as C
 
 LOOKBACK = 20

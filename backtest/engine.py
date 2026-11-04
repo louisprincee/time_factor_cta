@@ -836,7 +836,7 @@ INDEX_EXCHANGE_TICK = 0.2
 
 def _load_index_research_inputs():
     """读取 IF/IH/IC 研究期分钟分片，构造共享整数手账本所需的日线输入。"""
-    from strategies.index_close_location import high_open_z
+    from strategies.index_common import high_open_z
     frames, contracts_by_symbol, tick_parts, rally_parts = {}, {}, [], {}
     for symbol in INDEX_SYMBOLS:
         minute = load_shard(
@@ -1097,12 +1097,15 @@ def run_index(
     book=None,
 ):
     """运行已登记股指策略。研究期只读 research/，样本外只读 oos/，预热历史从研究期接上。"""
-    from strategies.index_close_location import high_open_z, market_close_location
+    from strategies.index_common import high_open_z, market_close_location
     from research.index.index_execution_10m import load_opening_quotes, l1_slippage
 
     if book is None:
-        from strategies.index_catalog import INDEX_BOOKS
-        for item in INDEX_BOOKS:
+        from strategies.index_catalog import INDEX_BOOKS, INDEX_FROZEN_BOOKS
+        selected = INDEX_FROZEN_BOOKS if int(end) >= C.OOS_START.year else INDEX_BOOKS
+        if not selected:
+            raise C.HoldoutViolation("当前没有已冻结股指策略可用于样本外回测")
+        for item in selected:
             run_index(
                 start, end, by_year=by_year, capital=capital, execution=execution, book=item,
             )
@@ -1111,6 +1114,8 @@ def run_index(
     start, end = int(start), int(end)
     if start < 2015 or end > C.DEFAULT_OOS_END.year or start > end:
         raise C.HoldoutViolation(f"股指回测年份须在 2015–{C.DEFAULT_OOS_END.year}，收到 {start}–{end}")
+    if end >= C.OOS_START.year and book.STATUS != "frozen":
+        raise C.HoldoutViolation("股指策略未冻结，不允许运行样本外")
     if capital != INDEX_DEFAULT_CAPITAL or execution != INDEX_DEFAULT_EXECUTION:
         raise ValueError("股指口径固定为1000万、l1_30m")
     if by_year and start != end:
@@ -1274,6 +1279,47 @@ def plot_performance(
     return path
 
 
+def plot_annual_performance(returns, benchmark, out_dir, strategy_name) -> list[Path]:
+    """按自然年重置净值，逐年绘制策略与池内等权买入持有。"""
+    frame = pd.DataFrame({strategy_name: returns, "等权买入持有": benchmark})
+    frame = frame.apply(pd.to_numeric, errors="coerce")
+    frame = frame.replace([np.inf, -np.inf], np.nan).dropna(how="all").fillna(0.0)
+    if frame.empty:
+        raise ValueError("没有可绘制的年度收益数据")
+    paths = []
+    for year, part in frame.groupby(frame.index.year, sort=True):
+        paths.append(
+            plot_performance(
+                part,
+                out_dir,
+                title=f"{strategy_name} vs 等权买入持有 {year}",
+                filename=f"{year}.png",
+            )
+        )
+    return paths
+
+
+def benchmark_comparison(returns: pd.Series, benchmark: pd.Series) -> dict:
+    """策略相对等权买入持有：两者年化、差值、逐日超额 NW t、beta 与年化 alpha。"""
+    bench = pd.Series(benchmark).reindex(returns.index).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    excess = returns - bench
+    strat_metrics, bench_metrics = performance(returns), performance(bench)
+    variance = float(bench.var())
+    beta = float(returns.cov(bench) / variance) if variance > 0 else np.nan
+    alpha = float((returns.mean() - beta * bench.mean()) * PERIODS) if np.isfinite(beta) else np.nan
+    return {
+        "买入持有累计收益": float((1.0 + bench).prod() - 1.0),
+        "买入持有年化收益": bench_metrics["ann_return"],
+        "买入持有Sharpe": sharpe_ratio(bench),
+        "买入持有最大回撤": max_drawdown((1.0 + bench).cumprod(), 1.0),
+        "年化超额收益": strat_metrics["ann_return"] - bench_metrics["ann_return"],
+        "逐日超额均值年化": float(excess.mean() * PERIODS),
+        "逐日超额NW_t": newey_west_t(excess.to_numpy(), lags=10),
+        "相对买入持有beta": beta,
+        "相对买入持有年化alpha": alpha,
+    }
+
+
 def _capital_label(capital: float) -> str:
     capital = float(capital)
     return f"{capital / 1e8:g}亿元" if capital >= 1e8 else f"{capital / 1e4:g}万元"
@@ -1334,6 +1380,8 @@ def write_results(
         "换月笔数": int(daily["换月笔数"].sum()),
         "涨跌停代理阻单数": int(daily["受阻委托数"].sum()),
     }
+    if benchmark is not None:
+        summary.update(benchmark_comparison(returns, benchmark))
     annual_rows = []
     for year in years:
         part = daily.loc[daily.index.year == year]
@@ -1352,6 +1400,14 @@ def write_results(
             "开仓笔数": int(part["开仓笔数"].sum()),
             "平仓笔数": int(part["平仓笔数"].sum()),
         })
+        if benchmark is not None:
+            bench = pd.Series(benchmark).reindex(part.index).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            bench_return = float((1.0 + bench).prod() - 1.0)
+            annual_rows[-1].update({
+                "买入持有净收益": bench_return,
+                "超额收益": annual_rows[-1]["净收益"] - bench_return,
+                "买入持有年度内最大回撤": max_drawdown((1.0 + bench).cumprod(), 1.0),
+            })
 
     result_dir = C.backtest_dir(market, strategy.ID, folder)
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -1366,6 +1422,13 @@ def write_results(
         title=f"{label} {title}",
         filename="performance.png",
     )
+    if market == "index" and benchmark is not None:
+        plot_annual_performance(
+            chart[label],
+            chart["等权买入持有"],
+            result_dir / "plots",
+            label,
+        )
     tables = {
         "summary.csv": pd.DataFrame([summary]),
         "annual.csv": pd.DataFrame(annual_rows),
@@ -1449,8 +1512,15 @@ def main(argv=None):
             parser.error("股指口径固定为1000万、l1_30m")
         if window[0] < 2015 or window[1] > C.DEFAULT_OOS_END.year:
             parser.error(f"股指回测年份须在 2015–{C.DEFAULT_OOS_END.year}")
-        from strategies.index_catalog import INDEX_BOOKS
-        books = INDEX_BOOKS if book is None else (book,)
+        from strategies.index_catalog import INDEX_BOOKS, INDEX_FROZEN_BOOKS
+        if window[1] >= C.OOS_START.year and (
+            (book is None and not INDEX_FROZEN_BOOKS)
+            or (book is not None and book.STATUS != "frozen")
+        ):
+            parser.error("当前没有已冻结股指策略可用于样本外回测")
+        # 样本外只选择冻结策略；研究期默认运行全部登记策略。
+        default_books = INDEX_FROZEN_BOOKS if window[1] >= C.OOS_START.year else INDEX_BOOKS
+        books = default_books if book is None else (book,)
         for item in books:
             run_index(
                 *window,

@@ -1,6 +1,6 @@
 # 回测
 
-股指当前唯一策略为未冻结的多头底仓CLV预算转移：21/63/126 日多头票数决定0至半仓底仓，剩余预算在CLV弱收盘时使用，冲高只放大CLV，完全不做空。`--market index --research` 或指定 `index_clv_rally_base_long` 运行研究期；样本外入口拒绝。商品不变。规则见[`股指策略说明`](../docs/index_guide.md)。
+股指唯一注册策略为已冻结的多头底仓CLV预算转移2倍版：21/63/126日多头票数底仓，剩余预算只在CLV弱收盘时使用，冲高仅放大CLV预算，完全不做空。`--market index --research` 运行该版本；显式样本外命令也仅选择它，OOS尚未运行。历史1.5倍对照结果保留，但其实现和注册已移除。商品不变。规则见[`股指策略说明`](../docs/index_guide.md)。
 
 入口是 `python -m backtest.engine`，区间必须显式指定：
 
@@ -9,8 +9,8 @@ python -m backtest.engine --research                 # 2011–2021 一本账
 python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期
 python -m backtest.engine --research --by-year       # 每年一本新账
 python -m backtest.engine --start 2018 --end 2020
-python -m backtest.engine --market index --research # 股指常驻多头，2015–2021
-python -m backtest.engine index_clv_rally_base_long --research
+python -m backtest.engine --market index --research # 股指冻结策略，2015–2021
+python -m backtest.engine index_clv_rally_base_long_2x --research
 python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
 ```

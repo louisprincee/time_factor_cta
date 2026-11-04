@@ -1,0 +1,23 @@
+{
+  "id": "index_adaptive_signal_grid",
+  "status": "declared_parameter_comparison",
+  "declared_at": "2026-11-04",
+  "hypothesis": "单边上涨形态作为额外股指做多信号时，实体占比门槛和收盘位置门槛会改变信号质量。只在预声明的小网格中比较，不据结果宣称统计显著或存在可部署优势。",
+  "sample": "IF/IH/IC 研究期，信号与计分日期限于 2015-04-16 至 2021-12-30；只读 research/ 数据，明确不读 2022-01-01 至 2025-12-31 OOS 数据及 2026 年及以后数据。",
+  "parameters": {
+    "body_ratio_thresholds": [0.6, 0.7, 0.8],
+    "pooled_clv_thresholds": [0.8, 0.9, 1.0],
+    "signal": "在现行弱收盘做多规则之外，等权实体占比严格大于实体门槛且 pooled CLV 大于等于 CLV 门槛时额外做多",
+    "fixed_rules": "其余规则固定为当前策略：20日相对收益排名分配、波动缩放、冲高放大、单边下跌过滤、IF/IH/IC、次日开盘执行、每次交易的历史成本与L1 30分钟滑点",
+    "variants": 9
+  },
+  "selection": {
+    "primary_metric": "研究期净收益序列的年化 Sharpe，降序选择",
+    "tie_breakers": ["较小最大回撤", "较高年化收益", "较低实体门槛", "较低CLV门槛"],
+    "report_all_variants": true,
+    "report": ["样本日期和计分日数", "累计净收益", "年化收益", "Sharpe", "最大回撤", "各年收益", "新增信号日数"],
+    "pass_criteria": "描述性排序，不设统计显著或经济显著的通过门槛；完整报告全部9组，并明确同一研究样本调参和多重比较偏差。"
+  },
+  "known_before": "当前已运行的研究期策略使用实体占比>0.7且 pooled CLV>=0.9；其总体回测结果已知。因此本次比较是探索性参数筛选，不是独立验证。",
+  "limitations": "所有变体共享同一段研究数据，最佳组合存在选择偏差；不得把研究期排名解释为预测优势，不冻结策略，不读取或据此报告OOS表现。"
+}

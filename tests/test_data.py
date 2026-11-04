@@ -623,3 +623,20 @@ def test_sharder_writes_one_research_and_one_oos_shard(tmp_path, monkeypatch):
     oos = pd.read_pickle(C.OOS_DIR / "RB.pkl")
     assert set(pd.to_datetime(research.trading_date).dt.year) == {2021}
     assert set(pd.to_datetime(oos.trading_date).dt.year) == {2022, 2023, 2025}
+
+
+def test_importing_the_minute_downloader_never_contacts_ricequant(monkeypatch):
+    # 导入本身曾触发下载并写出 2026 行情；只有 main() 才能连米筐
+    import importlib
+    import sys
+
+    import rqdatac
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("导入时不应连接米筐")
+
+    monkeypatch.setattr(rqdatac, "init", refuse)
+    monkeypatch.setattr(rqdatac, "get_price", refuse)
+    sys.modules.pop("download.commodity.getCommodityMinutes", None)
+    module = importlib.import_module("download.commodity.getCommodityMinutes")
+    assert callable(module.main)

@@ -393,7 +393,11 @@ def _macd_control_sign(returns):
 
 def run_base_momentum(*, budget_transfer=False):
     """一个新规则、两个已知底仓对照；不得据结果选长度。"""
-    from strategies.index_clv_rally_base_long import BOOK, _base_budget, _close_to_close
+    from strategies.index_clv_rally_base_long_2x import (
+        _base_budget,
+        _close_to_close,
+        budget_transfer_components,
+    )
 
     study_id = "index_base_budget_transfer" if budget_transfer else "index_base_momentum"
     path = C.CONFIG_DIR / "research" / f"{study_id}.json"
@@ -410,8 +414,6 @@ def run_base_momentum(*, budget_transfer=False):
         or "不读2026" not in protocol.get("sample", "")
     ):
         raise ValueError("底仓动量研究登记不一致，拒绝读取行情")
-    if budget_transfer:
-        BOOK.declared()
     index, bars, contracts, _, ticks = _load_index_research_inputs()
     C.assert_no_holdout_dates(index, "底仓动量研究")
     if index.min() != pd.Timestamp("2015-04-16") or index.max() != pd.Timestamp("2021-12-31"):
@@ -425,13 +427,21 @@ def run_base_momentum(*, budget_transfer=False):
     }
     components = {name: base_target_components(clv, bars, rally_z, sign) for name, sign in signs.items()}
     if budget_transfer:
-        components[names[0]] = BOOK.components(clv, bars, rally_z=rally_z)
+        components[names[0]] = budget_transfer_components(
+            clv, bars, rally_z=rally_z, rally_multiplier=1.5
+        )
     targets = {
         name: pd.DataFrame({symbol: part["合计"] for symbol in SYMBOLS}, index=index)
         for name, part in components.items()
     }
     if budget_transfer:
-        pd.testing.assert_frame_equal(targets[names[0]], BOOK.targets(clv, bars, rally_z=rally_z))
+        expected = budget_transfer_components(
+            clv, bars, rally_z=rally_z, rally_multiplier=1.5
+        )
+        expected_targets = pd.DataFrame(
+            {symbol: expected["合计"] for symbol in SYMBOLS}, index=index
+        )
+        pd.testing.assert_frame_equal(targets[names[0]], expected_targets)
     market_open = ((bars["openw"].shift(-1) - bars["openw"]) / bars["open"]).mean(axis=1, skipna=False)
     scored = market_open.dropna().index
     if scored[-1] != pd.Timestamp("2021-12-30"):
