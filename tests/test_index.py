@@ -13,7 +13,7 @@ from download.index.getIndexFutures import (
 )
 from tfcta.config import HoldoutViolation
 from download.index.getIndexL1 import prepare_raw_ticks, validate_window
-from strategies.index_close_location import high_open_z
+from strategies.index_common import high_open_z
 from research.index.index_execution_10m import (
     _opening_row,
     call_auction_volume,
@@ -38,72 +38,8 @@ def api_frame(index, suffix):
     return frame
 
 
-def test_final_index_rule_is_frozen_long_only_lagged_and_uses_fixed_budget():
-    from strategies.index_close_location import BOOK, FIXED_MULTIPLIERS
-    from strategies.index_catalog import INDEX_FROZEN_BOOKS
-    from strategies.index_clv_individual_equal import BOOK as INDIVIDUAL_EQUAL_BOOK
-    from strategies.index_clv_pooled_equal import BOOK as POOLED_EQUAL_BOOK
-    from strategies.index_clv_return_rank_20d import BOOK as RETURN_RANK_BOOK
-    from strategies.index_clv_inverse_vol_20d import BOOK as INVERSE_VOL_BOOK
-
-    assert INDEX_FROZEN_BOOKS == (
-        BOOK,
-        INDIVIDUAL_EQUAL_BOOK,
-        POOLED_EQUAL_BOOK,
-        RETURN_RANK_BOOK,
-        INVERSE_VOL_BOOK,
-    )
-    protocol = BOOK.frozen()
-    assert protocol["chosen"] == protocol["parameters"] and protocol["frozen_at"]
-    days = pd.bdate_range("2018-01-02", periods=100)
-    price = pd.DataFrame(100.0, index=days, columns=["IF", "IH", "IC"])
-    bars = {"open": price, "openw": price.copy(), "close": price, "closew": price,
-            "highw": price+1, "loww": price-1}
-    clv = pd.Series(.2, index=days)
-    clv.iloc[52] = .8
-    z = pd.Series(-1., index=days); z.iloc[50] = 1.
-    target = BOOK.targets(clv, bars, rally_z=z)
-    assert target.ge(0).all().all() and target.iloc[0].eq(0).all()
-    np.testing.assert_allclose(target.iloc[51], np.array(FIXED_MULTIPLIERS)*1.5)
-    assert target.iloc[53].eq(0).all()
-    assert target.iloc[51].sum() == pytest.approx(4.5)
-    altered = z.copy(); altered.iloc[51:] = 10.
-    pd.testing.assert_frame_equal(target.iloc[:52], BOOK.targets(clv, bars, rally_z=altered).iloc[:52])
 
 
-def test_individual_clv_book_splits_budget_across_active_symbols_and_lags():
-    from strategies.index_clv_individual_equal import BOOK, PARAMETERS
-    from strategies.index_catalog import book_named
-
-    assert book_named(BOOK.ID) is BOOK
-    assert BOOK.frozen()["chosen"] == PARAMETERS
-    days = pd.bdate_range("2018-01-02", periods=5)
-    price = pd.DataFrame(100.0, index=days, columns=BOOK.SYMBOLS)
-    bars = {
-        "open": price,
-        "openw": price.copy(),
-        "closew": pd.DataFrame(
-            [[20, 80, 80], [20, 80, 20], [80, 80, 80], [20, 20, 20], [80, 80, 80]],
-            index=days,
-            columns=BOOK.SYMBOLS,
-        ),
-        "highw": pd.DataFrame(100.0, index=days, columns=BOOK.SYMBOLS),
-        "loww": pd.DataFrame(0.0, index=days, columns=BOOK.SYMBOLS),
-    }
-    rally_z = pd.Series(-1.0, index=days)
-    targets = BOOK.targets(BOOK.signal_inputs(bars, days), bars, rally_z=rally_z)
-
-    assert targets.iloc[0].eq(0).all()
-    np.testing.assert_allclose(targets.iloc[1], [2.0, 0.0, 0.0])
-    np.testing.assert_allclose(targets.iloc[2], [1.0, 0.0, 1.0])
-    assert targets.iloc[3].eq(0).all()
-    np.testing.assert_allclose(targets.iloc[4], [2.0 / 3, 2.0 / 3, 2.0 / 3])
-
-    rally_targets = BOOK.targets(
-        BOOK.signal_inputs(bars, days), bars, rally_z=pd.Series(1.0, index=days)
-    )
-    np.testing.assert_allclose(rally_targets.iloc[1], [3.0, 0.0, 0.0])
-    np.testing.assert_allclose(rally_targets.iloc[2], [1.5, 0.0, 1.5])
 
 
 def test_index_cli_rejects_unknown_books_and_years_outside_2015_2025(monkeypatch):
@@ -114,212 +50,288 @@ def test_index_cli_rejects_unknown_books_and_years_outside_2015_2025(monkeypatch
         ["--market", "index", "--year", "2014"],
         ["--market", "index", "--year", "2026"],
         ["index_close_location_bear_short", "--research"],
+        ["index_clv_rally_equal_long", "--research"],
+        ["index_clv_rally_equal_up_long", "--research"],
+        ["index_clv_adaptive_long", "--research"],
         ["--market", "index", "--start", "2022", "--end", "2026"],
     ):
         with pytest.raises(SystemExit):
             engine.main(args)
 
 
-def test_dynamic_allocation_strategies_are_registered_and_weight_rank_and_volatility():
-    from strategies.index_clv_return_rank_20d import BOOK as RETURN_RANK_BOOK
-    from strategies.index_clv_inverse_vol_20d import BOOK as INVERSE_VOL_BOOK
-    from strategies.index_catalog import book_named
+def test_index_registry_contains_only_the_base_long_book():
+    from strategies.index_catalog import DEFAULT_BOOK, INDEX_BOOKS, INDEX_FROZEN_BOOKS, book_named
+    from strategies.index_clv_rally_base_long import BOOK
 
-    assert book_named(RETURN_RANK_BOOK.ID) is RETURN_RANK_BOOK
-    assert book_named(INVERSE_VOL_BOOK.ID) is INVERSE_VOL_BOOK
-    assert RETURN_RANK_BOOK.frozen()["chosen"] == RETURN_RANK_BOOK.frozen()["parameters"]
-    assert INVERSE_VOL_BOOK.frozen()["chosen"] == INVERSE_VOL_BOOK.frozen()["parameters"]
+    assert DEFAULT_BOOK is BOOK
+    assert INDEX_BOOKS == (BOOK,)
+    assert INDEX_FROZEN_BOOKS == ()
+    assert BOOK.STATUS == "exploratory_predeclared"
+    assert BOOK.declared()["chosen"] == BOOK.declared()["parameters"]
+    assert BOOK.declared()["parameters"]["base_gross"] == 0.5
+    assert BOOK.declared()["parameters"]["momentum_windows"] == [63, 126, 252]
+    assert "short" in BOOK.declared()["parameters"]["short_rule"]
+    assert book_named(BOOK.ID) is BOOK
+    with pytest.raises(ValueError, match="未知股指策略"):
+        book_named("index_clv_rally_equal_long")
+    with pytest.raises(ValueError, match="未知股指策略"):
+        book_named("index_clv_rally_equal_up_long")
+    with pytest.raises(ValueError, match="未知股指策略"):
+        book_named("index_clv_adaptive_long")
+
+
+def _priced_bars(days, level):
+    from strategies.index_clv_rally_base_long import BOOK
+
+    symbols = list(BOOK.SYMBOLS)
+    level = np.asarray(level, dtype=float).reshape(-1)
+    price = pd.DataFrame(
+        np.repeat(level[:, None], len(symbols), axis=1), index=days, columns=symbols
+    )
+    return {
+        "open": price.copy(),
+        "openw": price.copy(),
+        "close": price.copy(),
+        "closew": price.copy(),
+        "highw": price + 2.0,
+        "loww": price - 1.0,
+    }
+
+
+def test_base_momentum_shorts_persistent_declines_and_only_tilts_the_tactical_half():
+    from strategies.index_clv_rally_base_long import BOOK
+
+    days = pd.bdate_range("2018-01-02", periods=320)
+    rise = _priced_bars(days, 100.0 + np.arange(len(days)))
+    clv = pd.Series(0.6, index=days)
+    clv.iloc[280] = 0.1
+    clv.iloc[282] = 0.1
+    clv.iloc[284] = 0.95
+    rally = pd.Series(-1.0, index=days)
+    rally.iloc[282] = 1.0
+    rally.iloc[284] = 2.0
+    targets = BOOK.targets(clv, rise, rally_z=rally)
+
+    assert targets.iloc[0].eq(0).all()
+    assert targets.iloc[20].eq(0.5).all()
+    assert targets.iloc[280].eq(0.5).all()
+    assert targets.iloc[281].eq(1.0).all()
+    assert targets.iloc[283].eq(1.25).all()
+    assert targets.iloc[285].eq(0.5).all()
+
+    fall = _priced_bars(days, 400.0 - np.arange(len(days)))
+    down = BOOK.targets(clv, fall, rally_z=rally)
+    assert down.iloc[20].eq(0.5).all()
+    assert down.iloc[126].eq(0.5).all()
+    assert down.iloc[127].eq(-0.5).all()
+    assert down.iloc[280].eq(-0.5).all()
+    assert down.iloc[281].eq(0.0).all()
+    assert down.iloc[283].eq(0.25).all()
+    assert down.iloc[285].eq(-0.5).all()
+
+
+def test_base_momentum_does_not_cross_the_research_oos_price_basis():
+    from strategies.index_clv_rally_base_long import _base_sign, _by_partition, _close_to_close
+
+    research = pd.bdate_range("2020-09-01", periods=300)
+    oos = pd.bdate_range("2022-01-03", periods=90)
+    days = research.append(oos)
+    level = np.concatenate([
+        400.0 - np.arange(len(research)),
+        1000.0 + np.arange(len(oos)),
+    ])
+    frames = _priced_bars(days, level)
+    joint = _by_partition(days, frames, lambda subset: _base_sign(_close_to_close(subset)))
+    oos_frames = {field: frame.reindex(oos) for field, frame in frames.items()}
+    alone = _base_sign(_close_to_close(oos_frames))
+
+    pd.testing.assert_series_equal(joint.loc[oos], alone, check_names=False, check_freq=False)
+    assert joint.loc[research[-1]] == -1.0
+    assert joint.loc[oos[-1]] == 1.0
+
+
+def test_base_momentum_uses_a_majority_and_does_not_short_a_slowing_rally():
+    from strategies.index_clv_rally_base_long import _base_sign
+
+    days = pd.bdate_range("2018-01-02", periods=351)
+    returns = pd.Series([np.nan] + [0.005] * 300 + [0.0001] * 50, index=days)
+    assert _base_sign(returns).iloc[-1] == 1.0
+
+    # 最后63日跌，但126、252日上涨；不能让单个较快窗口决定方向。
+    wealth = np.interp(np.arange(301), [0, 48, 174, 237, 300], [100, 80, 90, 110, 100])
+    momentum_returns = pd.Series(wealth, index=days[:301]).pct_change()
+    assert _base_sign(momentum_returns).iloc[-1] == 1.0
+    # 最后63日涨，但126、252日跌。
+    wealth = np.interp(np.arange(301), [0, 48, 174, 237, 300], [100, 120, 110, 90, 100])
+    assert _base_sign(pd.Series(wealth, index=days[:301]).pct_change()).iloc[-1] == -1.0
+
+
+def test_base_momentum_zero_return_vote_warmup_and_future_invariance():
+    from strategies.index_clv_rally_base_long import _base_sign
+
+    days = pd.bdate_range("2018-01-02", periods=350)
+    zero = pd.Series(0.0, index=days)
+    zero.iloc[0] = np.nan  # 第一日没有上一收盘，不算一笔已完成收益。
+    signs = _base_sign(zero)
+    assert signs.iloc[125] == 1.0
+    assert signs.iloc[126] == -1.0
+
+    returns = pd.Series(np.linspace(-0.004, 0.003, len(days)), index=days)
+    original = _base_sign(returns)
+    returns.iloc[290:] = -0.1
+    pd.testing.assert_series_equal(_base_sign(returns).iloc[:290], original.iloc[:290])
+
+
+def test_base_study_components_preserve_netting_and_lag_each_half():
+    from research.index.index_adaptive_attribution import base_target_components
+
+    days = pd.bdate_range("2018-01-02", periods=40)
+    frames = _priced_bars(days, np.full(len(days), 100.0))
+    clv = pd.Series(0.8, index=days)
+    clv.iloc[30:33] = [0.1, 0.1, 0.4]
+    rally = pd.Series(1.0, index=days)
+    rally.iloc[30] = -1.0
+    signs = pd.Series(-1.0, index=days)
+    parts = base_target_components(clv, frames, rally, signs)
+
+    assert parts.iloc[0].eq(0.0).all()
+    assert parts.iloc[30].tolist() == [-0.5, 0.0, -0.5]
+    assert parts.iloc[31].tolist() == [-0.5, 0.5, 0.0]
+    assert parts.iloc[32].tolist() == [-0.5, 0.75, 0.25]
+    assert parts.iloc[33].tolist() == [-0.5, 0.0, -0.5]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("close", 0.0), ("close", -1.0), ("close", np.inf),
+    ("closew", np.inf), ("closew", -np.inf), ("open", np.inf),
+])
+def test_base_rejects_invalid_prices_instead_of_treating_them_as_warmup(field, value):
+    from strategies.index_clv_rally_base_long import BOOK
+
+    days = pd.bdate_range("2018-01-02", periods=320)
+    bars = _priced_bars(days, 400.0 - np.arange(len(days)))
+    bars[field].loc[days[295], "IF"] = value
+    with pytest.raises(ValueError, match="行情|价格"):
+        BOOK.targets(pd.Series(0.6, index=days), bars, rally_z=pd.Series(-1.0, index=days))
+
+
+def test_rally_up_candidate_only_adds_the_declared_signal_and_lags_execution():
+    from strategies.index_clv_rally_equal_up_long import BOOK
 
     days = pd.bdate_range("2018-01-02", periods=80)
-    noise = np.sin(np.arange(len(days)) * 0.7)
-    returns = pd.DataFrame(
-        {
-            "IF": 0.0005 + noise * 0.0001,
-            "IH": 0.0007 + noise * 0.0002,
-            "IC": 0.0010 + noise * 0.0003,
-        },
-        index=days,
-    )
-    close = pd.DataFrame(
-        {
-            symbol: start * (1 + returns[symbol]).cumprod()
-            for symbol, start in zip(("IF", "IH", "IC"), (3000.0, 2000.0, 5000.0))
-        },
-        index=days,
-    )
+    symbols = list(BOOK.SYMBOLS)
+    price = pd.DataFrame(100.0, index=days, columns=symbols)
     bars = {
-        "open": close.copy(),
-        "openw": close.copy(),
-        "close": close.copy(),
-        "closew": close.copy(),
-        "highw": close + 2.0,
-        "loww": close - 2.0,
+        "open": price.copy(),
+        "openw": price.copy(),
+        "closew": price.copy(),
+        "highw": price + 2.0,
+        "loww": price.copy(),
     }
-    clv = pd.Series(0.2, index=days)
+
+    # Body > 0.7 and CLV >= 0.8: signal is executed on the next session.
+    bars["openw"].iloc[20] = 100.2
+    bars["closew"].iloc[20] = 101.8
+    bars["highw"].iloc[20] = 102.0
+    # Strong body without the CLV gate must not signal.
+    bars["openw"].iloc[22] = 100.2
+    bars["closew"].iloc[22] = 101.78
+    bars["highw"].iloc[22] = 102.0
+    # Body exactly 0.7 does not pass the strict body threshold.
+    bars["openw"].iloc[24] = 100.2
+    bars["closew"].iloc[24] = 101.6
+    bars["highw"].iloc[24] = 102.0
+
+    clv = pd.Series(0.5, index=days)
+    clv.iloc[20] = 0.8
+    clv.iloc[22] = 0.79
+    clv.iloc[24] = 0.8
+    clv.iloc[40] = 0.1
     rally = pd.Series(-1.0, index=days)
-    rank_targets = RETURN_RANK_BOOK.targets(clv, bars, rally_z=rally)
-    vol_targets = INVERSE_VOL_BOOK.targets(clv, bars, rally_z=rally)
+    rally.iloc[20] = 1.0
+    targets = BOOK.targets(clv, bars, rally_z=rally)
 
-    from strategies.index_close_location import BOOK as FIXED_BOOK
-
-    fixed_targets = FIXED_BOOK.targets(clv, bars, rally_z=rally)
-    assert rank_targets.iloc[0].eq(0).all()
-    np.testing.assert_allclose(rank_targets.iloc[21], [0.5, 1.0, 1.5])
-    assert vol_targets.iloc[21]["IF"] > vol_targets.iloc[21]["IH"]
-    assert vol_targets.iloc[21]["IH"] > vol_targets.iloc[21]["IC"]
-    assert rank_targets.iloc[21].sum() == pytest.approx(fixed_targets.iloc[21].sum())
-    assert vol_targets.iloc[21].sum() == pytest.approx(3.0)
-    rally_targets = RETURN_RANK_BOOK.targets(
-        clv, bars, rally_z=pd.Series(1.0, index=days)
-    )
-    np.testing.assert_allclose(rally_targets.iloc[21], rank_targets.iloc[21] * 1.5)
-
-    changed = {key: value.copy() for key, value in bars.items()}
-    changed["close"].iloc[30:] *= 1.5
-    changed["closew"].iloc[30:] *= 1.5
-    changed["open"].iloc[30:] *= 1.5
-    changed["openw"].iloc[30:] *= 1.5
-    pd.testing.assert_frame_equal(
-        rank_targets.iloc[:31],
-        RETURN_RANK_BOOK.targets(clv, changed, rally_z=rally).iloc[:31],
-    )
+    assert targets.iloc[20].eq(0).all()
+    assert targets.iloc[21].eq(1.5).all()
+    assert targets.iloc[23].eq(0).all()
+    assert targets.iloc[25].eq(0).all()
+    assert targets.iloc[41].eq(1.0).all()
+    assert BOOK.GROSS == 1.0
 
 
-def test_dynamic_allocation_oos_warmup_uses_only_oos_observations(tmp_path):
-    from strategies.index_clv_return_rank_20d import BOOK as RETURN_RANK_BOOK
-    from strategies.index_clv_inverse_vol_20d import BOOK as INVERSE_VOL_BOOK
-    from strategies.index_close_location import SYMBOLS
+def test_rally_up_frozen_book_uses_oos_warmup_only_within_oos_partition():
+    from strategies.index_clv_rally_equal_up_long import BOOK
 
-    research_index = pd.bdate_range(end="2021-12-31", periods=80)
-    oos_index = pd.bdate_range(start="2022-01-03", periods=25)
-
-    def make_bars(index, start_step):
-        step = np.arange(start_step, start_step + len(index), dtype=float)
-        close = pd.DataFrame(
-            {
-                "IF": 3000.0 + step * 1.0,
-                "IH": 2000.0 + step * 0.6,
-                "IC": 5000.0 + step * 1.8,
-            },
-            index=index,
-        )
-        return {
-            "open": close.copy(),
-            "openw": close.copy(),
-            "close": close.copy(),
-            "closew": close,
-            "highw": close + 5.0,
-            "loww": close - 1.0,
-        }
-
+    research_days = pd.bdate_range("2021-10-01", periods=50)
+    oos_days = pd.bdate_range("2022-01-03", periods=24)
+    days = research_days.append(oos_days)
+    symbols = list(BOOK.SYMBOLS)
+    research_price = pd.DataFrame(100.0, index=research_days, columns=symbols)
+    oos_price = pd.DataFrame(1000.0, index=oos_days, columns=symbols)
+    price = pd.concat([research_price, oos_price])
     bars = {
-        field: pd.concat(
-            [make_bars(research_index, 0)[field], make_bars(oos_index, 100)[field]]
-        )
-        for field in ("open", "openw", "close", "closew", "highw", "loww")
+        "open": price.copy(),
+        "openw": price.copy(),
+        "closew": price.copy(),
+        "highw": price + 2.0,
+        "loww": price - 2.0,
     }
-    index = research_index.append(oos_index)
-    market_clv = pd.Series(0.2, index=index)
-    rally = pd.Series(-1.0, index=index)
-    for book in (RETURN_RANK_BOOK, INVERSE_VOL_BOOK):
-        targets = book.targets(market_clv, bars, rally_z=rally)
+    clv = pd.Series(0.1, index=days)
+    rally = pd.Series(-1.0, index=days)
 
-        for execution_day in oos_index[:21]:
-            np.testing.assert_allclose(
-                targets.loc[execution_day, list(SYMBOLS)].to_numpy(),
-                np.repeat(targets.loc[execution_day].mean(), len(SYMBOLS)),
-            )
-        assert not np.allclose(
-            targets.loc[oos_index[21], list(SYMBOLS)].to_numpy(),
-            np.repeat(targets.loc[oos_index[21]].mean(), len(SYMBOLS)),
-        )
+    targets = BOOK.targets(clv, bars, rally_z=rally)
+
+    # The adjusted-price jump at the partition boundary must not contaminate OOS volatility.
+    assert targets.loc[oos_days[0]].eq(1.0).all()
+    assert targets.loc[oos_days[1]].eq(1.0).all()
 
 
-def test_dynamic_allocation_keeps_the_known_vol_scale_on_the_first_oos_open():
-    from strategies.index_clv_return_rank_20d import BOOK
-    from strategies.index_close_location import close_vol_scale
-
-    research_index = pd.bdate_range(end="2021-12-31", periods=40)
-    oos_index = pd.bdate_range(start="2022-01-03", periods=5)
-    shock = np.where(np.arange(len(research_index)) % 2 == 0, 1.08, 0.93)
-    research_close = pd.DataFrame(
-        {symbol: 3000.0 * np.cumprod(shock) for symbol in BOOK.SYMBOLS},
-        index=research_index,
-    )
-    oos_close = pd.DataFrame(3000.0, index=oos_index, columns=list(BOOK.SYMBOLS))
-
-    def pack(frame):
-        return {
-            "open": frame.copy(),
-            "openw": frame.copy(),
-            "close": frame.copy(),
-            "closew": frame.copy(),
-            "highw": frame + 1.0,
-            "loww": frame - 1.0,
-        }
-
-    research_bars = pack(research_close)
-    bars = {
-        field: pd.concat([research_bars[field], pack(oos_close)[field]])
-        for field in research_bars
-    }
-    index = research_index.append(oos_index)
-    targets = BOOK.targets(
-        pd.Series(0.2, index=index), bars, rally_z=pd.Series(-1.0, index=index)
-    )
-    research_returns = (
-        (research_bars["openw"].shift(-1) - research_bars["openw"]) / research_bars["open"]
-    ).mean(axis=1, skipna=False)
-    scale = float(close_vol_scale(research_returns).iloc[-1])
-    assert scale < 1.0
-    np.testing.assert_allclose(targets.loc[oos_index[0]].to_numpy(), np.repeat(scale, 3))
-
-
-def test_index_cli_runs_any_registered_book_on_research_or_oos(monkeypatch):
+def test_index_oos_routes_to_data_loader_for_frozen_book(monkeypatch):
     import backtest.engine as engine
-    from strategies.index_catalog import DEFAULT_BOOK
-    from strategies.index_clv_return_rank_20d import BOOK as RETURN_RANK_BOOK
+    from strategies.index_clv_rally_base_long import BOOK as ACTIVE_BOOK
+    from strategies.index_clv_rally_equal_up_long import BOOK as FROZEN_BOOK
 
-    calls = []
     monkeypatch.setattr(
         engine,
-        "run_index",
-        lambda start, end, by_year=False, capital=None, execution=None, book=None: calls.append(
-            (start, end, book.ID, by_year)
-        ),
+        "_load_index_research_inputs",
+        lambda: (_ for _ in ()).throw(AssertionError("到达股指数据加载入口")),
     )
-    from strategies.index_catalog import INDEX_BOOKS
-
-    engine.main([RETURN_RANK_BOOK.ID, "--start", "2022", "--end", "2023"])
-    engine.main([DEFAULT_BOOK.ID, "--oos"])
-    engine.main(["--market", "index", "--research"])
-    assert calls == [
-        (2022, 2023, RETURN_RANK_BOOK.ID, False),
-        (2022, 2025, DEFAULT_BOOK.ID, False),
-        *[(2015, 2021, book.ID, False) for book in INDEX_BOOKS],
-    ]
+    with pytest.raises(AssertionError, match="到达股指数据加载入口"):
+        engine.run_index(2022, 2022, book=FROZEN_BOOK)
+    with pytest.raises(C.HoldoutViolation, match="未冻结"):
+        engine.run_index(2022, 2022, book=ACTIVE_BOOK)
+    with pytest.raises(SystemExit):
+        engine.main(["--market", "index", "--oos"])
 
 
-def test_index_oos_window_loads_prior_oos_years_for_tick_estimation(monkeypatch):
-    import backtest.engine as engine
-    import research.index.index_execution_10m as execution
-    from strategies.index_catalog import DEFAULT_BOOK
+def test_annual_index_plots_are_written_for_each_year(tmp_path):
+    from backtest.engine import plot_annual_performance
 
-    class StopAfterWindow(Exception):
-        pass
+    days = pd.to_datetime(["2020-12-31", "2021-01-04", "2021-01-05"])
+    strategy = pd.Series([0.01, 0.02, -0.01], index=days)
+    benchmark = pd.Series([0.03, -0.01, 0.02], index=days)
 
-    monkeypatch.setattr(engine, "_load_index_research_inputs", lambda: (None, None, None, None, None))
-    monkeypatch.setattr(execution, "load_opening_quotes", lambda: pd.DataFrame())
-    requested = []
+    paths = plot_annual_performance(strategy, benchmark, tmp_path, "adaptive")
 
-    def capture_window(start, end):
-        requested.append((start, end))
-        raise StopAfterWindow
+    assert [path.name for path in paths] == ["2020.png", "2021.png"]
+    assert all(path.is_file() and path.stat().st_size > 0 for path in paths)
 
-    monkeypatch.setattr(engine, "_load_index_oos_inputs", capture_window)
-    with pytest.raises(StopAfterWindow):
-        engine.run_index(2024, 2024, book=DEFAULT_BOOK)
-    assert requested == [(pd.Timestamp("2022-01-01"), pd.Timestamp("2024-12-31"))]
+
+def test_adaptive_signal_grid_matches_its_preregistered_protocol():
+    from research.index.index_adaptive_signal_grid import load_protocol
+
+    protocol = load_protocol()
+    assert protocol["parameters"]["variants"] == 9
+
+
+
+
+
+
+
+
+
+
 
 
 def test_assemble_symbol_frames_maps_raw_adjusted_volume_and_oi_fields():
@@ -540,7 +552,7 @@ def test_buy_auction_allowance_uses_only_prior_auction_volume_and_charges_the_im
     assert rate["IF"].iloc[12] == pytest.approx(2.0 / 3000.0)
 
 
-def test_frozen_high_open_z_does_not_look_ahead():
+def test_high_open_z_does_not_look_ahead():
 
     dates = pd.bdate_range("2010-01-01", periods=100)
     values = pd.Series(range(100), index=dates, dtype=float)
@@ -645,62 +657,8 @@ def test_index_market_without_a_name_runs_every_registered_book(monkeypatch):
     ]
 
 
-def test_named_individual_clv_book_uses_index_research_router(monkeypatch):
-    seen = []
-    import backtest.engine as engine
-    from strategies.index_clv_individual_equal import BOOK
-
-    monkeypatch.setattr(
-        engine,
-        "run_index",
-        lambda start, end, **kwargs: seen.append((start, end, kwargs)),
-    )
-    engine.main([BOOK.ID, "--research"])
-
-    assert seen == [(
-        2015,
-        2021,
-        {
-            "by_year": False,
-            "capital": 10_000_000.0,
-            "execution": "l1_30m",
-            "book": BOOK,
-        },
-    )]
 
 
-def test_pooled_clv_equal_book_uses_pooled_signal_and_equal_weights():
-    from strategies.index_clv_pooled_equal import BOOK, PARAMETERS
-    from strategies.index_catalog import book_named
-
-    assert book_named(BOOK.ID) is BOOK
-    assert BOOK.frozen()["chosen"] == PARAMETERS
-    days = pd.bdate_range("2018-01-02", periods=5)
-    symbols = BOOK.SYMBOLS
-    clv = pd.DataFrame(
-        [
-            [0.2, 0.3, 0.5],
-            [0.2, 0.5, 0.51],
-            [0.1, 0.2, 0.3],
-            [0.8, 0.8, 0.8],
-            [0.2, 0.2, 0.2],
-        ],
-        index=days,
-        columns=symbols,
-    )
-    price = pd.DataFrame(100.0, index=days, columns=symbols)
-    bars = {"open": price, "openw": price.copy()}
-    rally_z = pd.Series(-1.0, index=days)
-
-    target = BOOK.targets(clv.mean(axis=1), bars, rally_z=rally_z)
-
-    assert target.iloc[0].eq(0).all()
-    np.testing.assert_allclose(target.iloc[1], [1.0, 1.0, 1.0])
-    assert target.iloc[2].eq(0).all()
-    np.testing.assert_allclose(target.iloc[3], [1.0, 1.0, 1.0])
-    assert target.iloc[4].eq(0).all()
-    rallied = BOOK.targets(clv.mean(axis=1), bars, rally_z=pd.Series(1.0, index=days))
-    np.testing.assert_allclose(rallied.iloc[1], [1.5, 1.5, 1.5])
 
 
 def test_allocation_methods_use_only_available_closes_and_preserve_budget():
@@ -730,61 +688,23 @@ def test_allocation_methods_use_only_available_closes_and_preserve_budget():
     np.testing.assert_allclose(weights["inverse_volatility_20d"].iloc[0], [1, 1, 1])
 
 
-def test_named_pooled_equal_clv_book_uses_index_research_router(monkeypatch):
-    seen = []
-    import backtest.engine as engine
-    from strategies.index_clv_pooled_equal import BOOK
 
-    monkeypatch.setattr(
-        engine,
-        "run_index",
-        lambda start, end, **kwargs: seen.append((start, end, kwargs)),
+
+
+
+def test_vol_scale_ignores_the_unfinished_open_to_open_return():
+    from strategies.index_common import close_vol_scale
+
+    index = pd.bdate_range("2016-01-04", periods=80)
+    returns = pd.Series(
+        np.resize([0.08, -0.07], len(index)),
+        index=index,
     )
-    engine.main([BOOK.ID, "--research"])
-
-    assert seen == [(
-        2015,
-        2021,
-        {
-            "by_year": False,
-            "capital": 10_000_000.0,
-            "execution": "l1_30m",
-            "book": BOOK,
-        },
-    )]
-
-
-def test_final_index_clv_uses_the_day_range():
-    from strategies.index_close_location import SYMBOLS, market_close_location
-    index = pd.bdate_range("2016-01-13", periods=2)
-    bars = {"loww": pd.DataFrame(0.0, index=index, columns=SYMBOLS),
-            "highw": pd.DataFrame(10.0, index=index, columns=SYMBOLS),
-            "closew": pd.DataFrame([[2.0] * 3, [9.0] * 3], index=index, columns=SYMBOLS)}
-    assert market_close_location(bars, index).tolist() == pytest.approx([0.2, 0.9])
-
-
-def test_vol_scale_shrinks_a_wild_market_and_ignores_the_unfinished_open():
-    from strategies.index_close_location import fixed_long_targets
-
-    index = pd.bdate_range("2016-01-04", periods=160)
-    level = pd.Series(np.linspace(200.0, 40.0, len(index)), index=index)
-    close = pd.DataFrame({symbol: level for symbol in ("IF", "IH", "IC")})
-    high = close + 8.0
-    low = close - 2.0
-    shock = np.array([0.08 if i % 2 == 0 else -0.07 for i in range(len(index))])
-    path = 100.0 * np.cumprod(1.0 + shock)
-    opened = pd.DataFrame({symbol: path for symbol in ("IF", "IH", "IC")}, index=index)
-    bars = {"close": close, "closew": close.copy(), "highw": high, "loww": low, "open": opened, "openw": opened.copy()}
-    market = ((close - low) / (high - low)).mean(axis=1)
-    targets = fixed_long_targets(market, bars)
-    assert targets.iloc[-1, 0] > 0
-    assert targets.iloc[-1, 0] < 0.5
-    bumped = opened.copy()
-    bumped.iloc[-1] *= 2
-    pd.testing.assert_frame_equal(
-        targets,
-        fixed_long_targets(market, {**bars, "open": bumped, "openw": bumped}),
-    )
+    scale = close_vol_scale(returns)
+    changed = returns.copy()
+    changed.iloc[60:] = 0.0
+    revised = close_vol_scale(changed)
+    pd.testing.assert_series_equal(scale.iloc[:61], revised.iloc[:61])
 
 
 def test_index_oos_fee_loader_reads_the_single_table_inside_the_requested_window(monkeypatch, tmp_path):

@@ -1,6 +1,6 @@
 # 回测
 
-股指登记五本冻结策略：默认的弱收盘冲高固定权重多头、两本等权比较策略，以及20日收益排名、20日逆波动率动态配置策略。`--research` 跑 2015–2021，`--oos` 跑 2022–2025。样本外尚未出结果。规则和成本口径见[`股指策略说明`](../docs/index_guide.md)。商品用同一入口。
+股指当前唯一策略为未冻结的弱收盘中期动量底仓：半仓按 63/126/252 日动量多数表决多空，另一半沿用 CLV 冲高。`--market index --research` 或指定 `index_clv_rally_base_long` 运行研究期账本；样本外入口会拒绝。商品回测不变。规则见[`股指策略说明`](../docs/index_guide.md)。
 
 入口是 `python -m backtest.engine`，区间必须显式指定：
 
@@ -9,15 +9,13 @@ python -m backtest.engine --research                 # 2011–2021 一本账
 python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期
 python -m backtest.engine --research --by-year       # 每年一本新账
 python -m backtest.engine --start 2018 --end 2020
-python -m backtest.engine index_clv_rally_fixed_long --research # 默认股指策略，2015–2021
-python -m backtest.engine index_clv_individual_equal_long --research # 独立CLV信号、活跃品种等预算
-python -m backtest.engine index_clv_pooled_equal_long --research # 汇总CLV信号、IF/IH/IC等权配置
+python -m backtest.engine --market index --research # 股指常驻多头，2015–2021
+python -m backtest.engine index_clv_rally_base_long --research
 python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
-python -m backtest.engine index_clv_return_rank_20d_long --start 2022 --end 2025
 ```
 
-商品仍登记两条冻结策略。股指由strategies/index_catalog.py登记三本冻结策略，默认研究期2015–2021。股指研究统一使用1000万、l1_30m口径。
+商品仍登记两条冻结策略。股指研究统一使用1000万、l1_30m口径。
 
 ```bash
 python -m backtest.engine market_clock_slow_short_20_60_120 --research
@@ -27,7 +25,7 @@ python -m backtest.engine --market index --research
 
 股指口径为1000万、l1_30m。开盘各腿按连续交易前30分钟L1卖一/买一成本，旧约换月前收一跳。
 
-账本在 `runs/<市场>/strategies/<策略>/<区间>/`。图表在该目录的 `plots/performance.png`。股指另写 `targets.csv`。研究期读 `research/`，样本外读 `oos/`，不写台账。
+账本在 `runs/<市场>/strategies/<策略>/<区间>/`。图表在该目录的 `plots/performance.png`。股指另外逐年生成策略与等权买入持有的年内累计净值图 `plots/<年份>.png`，并写 `targets.csv`。研究期读 `research/`，样本外读 `oos/`；股指当前无 OOS 策略，不会加载 OOS 行情。
 
 ## 账本
 
@@ -49,7 +47,7 @@ python -m backtest.engine --market index --research
 
 ## 输出
 
-结果位于 `runs/<市场>/strategies/<策略>/<区间>/`。区间是 `research`、`oos`、单年 `2019` 或 `2016-2021`。每个账本目录包含 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv` 和 `plots/performance.png`。商品研究期规格写在同一目录的 `protocol.json`。
+结果位于 `runs/<市场>/strategies/<策略>/<区间>/`。区间是 `research`、商品 `oos`、单年 `2019` 或一个自定义年份区间。每个账本目录包含 `summary.csv`、`annual.csv`、`daily.csv`、`positions.csv`、`events.csv` 和 `plots/performance.png`。股指研究账本另有逐年策略/等权买入持有图 `plots/2015.png` 至 `plots/2021.png`。股指的 `summary.csv` 另报同一账本口径下等权买入持有的累计/年化收益、Sharpe、最大回撤，策略减买入持有的年化差、逐日超额年化及 NW t（10 阶）、相对买入持有的 beta 和年化 alpha；`annual.csv` 另报逐年买入持有净收益、超额收益和买入持有年度内最大回撤。商品研究期规格写在同一目录的 `protocol.json`。
 
 绩效函数 `performance`、`sharpe_ratio`、`max_drawdown`、`newey_west_t`、`deflated_sharpe`、`pbo_cscv` 也在 `backtest/engine.py`。
 

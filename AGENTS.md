@@ -7,11 +7,10 @@ Read this file before changing the repository. If it conflicts with the code, tr
 This project researches time-of-day factors for Chinese commodity and index futures.
 
 - Commodity strategies are registered in `strategies/commodity_catalog.py`. Their default research window is 2011-2021.
-- The index strategies are registered in `strategies/index_catalog.py`: default `index_clv_rally_fixed_long`, `index_clv_individual_equal_long`, `index_clv_pooled_equal_long`, `index_clv_return_rank_20d_long`, and `index_clv_inverse_vol_20d_long`. All trade IF/IH/IC, not IM. Their research calendar starts on 2015-04-16; actual scoring begins after required data and factor warmup. `python -m backtest.engine --market index --research` runs every registered book; a named strategy runs only that book.
-- The index rule is frozen: pooled CLV below 0.4 opens a long position; positive rally z-score scales it by 1.5; fixed IF/IH/IC multipliers are 0.891744548286604, 0.623831775700935, and 1.484423676012461; a 20-day volatility cap limits scaling to 1; there is no short leg. The basis is CNY 10 million with L1 30-minute execution and a 10% drawdown breaker that halts trading for 10 sessions.
-- `index_clv_individual_equal_long` instead signals each instrument on its own CLV below 0.4 and splits the daily budget equally among signaled instruments. It retains the rally multiplier, 20-day volatility scaling, and the same execution and breaker basis. The original book remains the default and is unchanged.
-- `index_clv_pooled_equal_long` uses the equal-weight pooled CLV below 0.4 as a common signal, then gives IF/IH/IC equal target weights. It retains the rally multiplier, 20-day volatility scaling, and the same execution and breaker basis. The original book remains the default and is unchanged.
-- `index_clv_return_rank_20d_long` and `index_clv_inverse_vol_20d_long` keep the pooled CLV signal and total risk budget, but allocate product multipliers by 20-session relative-return rank or inverse realized volatility. Both use an equal-weight warmup and the same execution and breaker basis.
+- The only registered index strategy is exploratory `index_clv_rally_base_long`: half the unit budget follows the majority sign of compounded equal-weight close returns over 63/126/252 sessions, +0.5 for at least two positive votes and −0.5 otherwise. Complete zero-return windows vote short; incomplete windows vote long, so no short base is possible before 126 actual returns. The other half is long when pooled CLV<0.4, and rally z>0 multiplies only that tactical half by 1.5. User approved this fixed combination on 2026-11-04; no window search. Same 10M/L1/breaker and capped RV20 basis. The two sleeves net in the same contracts; 1 is the budget unit, and rally may produce a +1.25 pre-vol target. Research: 10.72% annualized / Sharpe 1.09 / −10.30% max drawdown, 6/7 positive years (2021 −1.03%). Improvement versus prior MACD is not significant (NW t 0.64); versus buy-and-hold t 0.70. Base comparison: `python -m research.index.index_adaptive_attribution --base-momentum`, spec `config/research/index_base_momentum.json`. It is not frozen; `INDEX_FROZEN_BOOKS` is empty and index OOS does not run.
+- Frozen `index_clv_rally_equal_up_long` stays on disk and is unregistered. Never edit its JSON; a changed rule already received the new ID above. Its research result remains 21.59% / 1.60 / −11.39%. The retired `index_clv_rally_equal_long` and `index_clv_adaptive_long` implementations stay removed. Preserve historical economic validation studies; do not restore retired rules.
+- The 3×3 body/CLV threshold study is preregistered in `config/research/index_adaptive_signal_grid.json`. The selected body>0.7, pooled CLV>=0.8 variant ranked highest by total return among nine variants but lower by Sharpe and with deeper drawdown than the Sharpe winner. Report all trials and selection bias. Freezing records the chosen rule; it does not establish an edge. The grid was run on a different base strategy, so do not call it the best setting for the current rally base.
+- Historical component attribution: `python -m research.index.index_adaptive_attribution` (spec `config/research/index_adaptive_attribution.json`, research only). Its adaptive components are now held in research-only helpers; core CLV reversal and rally ×1.5 carry most of that historical book's return. Index `summary.csv`/`annual.csv` report equal-weight buy-and-hold comparison.
 - Nothing in this repository is a proven deployable edge. Historical research is observational and often post-selected. Read `docs/guide.md`, `docs/index_guide.md`, and `docs/index_research_review.md` for strategy rules, caveats, and prior findings. Do not restore retired strategies or deleted candidate runners.
 
 ## Data permissions and sample boundaries
@@ -52,12 +51,10 @@ Run commands from the repository root:
 python -m pytest tests/test_research.py tests/test_index.py
 python -m backtest.engine --research
 python -m backtest.engine --market index --research
-python -m backtest.engine index_clv_rally_fixed_long --research
-python -m backtest.engine index_clv_individual_equal_long --research
-python -m backtest.engine index_clv_pooled_equal_long --research
+python -m backtest.engine index_clv_rally_base_long --research
+python -m research.index.index_adaptive_signal_grid
 python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
-python -m backtest.engine index_clv_return_rank_20d_long --start 2022 --end 2025
 ```
 
 `--research` uses the research partition. `--oos` uses 2022–2025. A custom `--start/--end` must stay inside 2011–2025 for commodities and 2015–2025 for index futures. Out-of-sample has not been run.
