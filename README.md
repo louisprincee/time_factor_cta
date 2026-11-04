@@ -3,7 +3,7 @@
 根据兴业和国泰君安两份研报（`docs/` 下）开展商品和股指期货研究。回测使用整数手数账本，扣历史手续费和每边 1 跳滑点。
 
 - 商品登记两条冻结策略：商品原策略和商品收盘位置策略。规则和实现分别见 [`strategies/commodity_original`](strategies/commodity_original/) 和 [`strategies/commodity_close_location`](strategies/commodity_close_location/)。
-- 股指唯一注册策略是 **`index_clv_rally_base_long`**：底仓一半按 63/126/252 日动量多数表决多空；另一半在 pooled CLV<0.4 时加多头，冲高只放大择时半仓。研究期年化 10.72%、Sharpe 1.09、最大回撤 −10.30%；相对原 MACD 增益不显著（NW t 0.64）。规格未冻结，样本外不运行。完整经济解释及逐年结果见 [`docs/index_guide.md`](docs/index_guide.md)。
+- 股指唯一注册策略是 **`index_clv_rally_base_long`**：21/63/126 日多头票数决定0至半仓多头底仓，剩余预算只在 pooled CLV<0.4 时启用，冲高只放大 CLV部分，风控前目标最高1.5倍，完全不做空。研究期年化16.82%、Sharpe1.44、最大回撤−14.50%，平均实际敞口48.02%。相对上一多空版收益差NW t2.45，但回撤加深，整体改进门槛未通过。未冻结，不运行样本外。规则、逐年表和52.47%仓位审计见 [`docs/index_guide.md`](docs/index_guide.md)。
 - 已冻结的 `index_clv_rally_equal_up_long` 退出注册，JSON 保留不改。`index_clv_rally_equal_long` 与 `index_clv_adaptive_long` 的实现已移除。历史记录见 [`docs/index_research_review.md`](docs/index_research_review.md)。
 - 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。
 - 商品策略和全部研究记录见 [`docs/guide.md`](docs/guide.md)；股指当前规则和参数研究见 [`docs/index_guide.md`](docs/index_guide.md)。`--market index --research` 运行唯一的股指策略，也可用 ID 点名。
@@ -83,7 +83,7 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 
 股指测试统一维护在 `tests/test_index.py`，不再按研究任务新增测试文件。日常只维护 `main` 分支。
 
-股指研究统一放在 `research/index/`。在用策略位于 `strategies/index_clv_rally_base_long/`，账本由 `backtest.engine` 执行；逐年曲线写入 `runs/index/strategies/index_clv_rally_base_long/research/plots/`。历史部件拆分：`python -m research.index.index_adaptive_attribution`；本次底仓三本对照使用同一模块的 `--base-momentum`。
+股指研究统一放在 `research/index/`。在用策略位于 `strategies/index_clv_rally_base_long/`，账本由 `backtest.engine` 执行；逐年曲线在 `runs/index/strategies/index_clv_rally_base_long/research/plots/`。历史部件拆分：`python -m research.index.index_adaptive_attribution`；历史底仓对照用 `--base-momentum`，当前多头预算转移与仓位审计用 `--budget-transfer`。
 
 ```bash
 python -m research.index.index_allocation_regimes # 历史配置研究与状态诊断，不登记可运行策略

@@ -1,6 +1,6 @@
 # 回测
 
-股指当前唯一策略为未冻结的弱收盘中期动量底仓：半仓按 63/126/252 日动量多数表决多空，另一半沿用 CLV 冲高。`--market index --research` 或指定 `index_clv_rally_base_long` 运行研究期账本；样本外入口会拒绝。商品回测不变。规则见[`股指策略说明`](../docs/index_guide.md)。
+股指当前唯一策略为未冻结的多头底仓CLV预算转移：21/63/126 日多头票数决定0至半仓底仓，剩余预算在CLV弱收盘时使用，冲高只放大CLV，完全不做空。`--market index --research` 或指定 `index_clv_rally_base_long` 运行研究期；样本外入口拒绝。商品不变。规则见[`股指策略说明`](../docs/index_guide.md)。
 
 入口是 `python -m backtest.engine`，区间必须显式指定：
 

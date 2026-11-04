@@ -2,6 +2,7 @@
 
     python -m research.index.index_adaptive_attribution
     python -m research.index.index_adaptive_attribution --base-momentum
+    python -m research.index.index_adaptive_attribution --budget-transfer
 
 默认入口复核历史自适应账本；--base-momentum 对照当前底仓，分别读取相应登记。
 """
@@ -310,16 +311,73 @@ def run() -> None:
     print(f"结果：{OUT}", flush=True)
 
 
-def base_target_components(clv, frames, rally_z, base_sign):
+def base_target_components(clv, frames, rally_z, base_sign, *, scaled=True):
     """两半先缩放再同向净额，最后整体移到下一开盘；仅用于登记对照。"""
-    from strategies.index_clv_rally_base_long import BASE_GROSS, TACTICAL_GROSS
-
     market_open = ((frames["openw"].shift(-1) - frames["openw"]) / frames["open"]).mean(axis=1, skipna=False)
-    scale = close_vol_scale(market_open).fillna(1.0)
-    tactical = clv.lt(THRESHOLD).astype(float) * TACTICAL_GROSS * np.where(rally_z.gt(0), RALLY_MULTIPLIER, 1.0)
-    parts = pd.DataFrame({"底仓": scale * BASE_GROSS * base_sign, "择时": scale * tactical})
+    scale = close_vol_scale(market_open).fillna(1.0) if scaled else 1.0
+    tactical = clv.lt(THRESHOLD).astype(float) * 0.5 * np.where(rally_z.gt(0), 1.5, 1.0)
+    parts = pd.DataFrame({"底仓": scale * 0.5 * base_sign, "择时": scale * tactical})
     parts["合计"] = parts.sum(axis=1)
     return parts.shift(1).fillna(0.0)
+
+
+def _prior_momentum_sign(returns):
+    """保留上一版63/126/252多数表决，仅用于已登记的历史对照。"""
+    votes = []
+    for window in (63, 126, 252):
+        momentum = (1.0 + returns).rolling(window, min_periods=window).apply(np.prod, raw=True) - 1.0
+        votes.append(pd.Series(np.where(momentum.isna() | momentum.gt(0), 1.0, -1.0), index=returns.index))
+    return pd.Series(np.where(pd.concat(votes, axis=1).sum(axis=1).gt(0), 1.0, -1.0), index=returns.index)
+
+
+def exposure_audit(daily, positions, target, raw_parts, bars, contracts):
+    """同一账本逐日敞口桥接；每日重新取整一栏是诊断，不是另一条回测。"""
+    from tfcta.costs import INDEX_MULTIPLIER
+
+    index = daily.index
+    target = target.reindex(index=index, columns=list(SYMBOLS))
+    if target.lt(0).any().any() or target.isna().any().any():
+        raise ValueError("多头敞口审计需要完整非负目标")
+    unit = bars["open"].reindex(index=index, columns=list(SYMBOLS)).mul(pd.Series(INDEX_MULTIPLIER).reindex(SYMBOLS))
+    lots = positions.pivot(index="交易日", columns="品种", values="手数").reindex(index=index, columns=list(SYMBOLS)).fillna(0.0)
+    nominal = (lots.abs() * unit).sum(axis=1)
+    actual = nominal / daily["期初权益"]
+    reported = nominal / daily["权益"]
+    if not np.allclose(nominal, daily["名义敞口"], rtol=1e-10, atol=1e-5) or not np.allclose(reported, daily["敞口倍数"], rtol=1e-10, atol=1e-12):
+        raise ArithmeticError("逐日名义敞口无法由实际手数、原始开盘和乘数复算")
+    halted = daily["停止新开仓"].astype(bool)
+    live_target = target.mul((~halted).astype(float), axis=0)
+    rounded = np.floor(live_target.mul(daily["期初权益"], axis=0) / len(SYMBOLS) / unit)
+    clean = (
+        target.ne(target.shift()).all(axis=1)
+        & ~halted & ~halted.shift(1, fill_value=False)
+        & daily["受阻委托数"].eq(0) & daily["开仓受限数"].eq(0)
+        & daily["受阻委托数"].shift(1, fill_value=0).eq(0)
+        & daily["开仓受限数"].shift(1, fill_value=0).eq(0)
+        & daily["换月笔数"].eq(0)
+        & ~contracts.reindex(index).ne(contracts.reindex(index).shift()).any(axis=1)
+    )
+    if not np.array_equal(lots.loc[clean].to_numpy(), rounded.loc[clean].to_numpy()):
+        raise ArithmeticError("清洁执行日实际手数不等于目标预算向下取整")
+    bridge = pd.DataFrame({
+        "未缩放底仓": raw_parts["底仓"].reindex(index),
+        "未缩放CLV": raw_parts["择时"].reindex(index),
+        "缩放后目标": target.mean(axis=1),
+        "停机后目标": live_target.mean(axis=1),
+        "假设每日重算整数手": (rounded * unit).sum(axis=1) / daily["期初权益"],
+        "实际开盘敞口": actual, "实际期末口径": reported,
+    })
+    bridge["未缩放总目标"] = bridge["未缩放底仓"] + bridge["未缩放CLV"]
+    ratio = raw_parts["底仓"].reindex(index).div(bridge["未缩放总目标"].replace(0, np.nan)).fillna(0.0)
+    bridge["缩放后底仓"] = target.mean(axis=1) * ratio
+    bridge["缩放后CLV"] = target.mean(axis=1) * (1.0 - ratio)
+    bridge["按目标比例分摊底仓"] = reported * ratio
+    bridge["按目标比例分摊CLV"] = reported * (1.0 - ratio)
+    checks = {"rows": len(index), "clean_execution_days": int(clean.sum()),
+              "notional_and_exposure_match": True, "clean_lots_match": True,
+              "halted_days": int(halted.sum()), "means": {k: float(v) for k, v in bridge.mean().items()},
+              "interpretation": "同一历史账本的算术桥接，非因果归因；比例分摊不是独立底仓/CLV实际手数；目标不变保持手数可使实际不同于每日重算整数手"}
+    return bridge, checks
 
 
 def _macd_control_sign(returns):
@@ -333,22 +391,27 @@ def _macd_control_sign(returns):
     return pd.Series(np.where(signal.isna() | dif.gt(signal), 1.0, -1.0), index=returns.index)
 
 
-def run_base_momentum():
+def run_base_momentum(*, budget_transfer=False):
     """一个新规则、两个已知底仓对照；不得据结果选长度。"""
-    from strategies.index_clv_rally_base_long import BOOK, _base_sign, _close_to_close
+    from strategies.index_clv_rally_base_long import BOOK, _base_budget, _close_to_close
 
-    path = C.CONFIG_DIR / "research" / "index_base_momentum.json"
+    study_id = "index_base_budget_transfer" if budget_transfer else "index_base_momentum"
+    path = C.CONFIG_DIR / "research" / f"{study_id}.json"
     protocol = json.loads(path.read_text(encoding="utf-8"))
-    names = ("中期动量多数表决", "原MACD", "常驻多头")
+    names = ("多头预算转移", "原中期多空", "常驻多头") if budget_transfer else ("中期动量多数表决", "原MACD", "常驻多头")
+    windows = [21, 63, 126] if budget_transfer else [63, 126, 252]
+    variants = (["long_only_budget_transfer_21_63_126", "prior_long_short_63_126_252_control", "always_long_half_control"]
+                if budget_transfer else ["momentum_63_126_252_majority", "macd_12_26_9_control", "always_long_control"])
     if (
         protocol.get("status") != "declared_test_not_a_strategy"
-        or protocol.get("design", {}).get("momentum_windows") != [63, 126, 252]
-        or protocol.get("variants") != ["momentum_63_126_252_majority", "macd_12_26_9_control", "always_long_control"]
+        or protocol.get("design", {}).get("momentum_windows") != windows
+        or protocol.get("variants") != variants
         or "不读2022至2025" not in protocol.get("sample", "")
         or "不读2026" not in protocol.get("sample", "")
     ):
         raise ValueError("底仓动量研究登记不一致，拒绝读取行情")
-    BOOK.declared()
+    if budget_transfer:
+        BOOK.declared()
     index, bars, contracts, _, ticks = _load_index_research_inputs()
     C.assert_no_holdout_dates(index, "底仓动量研究")
     if index.min() != pd.Timestamp("2015-04-16") or index.max() != pd.Timestamp("2021-12-31"):
@@ -356,22 +419,25 @@ def run_base_momentum():
     clv, rally_z = market_close_location(bars, index), high_open_z(bars)
     market_close = _close_to_close(bars)
     signs = {
-        names[0]: _base_sign(market_close),
-        names[1]: _macd_control_sign(market_close),
+        names[0]: _base_budget(market_close) if budget_transfer else _prior_momentum_sign(market_close),
+        names[1]: _prior_momentum_sign(market_close) if budget_transfer else _macd_control_sign(market_close),
         names[2]: pd.Series(1.0, index=index),
     }
     components = {name: base_target_components(clv, bars, rally_z, sign) for name, sign in signs.items()}
+    if budget_transfer:
+        components[names[0]] = BOOK.components(clv, bars, rally_z=rally_z)
     targets = {
         name: pd.DataFrame({symbol: part["合计"] for symbol in SYMBOLS}, index=index)
         for name, part in components.items()
     }
-    pd.testing.assert_frame_equal(targets[names[0]], BOOK.targets(clv, bars, rally_z=rally_z))
+    if budget_transfer:
+        pd.testing.assert_frame_equal(targets[names[0]], BOOK.targets(clv, bars, rally_z=rally_z))
     market_open = ((bars["openw"].shift(-1) - bars["openw"]) / bars["open"]).mean(axis=1, skipna=False)
     scored = market_open.dropna().index
     if scored[-1] != pd.Timestamp("2021-12-30"):
         raise ValueError("底仓研究计分末日不符")
     slip, bad, _ = l1_slippage(load_opening_quotes(), bars, contracts, scored)
-    out = C.study_dir("index", "index_base_momentum")
+    out = C.study_dir("index", study_id)
     out.mkdir(parents=True, exist_ok=True)
     (out / "protocol.json").write_text(json.dumps(protocol, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"仅研究期 {scored[0].date()}..{scored[-1].date()}；L1不匹配品种日 {bad}", flush=True)
@@ -383,7 +449,7 @@ def run_base_momentum():
         open_limits=True, open_slippage=slip,
     )
     bench = bench_daily["净收益"].fillna(0.0)
-    dailies, summary, annual, gross_rows = {}, [], [], []
+    dailies, summary, annual, gross_rows, audits = {}, [], [], [], {}
     for name, target in targets.items():
         print(f"计算 {name}", flush=True)
         daily, positions, events = _simulate_index_targets(
@@ -402,9 +468,12 @@ def run_base_momentum():
             "净目标非零日占比": float(part["合计"].ne(0).mean()),
             "平均目标绝对敞口": float(part["合计"].abs().mean()),
             "平均实现净敞口": float((signed / daily["权益"]).mean()),
-            "底仓翻向次数": int(signs[name].loc[scored].diff().abs().gt(0).sum()),
+            "底仓调档次数" if budget_transfer else "底仓翻向次数": int(signs[name].loc[scored].diff().abs().gt(0).sum()),
             "实际持仓日占比": float(daily["持仓总手数"].gt(0).mean()),
-            "底仓预热日数": int(market_close.rolling(252, min_periods=252).mean().reindex(scored).isna().sum()),
+            "底仓预热日数": (0 if name == names[2] else int(market_close.rolling(
+                max(windows) if name == names[0] else (252 if budget_transfer else 33),
+                min_periods=max(windows) if name == names[0] else (252 if budget_transfer else 33),
+            ).mean().reindex(scored).isna().sum())),
         })
         summary.append(row)
         for year, daily_year in daily.groupby(daily.index.year):
@@ -423,6 +492,12 @@ def run_base_momentum():
             table.to_csv(folder / filename, encoding="utf-8-sig")
         positions.to_csv(folder / "positions.csv", index=False, encoding="utf-8-sig")
         events.to_csv(folder / "events.csv", index=False, encoding="utf-8-sig")
+        if budget_transfer and name in (names[0], names[2]):
+            raw = (part[["未缩放底仓", "未缩放择时"]].rename(columns={"未缩放底仓": "底仓", "未缩放择时": "择时"})
+                   if name == names[0] else base_target_components(clv, bars, rally_z, signs[name], scaled=False).reindex(scored))
+            bridge, checks = exposure_audit(daily, positions, target, raw, bars, contracts)
+            bridge.to_csv(folder / "exposure_audit.csv", encoding="utf-8-sig")
+            audits[name] = checks
 
     summary = pd.DataFrame(summary)
     stats = summary.set_index("账本")
@@ -439,9 +514,10 @@ def run_base_momentum():
         stats.loc[names[0], "Sharpe"] > stats.loc[names[1], "Sharpe"]
         and stats.loc[names[0], "最大回撤"] >= stats.loc[names[1], "最大回撤"]
         and stats.loc[names[0], "最差年度"] >= stats.loc[names[1], "最差年度"]
+        and (not budget_transfer or stats.loc[names[0], "平均敞口"] > stats.loc[names[1], "平均敞口"])
     )
     verification = {"sample_start": str(scored[0].date()), "sample_end": str(scored[-1].date()),
-                    "new_rule_equals_default_targets": True, "descriptive_improvement_pass": improvement,
+                    "new_rule_equals_default_targets": bool(budget_transfer), "descriptive_improvement_pass": improvement,
                     "oos_read": False, "variants": list(names),
                     "gross_diagnostic": "风控前目标乘等权开盘段收益的年度算术和；无费用、取整、停机，不是净收益或独立两账户归因"}
     summary.to_csv(out / "summary.csv", index=False, encoding="utf-8-sig")
@@ -449,9 +525,11 @@ def run_base_momentum():
     pd.DataFrame(comparisons).to_csv(out / "comparisons.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(gross_rows).to_csv(out / "gross_diagnostic_annual.csv", index=False, encoding="utf-8-sig")
     (out / "verification.json").write_text(json.dumps(verification, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if audits:
+        (out / "exposure_audit.json").write_text(json.dumps(audits, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     nets = pd.DataFrame({**{name: daily["净收益"] for name, daily in dailies.items()}, "等权买入持有": bench})
     nets.to_csv(out / "daily_net.csv", encoding="utf-8-sig")
-    plot_performance(nets, out, title="2015–2021：固定半仓底仓对照（研究期）")
+    plot_performance(nets, out, title=f"2015–2021：{'多头预算转移' if budget_transfer else '历史多空底仓'}对照（研究期）")
     print(summary.round(4).to_string(index=False))
     print(pd.DataFrame(annual).round(4).to_string(index=False))
     print(pd.DataFrame(comparisons).round(4).to_string(index=False))
@@ -460,6 +538,8 @@ def run_base_momentum():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-momentum", action="store_true", help="只跑登记的双半仓底仓对照")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--base-momentum", action="store_true", help="复核登记的历史多空底仓对照")
+    group.add_argument("--budget-transfer", action="store_true", help="多头底仓动态预算转移及仓位审计")
     args = parser.parse_args()
-    run_base_momentum() if args.base_momentum else run()
+    run_base_momentum(budget_transfer=args.budget_transfer) if args.base_momentum or args.budget_transfer else run()

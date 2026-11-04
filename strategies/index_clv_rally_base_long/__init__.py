@@ -1,4 +1,4 @@
-"""股指双半仓：中期动量决定底仓多空，弱收盘冲高决定择时多头。"""
+"""股指多头底仓分档减仓，释放预算交给弱收盘冲高。"""
 from __future__ import annotations
 
 import json
@@ -11,40 +11,41 @@ from strategies.index_common import SYMBOLS, THRESHOLD, close_vol_scale
 from tfcta import config as C
 
 ID = "index_clv_rally_base_long"
-NAME = "股指弱收盘中期动量底仓"
+NAME = "股指多头底仓CLV预算转移"
 GROSS = 1.0
 DRAWDOWN_LIMIT = 0.10
 HALT_DAYS = 10
 RALLY_MULTIPLIER = 1.5
 BASE_GROSS = 0.5
 TACTICAL_GROSS = 0.5
-MOMENTUM_WINDOWS = (63, 126, 252)
+MOMENTUM_WINDOWS = (21, 63, 126)
 CONFIG_PATH = Path(__file__).with_name(f"{ID}.json")
 PARAMETERS = {
     "instruments": list(SYMBOLS),
     "clv_threshold": THRESHOLD,
     "signal_rule": (
-        "half the unit budget follows the majority sign of 63/126/252-session "
-        "compounded equal-weight close returns, long when at least two votes "
-        "are positive and short otherwise; add the other half long when mean of "
-        "IF/IH/IC CLV < 0.4"
+        "long-only base b = 0.5 * positive vote count / 3 over 21/63/126-session "
+        "compounded equal-weight close returns; allocate 1-b to tactical longs "
+        "only when mean IF/IH/IC CLV < 0.4; otherwise keep that budget in cash"
     ),
     "base_gross": BASE_GROSS,
     "momentum_windows": list(MOMENTUM_WINDOWS),
-    "base_rule": "each complete window votes +1 for compounded return > 0, -1 otherwise; incomplete windows vote +1; majority positive gives base +0.5, otherwise -0.5",
-    "tactical_gross": TACTICAL_GROSS,
+    "base_rule": "each complete window votes 1 for compounded return > 0, 0 otherwise; incomplete windows vote 1; base = 0.5 * votes / 3, never short",
+    "tactical_minimum_gross": TACTICAL_GROSS,
+    "tactical_budget_rule": "1 minus base budget; use only on CLV < 0.4, multiply this part by 1.5 on rally z > 0",
     "allocation_rule": "equal multipliers 1/1/1",
-    "short_rule": "short the base half when at least two momentum votes are negative",
+    "short_rule": "none",
     "rally_window": 60,
     "rally_minimum": 40,
     "rally_gate": 0.0,
     "rally_multiplier": RALLY_MULTIPLIER,
-    "rally_applies_to": "tactical half only",
+    "rally_applies_to": "dynamic tactical budget only",
     "vol_window": 20,
     "vol_target": 0.2,
     "vol_scale_cap": 1.0,
     "vol_warmup": "scale 1 until the 20-session estimate exists",
     "gross_exposure_limit": GROSS,
+    "maximum_pre_vol_target": 1.5,
     "drawdown_breaker": DRAWDOWN_LIMIT,
     "halt_days": HALT_DAYS,
     "initial_capital": 10000000,
@@ -87,21 +88,18 @@ def _close_to_close(frames: dict[str, pd.DataFrame]) -> pd.Series:
     ).mean(axis=1, skipna=False)
 
 
-def _base_sign(close_to_close: pd.Series) -> pd.Series:
-    """3/6/12月绝对动量多数表决；完整窗口含当日收盘，缺预热票先为多。"""
+def _base_budget(close_to_close: pd.Series) -> pd.Series:
+    """1/3/6月每张多头票占半仓的三分之一；缺预热票先为多。"""
     votes = []
     for window in MOMENTUM_WINDOWS:
         momentum = (1.0 + close_to_close).rolling(window, min_periods=window).apply(
             np.prod, raw=True
         ) - 1.0
         votes.append(pd.Series(
-            np.where(momentum.isna() | momentum.gt(0), 1.0, -1.0),
+            np.where(momentum.isna() | momentum.gt(0), 1.0, 0.0),
             index=close_to_close.index,
         ))
-    return pd.Series(
-        np.where(pd.concat(votes, axis=1).sum(axis=1).gt(0), 1.0, -1.0),
-        index=close_to_close.index,
-    )
+    return pd.concat(votes, axis=1).sum(axis=1) * (BASE_GROSS / len(MOMENTUM_WINDOWS))
 
 
 def _by_partition(index: pd.DatetimeIndex, frames: dict[str, pd.DataFrame], build) -> pd.Series:
@@ -118,7 +116,7 @@ def _by_partition(index: pd.DatetimeIndex, frames: dict[str, pd.DataFrame], buil
     return pd.concat(parts)
 
 
-def rally_base_targets(
+def rally_base_components(
     market_clv: pd.Series,
     bars: dict[str, pd.DataFrame],
     *,
@@ -159,24 +157,33 @@ def rally_base_targets(
     scale = _by_partition(
         index, frames, lambda subset: close_vol_scale(_open_to_open(subset)).fillna(1.0)
     )
-    base_sign = _by_partition(index, frames, lambda subset: _base_sign(_close_to_close(subset)))
-    # 冲高只放大择时半仓；两半在同一合约净额持有。
+    base = _by_partition(index, frames, lambda subset: _base_budget(_close_to_close(subset)))
+    # 释放的底仓预算只在弱收盘时启用；冲高仅放大动态CLV预算。
     tilt = pd.Series(np.where(rally_z.gt(0), RALLY_MULTIPLIER, 1.0), index=index)
-    gross = scale * (
-        BASE_GROSS * base_sign
-        + market_clv.lt(THRESHOLD).astype(float) * TACTICAL_GROSS * tilt
-    )
-    return pd.DataFrame({symbol: gross for symbol in SYMBOLS}, index=index).shift(1).fillna(0.0)
+    tactical = market_clv.lt(THRESHOLD).astype(float) * (1.0 - base) * tilt
+    parts = pd.DataFrame({
+        "底仓预算": base, "CLV预算": 1.0 - base, "未缩放底仓": base,
+        "未缩放择时": tactical, "波动缩放": scale,
+        "底仓": scale * base, "择时": scale * tactical,
+    })
+    parts["合计"] = parts["底仓"] + parts["择时"]
+    return parts.shift(1).fillna(0.0)
+
+
+def rally_base_targets(market_clv, bars, *, rally_z=None):
+    parts = rally_base_components(market_clv, bars, rally_z=rally_z)
+    return pd.DataFrame({symbol: parts["合计"] for symbol in SYMBOLS}, index=parts.index)
 
 
 class Book:
     ID, NAME, SYMBOLS = ID, NAME, SYMBOLS
     GROSS, DRAWDOWN_LIMIT, HALT_DAYS = GROSS, DRAWDOWN_LIMIT, HALT_DAYS
     CONFIG_PATH = CONFIG_PATH
-    DETAIL = "底仓一半按63/126/252日动量多数表决多空；弱收盘加另一半多头，冲高只放大择时半仓"
+    DETAIL = "21/63/126日多头票数决定0至半仓底仓；剩余预算在CLV弱收盘时启用，冲高只放大CLV；无空头"
     declared = staticmethod(declared_config)
     frozen = staticmethod(declared_config)
     targets = staticmethod(rally_base_targets)
+    components = staticmethod(rally_base_components)
 
     @property
     def STATUS(self):

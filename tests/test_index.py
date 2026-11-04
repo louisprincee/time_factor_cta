@@ -69,8 +69,8 @@ def test_index_registry_contains_only_the_base_long_book():
     assert BOOK.STATUS == "exploratory_predeclared"
     assert BOOK.declared()["chosen"] == BOOK.declared()["parameters"]
     assert BOOK.declared()["parameters"]["base_gross"] == 0.5
-    assert BOOK.declared()["parameters"]["momentum_windows"] == [63, 126, 252]
-    assert "short" in BOOK.declared()["parameters"]["short_rule"]
+    assert BOOK.declared()["parameters"]["momentum_windows"] == [21, 63, 126]
+    assert BOOK.declared()["parameters"]["short_rule"] == "none"
     assert book_named(BOOK.ID) is BOOK
     with pytest.raises(ValueError, match="未知股指策略"):
         book_named("index_clv_rally_equal_long")
@@ -98,7 +98,7 @@ def _priced_bars(days, level):
     }
 
 
-def test_base_momentum_shorts_persistent_declines_and_only_tilts_the_tactical_half():
+def test_base_momentum_reduces_longs_and_transfers_the_budget_to_clv():
     from strategies.index_clv_rally_base_long import BOOK
 
     days = pd.bdate_range("2018-01-02", periods=320)
@@ -122,16 +122,19 @@ def test_base_momentum_shorts_persistent_declines_and_only_tilts_the_tactical_ha
     fall = _priced_bars(days, 400.0 - np.arange(len(days)))
     down = BOOK.targets(clv, fall, rally_z=rally)
     assert down.iloc[20].eq(0.5).all()
-    assert down.iloc[126].eq(0.5).all()
-    assert down.iloc[127].eq(-0.5).all()
-    assert down.iloc[280].eq(-0.5).all()
-    assert down.iloc[281].eq(0.0).all()
-    assert down.iloc[283].eq(0.25).all()
-    assert down.iloc[285].eq(-0.5).all()
+    assert down.iloc[21].eq(0.5).all()
+    assert down.iloc[22].to_numpy() == pytest.approx([1 / 3] * 3)
+    assert down.iloc[64].to_numpy() == pytest.approx([1 / 6] * 3)
+    assert down.iloc[127].eq(0.0).all()
+    assert down.iloc[280].eq(0.0).all()
+    assert down.iloc[281].eq(1.0).all()
+    assert down.iloc[283].eq(1.5).all()
+    assert down.iloc[285].eq(0.0).all()
+    assert down.ge(0).all().all() and down.le(1.5).all().all()
 
 
 def test_base_momentum_does_not_cross_the_research_oos_price_basis():
-    from strategies.index_clv_rally_base_long import _base_sign, _by_partition, _close_to_close
+    from strategies.index_clv_rally_base_long import _base_budget, _by_partition, _close_to_close
 
     research = pd.bdate_range("2020-09-01", periods=300)
     oos = pd.bdate_range("2022-01-03", periods=90)
@@ -141,45 +144,69 @@ def test_base_momentum_does_not_cross_the_research_oos_price_basis():
         1000.0 + np.arange(len(oos)),
     ])
     frames = _priced_bars(days, level)
-    joint = _by_partition(days, frames, lambda subset: _base_sign(_close_to_close(subset)))
+    joint = _by_partition(days, frames, lambda subset: _base_budget(_close_to_close(subset)))
     oos_frames = {field: frame.reindex(oos) for field, frame in frames.items()}
-    alone = _base_sign(_close_to_close(oos_frames))
+    alone = _base_budget(_close_to_close(oos_frames))
 
     pd.testing.assert_series_equal(joint.loc[oos], alone, check_names=False, check_freq=False)
-    assert joint.loc[research[-1]] == -1.0
-    assert joint.loc[oos[-1]] == 1.0
+    assert joint.loc[research[-1]] == 0.0
+    assert joint.loc[oos[-1]] == 0.5
 
 
-def test_base_momentum_uses_a_majority_and_does_not_short_a_slowing_rally():
-    from strategies.index_clv_rally_base_long import _base_sign
+def test_base_momentum_counts_votes_instead_of_switching_the_whole_base():
+    from strategies.index_clv_rally_base_long import _base_budget
 
     days = pd.bdate_range("2018-01-02", periods=351)
     returns = pd.Series([np.nan] + [0.005] * 300 + [0.0001] * 50, index=days)
-    assert _base_sign(returns).iloc[-1] == 1.0
+    assert _base_budget(returns).iloc[-1] == 0.5
 
-    # 最后63日跌，但126、252日上涨；不能让单个较快窗口决定方向。
-    wealth = np.interp(np.arange(301), [0, 48, 174, 237, 300], [100, 80, 90, 110, 100])
+    # 最后21日跌，但63、126日上涨，底仓保留两份。
+    wealth = np.interp(np.arange(301), [0, 174, 237, 279, 300], [100, 80, 90, 110, 100])
     momentum_returns = pd.Series(wealth, index=days[:301]).pct_change()
-    assert _base_sign(momentum_returns).iloc[-1] == 1.0
-    # 最后63日涨，但126、252日跌。
-    wealth = np.interp(np.arange(301), [0, 48, 174, 237, 300], [100, 120, 110, 90, 100])
-    assert _base_sign(pd.Series(wealth, index=days[:301]).pct_change()).iloc[-1] == -1.0
+    assert _base_budget(momentum_returns).iloc[-1] == pytest.approx(1 / 3)
+    # 最后21日涨，但63、126日跌，只保留一份。
+    wealth = np.interp(np.arange(301), [0, 174, 237, 279, 300], [100, 120, 110, 90, 100])
+    assert _base_budget(pd.Series(wealth, index=days[:301]).pct_change()).iloc[-1] == pytest.approx(1 / 6)
 
 
 def test_base_momentum_zero_return_vote_warmup_and_future_invariance():
-    from strategies.index_clv_rally_base_long import _base_sign
+    from strategies.index_clv_rally_base_long import _base_budget
 
     days = pd.bdate_range("2018-01-02", periods=350)
     zero = pd.Series(0.0, index=days)
     zero.iloc[0] = np.nan  # 第一日没有上一收盘，不算一笔已完成收益。
-    signs = _base_sign(zero)
-    assert signs.iloc[125] == 1.0
-    assert signs.iloc[126] == -1.0
+    budgets = _base_budget(zero)
+    assert budgets.iloc[20] == 0.5
+    assert budgets.iloc[21] == pytest.approx(1 / 3)
+    assert budgets.iloc[63] == pytest.approx(1 / 6)
+    assert budgets.iloc[126] == 0.0
 
     returns = pd.Series(np.linspace(-0.004, 0.003, len(days)), index=days)
-    original = _base_sign(returns)
+    original = _base_budget(returns)
     returns.iloc[290:] = -0.1
-    pd.testing.assert_series_equal(_base_sign(returns).iloc[:290], original.iloc[:290])
+    pd.testing.assert_series_equal(_base_budget(returns).iloc[:290], original.iloc[:290])
+
+
+def test_base_components_keep_unused_clv_cash_and_do_not_look_ahead():
+    from strategies.index_clv_rally_base_long import BOOK
+
+    days = pd.bdate_range("2018-01-02", periods=170)
+    bars = _priced_bars(days, 400.0 - np.arange(len(days)))
+    clv = pd.Series(0.4, index=days)
+    clv.iloc[140] = 0.1
+    rally = pd.Series(1.0, index=days)
+    parts = BOOK.components(clv, bars, rally_z=rally)
+    assert parts.iloc[140]["底仓预算"] == 0.0
+    assert parts.iloc[140]["CLV预算"] == 1.0
+    assert parts.iloc[140]["合计"] == 0.0
+    assert parts.iloc[141]["合计"] == 1.5
+    assert parts.iloc[141]["底仓"] == 0.0
+    assert parts.iloc[141]["择时"] == 1.5
+    np.testing.assert_allclose((parts["底仓预算"] + parts["CLV预算"]).iloc[1:], 1.0)
+    for frame in bars.values():
+        frame.iloc[145:] *= 2
+    changed = BOOK.components(clv, bars, rally_z=rally)
+    pd.testing.assert_frame_equal(parts.iloc[:145], changed.iloc[:145])
 
 
 def test_base_study_components_preserve_netting_and_lag_each_half():
@@ -199,6 +226,64 @@ def test_base_study_components_preserve_netting_and_lag_each_half():
     assert parts.iloc[31].tolist() == [-0.5, 0.5, 0.0]
     assert parts.iloc[32].tolist() == [-0.5, 0.75, 0.25]
     assert parts.iloc[33].tolist() == [-0.5, 0.0, -0.5]
+
+
+def test_exposure_audit_separates_rounding_from_unchanged_lot_drift():
+    from research.index.index_adaptive_attribution import exposure_audit
+    from tfcta.costs import INDEX_MULTIPLIER
+
+    days = pd.bdate_range("2018-01-02", periods=3)
+    symbols = ["IF", "IH", "IC"]
+    opened = pd.DataFrame([[4000, 4000, 6000], [4000, 4000, 6000], [4400, 4400, 6600]], index=days, columns=symbols)
+    targets = pd.DataFrame(np.repeat([[0.5], [0.75], [0.75]], 3, axis=1), index=days, columns=symbols)
+    raw = pd.DataFrame({"底仓": 0.5, "择时": [0.0, 0.25, 0.25]}, index=days)
+    daily = pd.DataFrame({"期初权益": 1e7, "权益": 1e7, "名义敞口": [3.6e6, 7.2e6, 7.92e6],
+                          "敞口倍数": [0.36, 0.72, 0.792], "停止新开仓": False,
+                          "受阻委托数": 0, "开仓受限数": 0, "换月笔数": 0}, index=days)
+    contracts = pd.DataFrame({s: f"{s}1801" for s in symbols}, index=days)
+    rows = []
+    for i, day in enumerate(days):
+        for symbol in symbols:
+            quantity = 1 if i == 0 else 2
+            rows.append({"交易日": day, "品种": symbol, "手数": quantity,
+                         "名义敞口": quantity * opened.loc[day, symbol] * INDEX_MULTIPLIER[symbol]})
+    positions = pd.DataFrame(rows)
+    bridge, checks = exposure_audit(daily, positions, targets, raw, {"open": opened}, contracts)
+    assert bridge["假设每日重算整数手"].tolist() == pytest.approx([0.36, 0.72, 0.396])
+    assert bridge["实际开盘敞口"].tolist() == pytest.approx([0.36, 0.72, 0.792])
+    assert checks["clean_execution_days"] == 1
+    # 保持名义金额与手数一致，但把清洁调仓日少开一手，独立的取整核对必须报错。
+    positions.loc[3, "手数"] = 1
+    positions.loc[3, "名义敞口"] = 1.2e6
+    daily.loc[days[1], ["名义敞口", "敞口倍数"]] = [6e6, 0.6]
+    with pytest.raises(ArithmeticError, match="手数"):
+        exposure_audit(daily, positions, targets, raw, {"open": opened}, contracts)
+
+
+def test_exposure_audit_does_not_require_rebalancing_after_a_blocked_target():
+    from backtest.engine import simulate_target_lots
+    from research.index.index_adaptive_attribution import exposure_audit
+    from tfcta.costs import INDEX_MULTIPLIER
+
+    days = pd.bdate_range("2018-01-02", periods=3)
+    symbols = ["IF", "IH", "IC"]
+    frame = lambda value: pd.DataFrame(value, index=days, columns=symbols)
+    opened = pd.DataFrame({s: np.array([1.0, 1.0, 0.98]) * 560000 / INDEX_MULTIPLIER[s] for s in symbols}, index=days)
+    target = pd.DataFrame(np.repeat([[0.5], [0.75], [0.5]], 3, axis=1), index=days, columns=symbols)
+    high, low = opened + 1.0, opened - 1.0
+    high.iloc[1], low.iloc[1] = opened.iloc[1], opened.iloc[1]
+    contracts = pd.DataFrame({s: f"{s}1801" for s in symbols}, index=days)
+    daily, positions, _ = simulate_target_lots(
+        target, opened, opened, opened, (opened.shift(-1) - opened).fillna(0.0), high, low,
+        frame(False), contracts, {2018: symbols}, {s: INDEX_MULTIPLIER[s] for s in symbols},
+        frame(0.0), frame(0.0), frame(0.0), frame(0.0), initial_capital=1e7,
+        margin_rate=0.2, exposure_limit=1.0, drawdown_limit=0.1, halt_days=10,
+    )
+    assert daily["受阻委托数"].tolist() == [0, 3, 0]
+    assert positions.loc[positions["交易日"].eq(days[2]), "手数"].tolist() == [2, 2, 2]
+    raw = pd.DataFrame({"底仓": 0.5, "择时": [0.0, 0.25, 0.0]}, index=days)
+    _, checks = exposure_audit(daily, positions, target, raw, {"open": opened}, contracts)
+    assert checks["clean_execution_days"] == 0
 
 
 @pytest.mark.parametrize("field,value", [
