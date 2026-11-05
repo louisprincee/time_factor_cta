@@ -98,6 +98,7 @@ python -m research.index.spot_reversal open-pressure
 python -m research.index.weak_close_diagnostics close
 python -m research.index.weak_close_diagnostics price-extremes --shape
 python -m research.index.weak_close_diagnostics path-volume
+python -m research.index.index_time_factor_increment # 三个时间因子在 CLV 之外的增量；2026-11-05 已运行，三个都不支持
 ```
 
 机制子研究写入 `runs/index/research/<名称>/`。历史候选结果仅供查阅，不代表相关策略实现仍可运行。

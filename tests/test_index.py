@@ -832,3 +832,109 @@ def test_index_oos_market_loader_applies_registered_date_filters(monkeypatch, tm
         ]
         for filters in seen_filters
     )
+
+
+def test_time_factor_increment_uses_cash_clock_and_no_later_bars():
+    from research.index.index_time_factor_increment import (
+        CONTROLS, FACTORS, holm, load_protocol, symbol_panel,
+    )
+
+    assert load_protocol()["pass"]["multiple_testing"]
+    rng = np.random.default_rng(1)
+
+    def day_frame(day, extra=False):
+        clock = [f"{h:02d}:{m:02d}" for h, m in [(9, m) for m in range(31, 60)] + [(10, m) for m in range(60)]
+                 + [(11, m) for m in range(31)] + [(13, m) for m in range(1, 60)] + [(14, m) for m in range(60)] + [(15, 0)]]
+        if extra:
+            clock = [f"09:{m:02d}" for m in range(16, 31)] + clock + [f"15:{m:02d}" for m in range(1, 16)]
+        close = 3000 + np.cumsum(rng.normal(0, 1, len(clock)))
+        index = pd.to_datetime([f"{day.date()} {hm}" for hm in clock])
+        frame = pd.DataFrame({"close": close, "open": np.r_[close[0], close[:-1]]}, index=index)
+        frame["highw"] = frame[["open", "close"]].max(axis=1) + 0.2
+        frame["loww"] = frame[["open", "close"]].min(axis=1) - 0.2
+        frame["openw"], frame["closew"] = frame["open"], frame["close"]
+        frame["volume"] = 100.0
+        frame["total_turnover"] = frame["volume"] * frame["close"]
+        frame["trading_date"] = day
+        return frame
+
+    days = pd.bdate_range("2018-01-02", periods=6)
+    base = pd.concat([day_frame(d) for d in days])
+    panel = symbol_panel(base)
+    signals = [*FACTORS[:1], "ts_high", *CONTROLS]
+    # 2015 年以前的旧时钟 bar 不进入因子和控制变量，只改变实际开盘价
+    old_clock = base.copy()
+    extra = day_frame(days[2], extra=True)
+    extra.loc[extra.index.strftime("%H:%M") < "09:31", ["highw", "loww"]] = [9999.0, 1.0]
+    old_clock = pd.concat([old_clock[old_clock.trading_date != days[2]], extra]).sort_index()
+    altered = symbol_panel(old_clock)
+    keep = altered.index.difference([days[2]])
+    pd.testing.assert_frame_equal(panel.loc[keep, signals], altered.loc[keep, signals])
+    # 改动第 5 天的行情，不影响此前信号日的因子和控制变量
+    later = base.copy()
+    later.loc[later.trading_date == days[4], ["close", "closew", "highw", "loww"]] += 50.0
+    pd.testing.assert_frame_equal(panel.loc[days[:4], signals], symbol_panel(later).loc[days[:4], signals])
+    assert holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+
+
+def test_tactical_factor_votes_use_only_selected_lagged_positive_t_factors():
+    from research.index.index_tactical_factor_candidates import (
+        STANDARDIZATION_WINDOW,
+        factor_votes,
+    )
+    from research.index.index_time_factor_increment import FACTORS, SYMBOLS
+
+    days = pd.bdate_range("2018-01-02", periods=270)
+    rising = np.arange(len(days), dtype=float)
+    panels = {
+        symbol: pd.DataFrame(
+            {
+                factor: rising if symbol != "IC" or factor != "ts_low_pm" else -rising
+                for factor in FACTORS
+            },
+            index=days,
+        )
+        for symbol in SYMBOLS
+    }
+
+    scores, available = factor_votes(panels, days)
+
+    assert available.loc[days[STANDARDIZATION_WINDOW - 1]].eq(0).all()
+    assert available.loc[days[STANDARDIZATION_WINDOW]].to_dict() == {
+        "IF": 1, "IH": 0, "IC": 2
+    }
+    assert scores.loc[days[STANDARDIZATION_WINDOW]].to_dict() == {
+        "IF": 1, "IH": 0, "IC": 2
+    }
+
+
+def test_tactical_factor_tilt_always_holds_all_products_and_defaults_to_equal():
+    from research.index.index_tactical_factor_candidates import (
+        FACTOR_TILT,
+        TACTICAL_ONLY,
+        target_weights,
+    )
+    from research.index.index_time_factor_increment import SYMBOLS
+
+    days = pd.bdate_range("2020-01-02", periods=4)
+    market_clv = pd.Series(0.3, index=days)
+    rally = pd.Series([1.0, -1.0, -1.0, -1.0], index=days)
+    scale = pd.Series(1.0, index=days)
+    scores = pd.DataFrame(0, index=days, columns=SYMBOLS)
+    scores.loc[days[0], "IF"] = 1
+    scores.loc[days[0], "IC"] = 2
+    scores.loc[days[1], "IF"] = 1
+    scores.loc[days[1], "IC"] = 2
+
+    plain = target_weights(TACTICAL_ONLY.ID, market_clv, scores, rally, scale)
+    tilted = target_weights(FACTOR_TILT.ID, market_clv, scores, rally, scale)
+
+    assert plain.loc[days[1]].eq(2.0).all()
+    assert tilted.loc[days[1], "IF"] == pytest.approx(1.0)
+    assert tilted.loc[days[1], "IH"] == pytest.approx(0.5)
+    assert tilted.loc[days[1], "IC"] == pytest.approx(1.5)
+    assert tilted.loc[days[2], "IF"] == pytest.approx(0.5)
+    assert tilted.loc[days[2], "IH"] == pytest.approx(0.25)
+    assert tilted.loc[days[2], "IC"] == pytest.approx(0.75)
+    assert tilted.loc[days[3]].eq(0.5).all()
+    assert tilted.loc[days[0]].eq(0.0).all()

@@ -1,0 +1,51 @@
+{
+  "id": "index_tactical_factor_candidates",
+  "status": "preregistered_research_candidates_not_frozen",
+  "declared_at": "2026-11-05",
+  "updated_at": "2026-11-05",
+  "authorization": "用户确认：实现两个新研究候选，并仅运行 2015–2021 股指研究期；不运行 OOS。用户随后确认因子仅用于预算倾斜、不作为品种入场筛选，并要求只使用弱收盘子样本内正向 t>1 的三个品种-因子结果。",
+  "question": "去掉动量底仓、将预算全部用于 CLV 弱收盘择时后，策略表现如何？在此择时基础上，仅按弱收盘子样本正向 t>1 的三个品种-因子信号，在 IF/IH/IC 之间倾斜择时预算，历史账本是否改善？",
+  "candidates": {
+    "index_tactical_clv_only": {
+      "description": "纯择时基准。没有动量底仓；市场等权 CLV<0.4 时，三个品种等权持有全部择时预算。高开冲高 z>0 时预算乘 2，否则乘 1。",
+      "target": "每个品种目标权重 = market_clv<0.4 × rally_multiplier × shared_vol_scale；信号收盘形成，shift(1) 于下一实际开盘执行。",
+      "capital": "每品种权重 1 对应三品种账户总名义敞口 1 倍；冲高日目标可到每品种权重 2，总名义敞口上限 2 倍。"
+    },
+    "index_tactical_clv_factor_select": {
+      "description": "在纯择时基准的市场 CLV 总开关下，IF/IH/IC 始终都参与。每个品种有一份基础预算，再依据该品种三个时间因子中方向调整后的有利标准分个数倾斜预算；无有利信号时自然等权，有更多有利信号时获得更多权重。",
+      "factor_directions": {
+        "IF": {"dfp_top3": 1},
+        "IH": {},
+        "IC": {"dfp_top3": 1, "ts_high": 1}
+      },
+      "factor_selection": "仅纳入同一弱收盘子样本逐品种控制回归中 t>1 且斜率为正的格子：IF dfp_top3 (t=1.41)、IC dfp_top3 (t=1.04)、IC ts_high (t=1.48)。所以每个信号日 IF 最多1票、IH 0票、IC最多2票。因子此前均为未显著结果，且这次按已观察 t 值选择，存在明显事后筛选偏差。",
+      "standardization": "每个纳入的品种-因子用截至前一信号日的过去 250 个有效观测计算均值和样本标准差；有完整 250 个历史观测且标准差大于 0 时计算 z，正向因子 z>0 计一票；缺失或预热未完成的票按0处理，不阻止品种参与。dfp_top3 使用 250 日/50% 分位滚动阈值，按 index_time_factor_increment.json 定义。",
+      "allocation": "每品种原始份额 = 1 + 有利因子票数，逐日归一化到 100% 共享择时预算；所以因子无有效信号时等权，IF/IH/IC 当日票数上限分别为1/0/2，三品种始终都参与。账本 exposure_limit=2、每品种目标权重 = 1.5 × 归一化预算份额 × rally_multiplier × shared_vol_scale，因此组合总名义敞口无冲高时为 1 倍、冲高时为 2 倍。信号 shift(1) 后在下一实际开盘执行。",
+      "direction_warning": "三个格子来自同一研究样本弱收盘子样本，未通过显著性检验；只按 t>1 选入是用户要求的探索性规则，t 值筛选本身带来额外选择偏差，不可视为确认性结论或稳定品种特异效应。"
+    }
+  },
+  "parameters": {
+    "market_clv_threshold": 0.4,
+    "rally_multiplier": 2.0,
+    "vol_window": 20,
+    "vol_target": 0.2,
+    "standardization_window": 250,
+    "directional_z_rule": "三个入选正向因子的滚动 z>0 为有利票；缺失或预热未完成按0票处理",
+    "candidate_factor_cells": 3,
+    "max_favorable_votes_by_symbol": {"IF": 1, "IH": 0, "IC": 2},
+    "factor_allocation_rule": "各品种预算份额 ∝ 1 + 有利因子票数；因子缺失按0票",
+    "allocation": "纯择时目标等权三品种；因子候选在三品种间按1+有利票数分配同一个组合择时预算"
+  },
+  "shared_basis": {
+    "sample": "只用 IF/IH/IC 的研究分钟分片和研究成本，计分信号日 2015-04-16 至 2021-12-30；只为预热读取研究分区中更早历史，最后一个持仓收益在 2021-12-31 开盘结算。不读取 2022–2025、oos/、2026 或任何样本外结果。",
+    "execution": "沿用股指 1000 万、l1_30m、整数手、实际次日开盘、开盘限制、研究期费用及 tick、L1 开盘滑点估计。",
+    "risk": "沿用 20 日历史已实现波动率目标 20%、共享缩放上限 1、10% 账户回撤熔断及 10 日停机；缩放用截至信号日已经完成的收益。",
+    "benchmark": "同一股指研究账本中的等权买入持有基准。"
+  },
+  "reporting": {
+    "metrics": "报告累计净收益、年化净收益、Sharpe、最大回撤、最大名义敞口、保证金占用、交易笔数、逐年收益、相对等权买入持有表现、平均实际敞口、各品种持仓贡献及平均因子票数/预算份额。",
+    "comparisons": "报告候选 A 与候选 B 的账本结果、逐日净收益差及年度表现；不以本样本内胜负来调方向、门槛或权重。",
+    "interpretation": "历史账本是探索性、样本内、事后方向设定的结果；含已有筛选偏差，不构成策略冻结、独立验证或实盘建议。研究结果不得触发 OOS。",
+    "revision_history": "初版按2/3票筛掉品种。用户澄清因子只用于品种间仓位倾斜、CLV信号触发时三品种都参与后，更新为每品种基础1份、每个有利因子再加1份，按份额归一化；预热缺失按0票。"
+  }
+}
