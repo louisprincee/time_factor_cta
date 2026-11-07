@@ -1,6 +1,6 @@
 # 回测
 
-股指唯一注册策略为已冻结的多头底仓CLV预算转移2倍版：21/63/126日多头票数底仓，剩余预算只在CLV弱收盘时使用，冲高仅放大CLV预算，完全不做空。`--market index --research` 运行该版本；显式样本外命令也仅选择它，OOS尚未运行。历史1.5倍对照结果保留，但其实现和注册已移除。商品不变。规则见[`股指策略说明`](../docs/index_guide.md)。
+股指当前只注册三本冻结策略：纯 CLV 等权（默认）、CLV 因子倾斜和标准 55/20 突破趋势袖套。`--market index --research` 运行这三本。每本仍写自己相对等权买入持有的总图和逐年图；全部跑完后，引擎再写一张含三策略加基准的 `performance.png`，以及每年一张同样包含全部策略和基准的图，目录是 `runs/index/research/index_strategy_comparison/plots/`。样本外回测尚未运行；用户未明确要求前不得运行。因子倾斜策略的 OOS 因子输入管道已实现，但尚未用真实 OOS 数据验证。此前的动量底仓、均线/MACD/EMA 补仓及非弱收盘突破规则不再注册；历史实现和研究材料保留供核对，不可通过策略 ID 运行。商品不变。规则见[`股指策略说明`](../docs/index_guide.md)。
 
 入口是 `python -m backtest.engine`，区间必须显式指定：
 
@@ -9,8 +9,8 @@ python -m backtest.engine --research                 # 2011–2021 一本账
 python -m backtest.engine --start 2016 --end 2021     # 冻结时的研究期
 python -m backtest.engine --research --by-year       # 每年一本新账
 python -m backtest.engine --start 2018 --end 2020
-python -m backtest.engine --market index --research # 股指冻结策略，2015–2021
-python -m backtest.engine index_clv_rally_base_long_2x --research
+python -m backtest.engine --market index --research # 当前三本股指策略，2015–2021，并写总对比图
+python -m backtest.engine index_tactical_clv_only --research
 python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
 ```
@@ -25,7 +25,7 @@ python -m backtest.engine --market index --research
 
 股指口径为1000万、l1_30m。开盘各腿按连续交易前30分钟L1卖一/买一成本，旧约换月前收一跳。
 
-账本在 `runs/<市场>/strategies/<策略>/<区间>/`。图表在该目录的 `plots/performance.png`。股指另外逐年生成策略与等权买入持有的年内累计净值图 `plots/<年份>.png`，并写 `targets.csv`。研究期读 `research/`，样本外读 `oos/`；股指当前无 OOS 策略，不会加载 OOS 行情。
+账本在 `runs/<市场>/strategies/<策略>/<区间>/`。图表在该目录的 `plots/performance.png`。股指另外逐年生成该策略与等权买入持有的年内累计净值图 `plots/<年份>.png`，并写 `targets.csv`。一次跑多本股指策略时，引擎最后再写 `runs/index/research/index_strategy_comparison/plots/performance.png` 和同年目录下的逐年图，每张都包含全部策略和基准。研究期读 `research/`，样本外读 `oos/`。股指 OOS 尚未运行；因子历史只用于预热，不输出 OOS 预热段的交易目标。
 
 ## 账本
 

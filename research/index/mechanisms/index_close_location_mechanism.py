@@ -1,7 +1,7 @@
 """股指收盘位置与 L1 盘口机制诊断；--shape 检验相对位置与绝对幅度、以及几个可检验的经济渠道。
 
-    python -m research.index.index_close_location_mechanism            # L1 盘口
-    python -m research.index.index_close_location_mechanism --shape    # 登记在 index_close_location_shape.json
+    python -m research.index mechanism clv                             # L1 盘口
+    python -m research.index mechanism clv --shape                     # 登记在 index_close_location_shape.json
 """
 from __future__ import annotations
 

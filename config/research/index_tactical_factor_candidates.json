@@ -1,9 +1,11 @@
 {
   "id": "index_tactical_factor_candidates",
-  "status": "preregistered_research_candidates_not_frozen",
+  "status": "frozen_research_strategies",
   "declared_at": "2026-11-05",
+  "frozen_at": "2026-11-05",
   "updated_at": "2026-11-05",
   "authorization": "用户确认：实现两个新研究候选，并仅运行 2015–2021 股指研究期；不运行 OOS。用户随后确认因子仅用于预算倾斜、不作为品种入场筛选，并要求只使用弱收盘子样本内正向 t>1 的三个品种-因子结果。",
+  "freeze_record": "用户于2026-11-05授权将纯CLV等权和CLV因子倾斜规则冻结为研究专用规则。此前的动量底仓规则已从正式注册表移除；当前正式股指策略集合及其选择依据以策略注册表和index_selected_strategy_comparison.json为准。冻结仅锁定规则；没有运行OOS。",
   "question": "去掉动量底仓、将预算全部用于 CLV 弱收盘择时后，策略表现如何？在此择时基础上，仅按弱收盘子样本正向 t>1 的三个品种-因子信号，在 IF/IH/IC 之间倾斜择时预算，历史账本是否改善？",
   "candidates": {
     "index_tactical_clv_only": {

@@ -1,0 +1,1 @@
+from strategies.index_tactical_books import TACTICAL_ONLY_BOOK as BOOK

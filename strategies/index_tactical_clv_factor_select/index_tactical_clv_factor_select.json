@@ -1,0 +1,55 @@
+{
+  "id": "index_tactical_clv_factor_select",
+  "name": "股指CLV因子仓位倾斜",
+  "status": "frozen",
+  "declared_at": "2026-11-05",
+  "frozen_at": "2026-11-05",
+  "authorization": "用户于2026-11-05确认与其他三策略组成研究期比较，并授权四策略冻结；不运行OOS。",
+  "sample": "仅IF/IH/IC研究分区；计分信号日2015-04-16至2021-12-30，最后一笔于2021-12-31开盘结算。预热只读研究分区中的更早数据。未读取2022至2025、任何oos/目录或2026及以后数据；OOS尚未运行。",
+  "hypothesis": "在纯CLV择时基准中，保持三个品种均参与，仅将弱收盘择时预算按既定正向因子信号倾斜。",
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "market_clv_threshold": 0.4,
+    "momentum_base": "none",
+    "allocation_rule": "factor shares proportional to 1 + favorable votes",
+    "factor_directions": {
+      "IF": {"dfp_top3": 1},
+      "IH": {},
+      "IC": {"dfp_top3": 1, "ts_high": 1}
+    },
+    "factor_standardization_window": 250,
+    "rally_multiplier": 2.0,
+    "vol_window": 20,
+    "vol_target": 0.2,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "initial_capital": 10000000,
+    "execution": "l1_30m",
+    "open_limits": true,
+    "signal_execution": "close t -> open t+1"
+  },
+  "chosen": {
+    "instruments": ["IF", "IH", "IC"],
+    "market_clv_threshold": 0.4,
+    "momentum_base": "none",
+    "allocation_rule": "factor shares proportional to 1 + favorable votes",
+    "factor_directions": {
+      "IF": {"dfp_top3": 1},
+      "IH": {},
+      "IC": {"dfp_top3": 1, "ts_high": 1}
+    },
+    "factor_standardization_window": 250,
+    "rally_multiplier": 2.0,
+    "vol_window": 20,
+    "vol_target": 0.2,
+    "drawdown_breaker": 0.1,
+    "halt_days": 10,
+    "initial_capital": 10000000,
+    "execution": "l1_30m",
+    "open_limits": true,
+    "signal_execution": "close t -> open t+1"
+  },
+  "observed_after": "2015-04-16至2021-12-30研究期，累计净收益264.17%，年化净收益21.05%，Sharpe 1.6222，最大回撤-10.70%，最大实际敞口202.48%，最大保证金权益占用40.50%。",
+  "oos_implementation": "OOS因子计算使用2021研究期末250个交易日预热DFP滚动阈值及因子标准化；仅对2022–2025 OOS日期产生OOS目标。本次未运行OOS。",
+  "limitations": "三个品种-因子单元由同一研究样本中未显著的回归结果事后筛选，存在明显选择偏差。OOS实现尚未回测验证；冻结不构成因子稳定性或样本外验证。"
+}

@@ -11,7 +11,7 @@ from scipy.stats import rankdata as close__rankdata, t as close__student_t
 from research.time_factor_screen import ols_hac as close__ols_hac
 from tfcta import config as close__C
 from tfcta.data import load_shard as close__load_shard
-close__ROOT = close__Path(__file__).resolve().parents[2]
+close__ROOT = close__Path(__file__).resolve().parents[3]
 close__CONFIG_PATH = close__ROOT / 'config' / 'research' / 'index_close_discriminators.json'
 close__OUT = close__C.study_dir('index', 'index_close_discriminators')
 close__SYMBOLS = ('IF', 'IH', 'IC')
@@ -338,7 +338,7 @@ import pandas as extremes__pd
 from scipy.stats import t as extremes__student_t
 from research.time_factor_screen import ols_hac as extremes__ols_hac
 from tfcta import config as extremes__C
-extremes__ROOT = extremes__Path(__file__).resolve().parents[2]
+extremes__ROOT = extremes__Path(__file__).resolve().parents[3]
 extremes__PROTOCOL_PATH = extremes__ROOT / 'config' / 'research' / 'index_price_extremes.json'
 extremes__SYMBOLS = ('IF', 'IH', 'IC')
 extremes__FEATURES = ('high_open', 'low_open', 'range_open', 'high_twap', 'low_twap', 'range_twap')
@@ -755,7 +755,7 @@ from research.time_factor_screen import ols_hac as path_volume__ols_hac
 from tfcta import config as path_volume__C
 from tfcta.data import load_shard as path_volume__load_shard
 from tfcta.factors import gtja_index_factors as path_volume__gtja_index_factors
-path_volume__ROOT = path_volume__Path(__file__).resolve().parents[2]
+path_volume__ROOT = path_volume__Path(__file__).resolve().parents[3]
 path_volume__CONFIG_PATH = path_volume__ROOT / 'config' / 'research' / 'index_path_volume_discriminators.json'
 path_volume__EARLY_IF_PATH = path_volume__C.INDEX_DATA_ROOT / 'if_before_ih_ic' / 'minute_shards' / 'IF.parquet'
 path_volume__OUT = path_volume__C.study_dir('index', 'index_path_volume_discriminators')
@@ -925,7 +925,10 @@ def main() -> None:
     parser.add_argument("study", choices=("close", "price-extremes", "path-volume"))
     parser.add_argument("--shape", action="store_true", help="Run price-path shape diagnostics")
     args, remainder = parser.parse_known_args()
-    sys.argv = [f"research.index.weak_close_diagnostics.{args.study}", *remainder]
+    sys.argv = [
+        f"research.index.mechanisms.weak_close_diagnostics.{args.study}",
+        *remainder,
+    ]
     if args.study == "close": close__run()
     elif args.study == "path-volume": path_volume__run()
     elif args.shape: extremes__run_shape()

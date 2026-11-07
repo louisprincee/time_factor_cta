@@ -14,7 +14,7 @@ from download.index.getIndexFutures import (
 from tfcta.config import HoldoutViolation
 from download.index.getIndexL1 import prepare_raw_ticks, validate_window
 from strategies.index_common import high_open_z
-from research.index.index_execution_10m import (
+from research.index.shared.index_execution_10m import (
     _opening_row,
     call_auction_volume,
     auction_allowance,
@@ -60,41 +60,153 @@ def test_index_cli_rejects_unknown_books_and_years_outside_2015_2025(monkeypatch
             engine.main(args)
 
 
-def test_index_registry_contains_only_the_frozen_2x_book():
+def test_index_research_cli_routes_by_domain_and_restores_argv(monkeypatch):
+    import sys
+    import research.index.__main__ as research_cli
+
+    calls = []
+
+    def fake_run_module(module, run_name):
+        calls.append((module, run_name, sys.argv.copy()))
+
+    monkeypatch.setattr(
+        research_cli.runpy,
+        "run_module",
+        fake_run_module,
+    )
+    original_argv = sys.argv.copy()
+
+    assert research_cli.main(
+        ["mechanism", "market", "positioning", "--unabsorbed"]
+    ) == 0
+    assert calls == [
+        (
+            "research.index.mechanisms.market_mechanisms",
+            "__main__",
+            [
+                "research.index.mechanisms.market_mechanisms",
+                "positioning",
+                "--unabsorbed",
+            ],
+        )
+    ]
+    assert research_cli.main(["strategy", "comparison", "--help"]) == 0
+    assert len(calls) == 1
+    assert sys.argv == original_argv
+
+
+def test_index_registry_contains_only_the_selected_frozen_books():
     from strategies.index_catalog import (
         DEFAULT_BOOK,
         INDEX_BOOKS,
-        INDEX_FROZEN_BOOKS,
         book_named,
     )
-    from strategies.index_clv_rally_base_long_2x import BOOK as DEFAULT_2X_BOOK
+    from strategies.index_clv_breakout_sleeve import BOOK as BREAKOUT_BOOK
+    from strategies.index_tactical_books import FACTOR_TILT_BOOK, TACTICAL_ONLY_BOOK
 
-    assert DEFAULT_BOOK is DEFAULT_2X_BOOK
-    assert INDEX_BOOKS == (DEFAULT_2X_BOOK,)
-    assert INDEX_FROZEN_BOOKS == (DEFAULT_2X_BOOK,)
-    assert DEFAULT_2X_BOOK.STATUS == "frozen"
-    assert DEFAULT_2X_BOOK.declared()["frozen_at"] == "2026-11-04"
-    assert DEFAULT_2X_BOOK.declared()["chosen"] == DEFAULT_2X_BOOK.declared()["parameters"]
-    assert DEFAULT_2X_BOOK.declared()["parameters"]["rally_multiplier"] == 2.0
-    assert DEFAULT_2X_BOOK.declared()["parameters"]["maximum_pre_vol_target"] == 2.0
-    assert DEFAULT_2X_BOOK.declared()["parameters"]["base_gross"] == 0.5
-    assert DEFAULT_2X_BOOK.declared()["parameters"]["momentum_windows"] == [21, 63, 126]
-    assert DEFAULT_2X_BOOK.declared()["parameters"]["short_rule"] == "none"
-    assert book_named(DEFAULT_2X_BOOK.ID) is DEFAULT_2X_BOOK
-    with pytest.raises(ValueError, match="未知股指策略"):
-        book_named("index_clv_rally_base_long")
-    with pytest.raises(ValueError, match="未知股指策略"):
-        book_named("index_clv_rally_equal_long")
-    with pytest.raises(ValueError, match="未知股指策略"):
-        book_named("index_clv_rally_equal_up_long")
-    with pytest.raises(ValueError, match="未知股指策略"):
-        book_named("index_clv_adaptive_long")
+    assert DEFAULT_BOOK is TACTICAL_ONLY_BOOK
+    assert INDEX_BOOKS == (
+        TACTICAL_ONLY_BOOK,
+        FACTOR_TILT_BOOK,
+        BREAKOUT_BOOK,
+    )
+    assert all(book.STATUS == "frozen" for book in INDEX_BOOKS)
+    assert BREAKOUT_BOOK.frozen()["chosen"] == BREAKOUT_BOOK.frozen()["parameters"]
+    for retired_id in (
+        "index_clv_rally_base_long_2x",
+        "index_clv_rally_base_long",
+        "index_clv_rally_equal_long",
+        "index_clv_rally_equal_up_long",
+        "index_clv_adaptive_long",
+        "index_clv_bull_half",
+        "index_clv_macd_half",
+        "index_clv_ema_20_60_half",
+        "index_clv_nonweak_breakout_sleeve",
+    ):
+        with pytest.raises(ValueError, match="未知股指策略"):
+            book_named(retired_id)
+    assert book_named(TACTICAL_ONLY_BOOK.ID) is TACTICAL_ONLY_BOOK
+    assert book_named(FACTOR_TILT_BOOK.ID) is FACTOR_TILT_BOOK
+    for book in INDEX_BOOKS:
+        config = book.frozen()
+        assert book.STATUS == "frozen"
+        assert config["chosen"] == config["parameters"]
+
+
+def test_selected_breakout_is_frozen_and_nonweak_variant_is_archival():
+    from strategies.index_clv_breakout_sleeve import BOOK as BREAKOUT_BOOK
+    from research.index.strategy_studies.index_clv_breakout_sleeve import load_protocol as load_breakout
+    from research.index.strategy_studies.index_clv_nonweak_breakout_sleeve import (
+        load_protocol as load_nonweak_breakout,
+    )
+    from strategies.index_catalog import INDEX_BOOKS
+
+    config = BREAKOUT_BOOK.frozen()
+    assert config["status"] == "frozen"
+    assert config["chosen"] == config["parameters"]
+    assert BREAKOUT_BOOK in INDEX_BOOKS
+    assert "index_clv_nonweak_breakout_sleeve" not in [book.ID for book in INDEX_BOOKS]
+
+    protocol = load_breakout()
+    assert protocol["status"] == "frozen_research_strategies"
+    assert protocol["frozen_at"] == "2026-11-07"
+    assert protocol["chosen"] == protocol["parameters"]
+    assert load_nonweak_breakout()["id"] == "index_clv_nonweak_breakout_sleeve"
+
+
+def test_selected_and_archival_breakout_books_match_their_research_targets():
+    from research.index.strategy_studies.index_clv_breakout_sleeve import breakout_states, trend_targets
+    from research.index.strategy_studies.index_clv_nonweak_breakout_sleeve import combine_targets
+    from strategies.index_breakout import trend_targets_from_bars
+    from strategies.index_clv_breakout_sleeve import BOOK as BREAKOUT_BOOK
+    from strategies.index_common import SYMBOLS, close_vol_scale
+    from strategies.index_tactical_books import TACTICAL_ONLY_BOOK
+
+    days = pd.bdate_range("2015-04-16", periods=80)
+    close = pd.DataFrame(
+        np.repeat((100.0 + np.arange(len(days), dtype=float) / 2)[:, None], len(SYMBOLS), axis=1),
+        index=days,
+        columns=SYMBOLS,
+    )
+    bars = {
+        "open": close.copy(),
+        "openw": close.copy(),
+        "close": close.copy(),
+        "closew": close.copy(),
+        "highw": close.copy(),
+        "loww": close - 1.0,
+    }
+    clv = pd.Series(0.1, index=days)
+    clv.iloc[55] = 0.5
+    rally = pd.Series(-1.0, index=days)
+    rally.iloc[60] = 1.0
+    scores = pd.DataFrame(0, index=days, columns=SYMBOLS, dtype="int64")
+    clv_targets = TACTICAL_ONLY_BOOK.targets((clv, scores), bars, rally_z=rally)
+    open_returns = ((bars["openw"].shift(-1) - bars["openw"]) / bars["open"]).mean(
+        axis=1, skipna=False
+    )
+    scale = close_vol_scale(open_returns).fillna(1.0)
+
+    states = breakout_states(bars, days)
+    expected_trend = trend_targets(states, scale)
+    pd.testing.assert_frame_equal(
+        BREAKOUT_BOOK.targets(clv, bars, rally_z=rally),
+        clv_targets.add(expected_trend, fill_value=0.0),
+    )
+
+    gated_states, raw_trend = trend_targets_from_bars(
+        bars, days, entry_allowed=clv.ge(0.4)
+    )
+    assert gated_states.iloc[55].all()
+    trend, combined = combine_targets(clv_targets, raw_trend)
+    assert trend.max().max() <= 0.5
+    pd.testing.assert_frame_equal(combined - trend, clv_targets)
 
 
 def _priced_bars(days, level):
-    from strategies.index_clv_rally_base_long_2x import BOOK
+    from strategies.index_common import SYMBOLS
 
-    symbols = list(BOOK.SYMBOLS)
+    symbols = list(SYMBOLS)
     level = np.asarray(level, dtype=float).reshape(-1)
     price = pd.DataFrame(
         np.repeat(level[:, None], len(symbols), axis=1), index=days, columns=symbols
@@ -109,119 +221,128 @@ def _priced_bars(days, level):
     }
 
 
-def test_base_momentum_reduces_longs_and_transfers_the_budget_to_clv():
-    from strategies.index_clv_rally_base_long_2x import BOOK
+def test_donchian_breakout_uses_prior_channels_and_next_open_execution():
+    from research.index.strategy_studies.index_clv_breakout_sleeve import breakout_states, trend_targets
+    from strategies.index_common import SYMBOLS
 
-    days = pd.bdate_range("2018-01-02", periods=320)
-    rise = _priced_bars(days, 100.0 + np.arange(len(days)))
-    clv = pd.Series(0.6, index=days)
-    clv.iloc[280] = 0.1
-    clv.iloc[282] = 0.1
-    clv.iloc[284] = 0.95
-    rally = pd.Series(-1.0, index=days)
-    rally.iloc[282] = 1.0
-    rally.iloc[284] = 2.0
-    targets = BOOK.targets(clv, rise, rally_z=rally)
+    days = pd.bdate_range("2015-04-16", periods=75)
+    level = 100.0 + np.arange(len(days), dtype=float)
+    level[70:] = 100.0
+    close = pd.DataFrame(
+        np.repeat(level[:, None], len(SYMBOLS), axis=1),
+        index=days,
+        columns=SYMBOLS,
+    )
+    bars = {
+        "closew": close,
+        "highw": close.copy(),
+        "loww": close - 1.0,
+    }
 
-    assert targets.iloc[0].eq(0).all()
-    assert targets.iloc[20].eq(0.5).all()
-    assert targets.iloc[280].eq(0.5).all()
-    assert targets.iloc[281].eq(1.0).all()
-    assert targets.iloc[283].eq(1.5).all()
-    assert targets.iloc[285].eq(0.5).all()
+    states = breakout_states(bars, days)
+    assert not states.iloc[54].any()
+    assert states.iloc[55].all()
+    assert states.iloc[69].all()
+    assert not states.iloc[70].any()
 
-    fall = _priced_bars(days, 400.0 - np.arange(len(days)))
-    down = BOOK.targets(clv, fall, rally_z=rally)
-    assert down.iloc[20].eq(0.5).all()
-    assert down.iloc[21].eq(0.5).all()
-    assert down.iloc[22].to_numpy() == pytest.approx([1 / 3] * 3)
-    assert down.iloc[64].to_numpy() == pytest.approx([1 / 6] * 3)
-    assert down.iloc[127].eq(0.0).all()
-    assert down.iloc[280].eq(0.0).all()
-    assert down.iloc[281].eq(1.0).all()
-    assert down.iloc[283].eq(2.0).all()
-    assert down.iloc[285].eq(0.0).all()
-    assert down.ge(0).all().all() and down.le(2.0).all().all()
+    altered = {name: frame.copy() for name, frame in bars.items()}
+    altered["highw"].iloc[55] = 10_000.0
+    altered["closew"].iloc[56:] = 1_000.0
+    future_changed = breakout_states(altered, days)
+    pd.testing.assert_frame_equal(states.iloc[:56], future_changed.iloc[:56])
 
-
-def test_base_momentum_does_not_cross_the_research_oos_price_basis():
-    from strategies.index_clv_rally_base_long_2x import _base_budget, _by_partition, _close_to_close
-
-    research = pd.bdate_range("2020-09-01", periods=300)
-    oos = pd.bdate_range("2022-01-03", periods=90)
-    days = research.append(oos)
-    level = np.concatenate([
-        400.0 - np.arange(len(research)),
-        1000.0 + np.arange(len(oos)),
-    ])
-    frames = _priced_bars(days, level)
-    joint = _by_partition(days, frames, lambda subset: _base_budget(_close_to_close(subset)))
-    oos_frames = {field: frame.reindex(oos) for field, frame in frames.items()}
-    alone = _base_budget(_close_to_close(oos_frames))
-
-    pd.testing.assert_series_equal(joint.loc[oos], alone, check_names=False, check_freq=False)
-    assert joint.loc[research[-1]] == 0.0
-    assert joint.loc[oos[-1]] == 0.5
+    targets = trend_targets(states, pd.Series(1.0, index=days))
+    assert targets.iloc[55].eq(0.0).all()
+    assert targets.iloc[56].to_numpy() == pytest.approx([1 / 6] * 3)
+    assert targets.iloc[71].eq(0.0).all()
 
 
-def test_base_momentum_counts_votes_instead_of_switching_the_whole_base():
-    from strategies.index_clv_rally_base_long_2x import _base_budget
+def test_nonweak_close_breakout_gate_filters_entries_but_not_existing_positions():
+    from research.index.strategy_studies.index_clv_breakout_sleeve import breakout_states
+    from strategies.index_common import SYMBOLS
 
-    days = pd.bdate_range("2018-01-02", periods=351)
-    returns = pd.Series([np.nan] + [0.005] * 300 + [0.0001] * 50, index=days)
-    assert _base_budget(returns).iloc[-1] == 0.5
+    days = pd.bdate_range("2015-04-16", periods=75)
+    level = 100.0 + np.arange(len(days), dtype=float)
+    level[70:] = 100.0
+    close = pd.DataFrame(
+        np.repeat(level[:, None], len(SYMBOLS), axis=1),
+        index=days,
+        columns=SYMBOLS,
+    )
+    bars = {"closew": close, "highw": close.copy(), "loww": close - 1.0}
+    entry_allowed = pd.Series(False, index=days)
+    entry_allowed.iloc[56] = True
+    entry_allowed.iloc[57] = False
 
-    # 最后21日跌，但63、126日上涨，底仓保留两份。
-    wealth = np.interp(np.arange(301), [0, 174, 237, 279, 300], [100, 80, 90, 110, 100])
-    momentum_returns = pd.Series(wealth, index=days[:301]).pct_change()
-    assert _base_budget(momentum_returns).iloc[-1] == pytest.approx(1 / 3)
-    # 最后21日涨，但63、126日跌，只保留一份。
-    wealth = np.interp(np.arange(301), [0, 174, 237, 279, 300], [100, 120, 110, 90, 100])
-    assert _base_budget(pd.Series(wealth, index=days[:301]).pct_change()).iloc[-1] == pytest.approx(1 / 6)
+    states = breakout_states(bars, days, entry_allowed=entry_allowed)
 
+    assert not states.iloc[55].any()
+    assert states.iloc[56].all()
+    assert states.iloc[57:70].all().all()
+    assert not states.iloc[70].any()
 
-def test_base_momentum_zero_return_vote_warmup_and_future_invariance():
-    from strategies.index_clv_rally_base_long_2x import _base_budget
-
-    days = pd.bdate_range("2018-01-02", periods=350)
-    zero = pd.Series(0.0, index=days)
-    zero.iloc[0] = np.nan  # 第一日没有上一收盘，不算一笔已完成收益。
-    budgets = _base_budget(zero)
-    assert budgets.iloc[20] == 0.5
-    assert budgets.iloc[21] == pytest.approx(1 / 3)
-    assert budgets.iloc[63] == pytest.approx(1 / 6)
-    assert budgets.iloc[126] == 0.0
-
-    returns = pd.Series(np.linspace(-0.004, 0.003, len(days)), index=days)
-    original = _base_budget(returns)
-    returns.iloc[290:] = -0.1
-    pd.testing.assert_series_equal(_base_budget(returns).iloc[:290], original.iloc[:290])
+    with pytest.raises(ValueError, match="完全对齐"):
+        breakout_states(bars, days, entry_allowed=entry_allowed.iloc[:-1])
 
 
-def test_base_components_keep_unused_clv_cash_and_do_not_look_ahead():
-    from strategies.index_clv_rally_base_long_2x import BOOK
+def test_nonweak_breakout_sleeve_uses_gross_budget_and_preserves_clv_targets():
+    from research.index.strategy_studies.index_clv_nonweak_breakout_sleeve import combine_targets
+    from strategies.index_common import SYMBOLS
 
-    days = pd.bdate_range("2018-01-02", periods=170)
-    bars = _priced_bars(days, 400.0 - np.arange(len(days)))
-    clv = pd.Series(0.4, index=days)
-    clv.iloc[140] = 0.1
-    rally = pd.Series(1.0, index=days)
-    parts = BOOK.components(clv, bars, rally_z=rally)
-    assert parts.iloc[140]["底仓预算"] == 0.0
-    assert parts.iloc[140]["CLV预算"] == 1.0
-    assert parts.iloc[140]["合计"] == 0.0
-    assert parts.iloc[141]["合计"] == 2.0
-    assert parts.iloc[141]["底仓"] == 0.0
-    assert parts.iloc[141]["择时"] == 2.0
-    np.testing.assert_allclose((parts["底仓预算"] + parts["CLV预算"]).iloc[1:], 1.0)
-    for frame in bars.values():
-        frame.iloc[145:] *= 2
-    changed = BOOK.components(clv, bars, rally_z=rally)
-    pd.testing.assert_frame_equal(parts.iloc[:145], changed.iloc[:145])
+    days = pd.bdate_range("2015-04-16", periods=2)
+    clv = pd.DataFrame(
+        [[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]],
+        index=days,
+        columns=SYMBOLS,
+    )
+    raw_trend = pd.DataFrame(
+        [[0.2, 0.2, 0.1], [0.5, 0.0, 0.0]],
+        index=days,
+        columns=SYMBOLS,
+    )
+
+    trend, combined = combine_targets(clv, raw_trend)
+
+    assert trend.iloc[0].sum() / len(SYMBOLS) == pytest.approx(0.5)
+    assert trend.iloc[1].sum() / len(SYMBOLS) == pytest.approx(1 / 3)
+    pd.testing.assert_frame_equal(combined - trend, clv)
+    assert combined.abs().sum(axis=1).div(len(SYMBOLS)).max() <= 2.5
+    assert combined.max().max() <= 3.0
+
+
+def test_weak_close_classifier_expanding_window_is_invariant_to_future_years():
+    from research.index.mechanisms.index_weak_close_mechanism_classifier import walk_forward
+
+    years = [
+        pd.bdate_range(f"{year}-01-04", periods=80)
+        for year in range(2016, 2022)
+    ]
+    days = years[0].append(years[1:])
+    values = np.arange(len(days), dtype=float)
+    panel = pd.DataFrame(
+        {
+            "market_clv": 0.1 + (values % 10) * 0.02,
+            "outcome_return": np.where(values % 3 == 0, -0.01, 0.01),
+            "weak_breadth": (values % 4) / 3,
+            "high_open_z": np.sin(values / 7),
+            "l1_pressure": np.cos(values / 11),
+        },
+        index=days,
+    )
+
+    _, original, _ = walk_forward(panel)
+    changed = panel.copy()
+    future = changed.index.year >= 2019
+    changed.loc[future, ["outcome_return", "weak_breadth", "high_open_z", "l1_pressure"]] *= -10
+    _, perturbed, _ = walk_forward(changed)
+
+    original_early = original.loc[original["年份"] < 2019].reset_index(drop=True)
+    perturbed_early = perturbed.loc[perturbed["年份"] < 2019].reset_index(drop=True)
+    pd.testing.assert_frame_equal(original_early, perturbed_early)
 
 
 def test_base_study_components_preserve_netting_and_lag_each_half():
-    from research.index.index_adaptive_attribution import base_target_components
+    from research.index.strategy_studies.index_adaptive_attribution import base_target_components
 
     days = pd.bdate_range("2018-01-02", periods=40)
     frames = _priced_bars(days, np.full(len(days), 100.0))
@@ -240,7 +361,7 @@ def test_base_study_components_preserve_netting_and_lag_each_half():
 
 
 def test_exposure_audit_separates_rounding_from_unchanged_lot_drift():
-    from research.index.index_adaptive_attribution import exposure_audit
+    from research.index.strategy_studies.index_adaptive_attribution import exposure_audit
     from tfcta.costs import INDEX_MULTIPLIER
 
     days = pd.bdate_range("2018-01-02", periods=3)
@@ -273,7 +394,7 @@ def test_exposure_audit_separates_rounding_from_unchanged_lot_drift():
 
 def test_exposure_audit_does_not_require_rebalancing_after_a_blocked_target():
     from backtest.engine import simulate_target_lots
-    from research.index.index_adaptive_attribution import exposure_audit
+    from research.index.strategy_studies.index_adaptive_attribution import exposure_audit
     from tfcta.costs import INDEX_MULTIPLIER
 
     days = pd.bdate_range("2018-01-02", periods=3)
@@ -297,39 +418,9 @@ def test_exposure_audit_does_not_require_rebalancing_after_a_blocked_target():
     assert checks["clean_execution_days"] == 0
 
 
-@pytest.mark.parametrize("field,value", [
-    ("close", 0.0), ("close", -1.0), ("close", np.inf),
-    ("closew", np.inf), ("closew", -np.inf), ("open", np.inf),
-])
-def test_base_rejects_invalid_prices_instead_of_treating_them_as_warmup(field, value):
-    from strategies.index_clv_rally_base_long_2x import BOOK
-
-    days = pd.bdate_range("2018-01-02", periods=320)
-    bars = _priced_bars(days, 400.0 - np.arange(len(days)))
-    bars[field].loc[days[295], "IF"] = value
-    with pytest.raises(ValueError, match="行情|价格"):
-        BOOK.targets(pd.Series(0.6, index=days), bars, rally_z=pd.Series(-1.0, index=days))
-
-
-def test_2x_rally_multiplier_changes_only_the_tactical_budget():
-    from strategies.index_clv_rally_base_long_2x import BOOK as BOOK_2X
-
-    days = pd.bdate_range("2018-01-02", periods=320)
-    bars = _priced_bars(days, 400.0 - np.arange(len(days)))
-    clv = pd.Series(0.1, index=days)
-    rally = pd.Series(-1.0, index=days)
-    rally.iloc[200] = 1.0
-
-    targets_2x = BOOK_2X.targets(clv, bars, rally_z=rally)
-
-    assert targets_2x.iloc[201].eq(2.0).all()
-    assert targets_2x.iloc[202].eq(1.0).all()
-    assert targets_2x.ge(0).all().all() and targets_2x.le(2.0).all().all()
-
-
-def test_index_oos_routes_only_the_frozen_book_before_loading(monkeypatch):
+def test_index_oos_routes_only_frozen_books_before_loading(monkeypatch):
     import backtest.engine as engine
-    from strategies.index_clv_rally_base_long_2x import BOOK as DEFAULT_BOOK
+    from strategies.index_catalog import DEFAULT_BOOK, INDEX_BOOKS
 
     monkeypatch.setattr(
         engine,
@@ -345,9 +436,11 @@ def test_index_oos_routes_only_the_frozen_book_before_loading(monkeypatch):
         "run_index",
         lambda start, end, **kwargs: routed.append((start, end, kwargs.get("book"))),
     )
+    monkeypatch.setattr(engine, "write_index_strategy_board", lambda *args, **kwargs: None)
     engine.main(["--market", "index", "--oos"])
+    frozen_books = tuple(book for book in INDEX_BOOKS if book.STATUS == "frozen")
     assert [(start, end, book.ID) for start, end, book in routed] == [
-        (2022, 2025, DEFAULT_BOOK.ID)
+        (2022, 2025, book.ID) for book in frozen_books
     ]
 
 
@@ -365,7 +458,7 @@ def test_annual_index_plots_are_written_for_each_year(tmp_path):
 
 
 def test_adaptive_signal_grid_matches_its_preregistered_protocol():
-    from research.index.index_adaptive_signal_grid import load_protocol
+    from research.index.strategy_studies.index_adaptive_signal_grid import load_protocol
 
     protocol = load_protocol()
     assert protocol["parameters"]["variants"] == 9
@@ -577,7 +670,7 @@ def test_oos_download_writes_raw_ticks_without_research_summaries(tmp_path, monk
 
 
 def test_buy_auction_allowance_uses_only_prior_auction_volume_and_charges_the_impact_floor():
-    from research.index.index_execution_10m import buy_auction_tables
+    from research.index.shared.index_execution_10m import buy_auction_tables
 
     days = pd.bdate_range("2019-01-02", periods=14)
     volume = [100.0] * 14
@@ -687,7 +780,13 @@ def test_index_market_without_a_name_runs_every_registered_book(monkeypatch):
     import backtest.engine as engine
     from strategies.index_catalog import INDEX_BOOKS
 
+    boards = []
     monkeypatch.setattr(engine, "run_index", lambda start, end, **kwargs: seen.append((start, end, kwargs)))
+    monkeypatch.setattr(
+        engine,
+        "write_index_strategy_board",
+        lambda books, start, end: boards.append((tuple(book.ID for book in books), start, end)),
+    )
     engine.main(["--market", "index", "--research"])
     assert seen == [
         (
@@ -702,6 +801,7 @@ def test_index_market_without_a_name_runs_every_registered_book(monkeypatch):
         )
         for book in INDEX_BOOKS
     ]
+    assert boards == [(tuple(book.ID for book in INDEX_BOOKS), 2015, 2021)]
 
 
 
@@ -709,7 +809,7 @@ def test_index_market_without_a_name_runs_every_registered_book(monkeypatch):
 
 
 def test_allocation_methods_use_only_available_closes_and_preserve_budget():
-    from research.index.index_allocation_regimes import _allocation_multipliers
+    from research.index.strategy_studies.index_allocation_regimes import _allocation_multipliers
 
     days = pd.bdate_range("2015-04-16", periods=35)
     trend = np.arange(len(days), dtype=float)
@@ -835,7 +935,7 @@ def test_index_oos_market_loader_applies_registered_date_filters(monkeypatch, tm
 
 
 def test_time_factor_increment_uses_cash_clock_and_no_later_bars():
-    from research.index.index_time_factor_increment import (
+    from research.index.factors.index_time_factor_increment import (
         CONTROLS, FACTORS, holm, load_protocol, symbol_panel,
     )
 
@@ -878,11 +978,11 @@ def test_time_factor_increment_uses_cash_clock_and_no_later_bars():
 
 
 def test_tactical_factor_votes_use_only_selected_lagged_positive_t_factors():
-    from research.index.index_tactical_factor_candidates import (
+    from research.index.factors.index_tactical_factor_candidates import (
         STANDARDIZATION_WINDOW,
         factor_votes,
     )
-    from research.index.index_time_factor_increment import FACTORS, SYMBOLS
+    from research.index.factors.index_time_factor_increment import FACTORS, SYMBOLS
 
     days = pd.bdate_range("2018-01-02", periods=270)
     rising = np.arange(len(days), dtype=float)
@@ -909,12 +1009,12 @@ def test_tactical_factor_votes_use_only_selected_lagged_positive_t_factors():
 
 
 def test_tactical_factor_tilt_always_holds_all_products_and_defaults_to_equal():
-    from research.index.index_tactical_factor_candidates import (
+    from research.index.factors.index_tactical_factor_candidates import (
         FACTOR_TILT,
         TACTICAL_ONLY,
         target_weights,
     )
-    from research.index.index_time_factor_increment import SYMBOLS
+    from research.index.factors.index_time_factor_increment import SYMBOLS
 
     days = pd.bdate_range("2020-01-02", periods=4)
     market_clv = pd.Series(0.3, index=days)
@@ -938,3 +1038,134 @@ def test_tactical_factor_tilt_always_holds_all_products_and_defaults_to_equal():
     assert tilted.loc[days[2], "IC"] == pytest.approx(0.75)
     assert tilted.loc[days[3]].eq(0.5).all()
     assert tilted.loc[days[0]].eq(0.0).all()
+
+
+def test_frozen_factor_books_use_partitioned_oos_factor_panels(monkeypatch):
+    import strategies.index_tactical_books as tactical
+
+    research_days = pd.bdate_range("2020-01-02", periods=260)
+    oos_days = pd.bdate_range("2022-01-03", periods=3)
+    index = research_days.append(oos_days)
+    panels = {
+        symbol: pd.DataFrame(
+            {
+                "dfp_top3": np.sin(np.arange(len(index)) / 5),
+                "ts_high": np.cos(np.arange(len(index)) / 7),
+            },
+            index=index,
+        )
+        for symbol in tactical.SYMBOLS
+    }
+    research_panels = {
+        symbol: panel.reindex(research_days)
+        for symbol, panel in panels.items()
+    }
+    oos_panels = {symbol: panel.reindex(oos_days) for symbol, panel in panels.items()}
+    monkeypatch.setattr(
+        tactical,
+        "_research_factor_panels",
+        lambda: research_panels,
+    )
+    monkeypatch.setattr(tactical, "_oos_factor_panels", lambda end: oos_panels)
+
+    scores = tactical._factor_scores(index)
+
+    assert scores.index.equals(index)
+    assert scores.loc[oos_days].ge(0).all().all()
+    assert scores.loc[oos_days].le(2).all().all()
+
+
+def test_oos_intraday_factors_warm_up_from_prior_research_without_lookahead():
+    from research.index.factors.index_tactical_factor_candidates import symbol_factor_panel
+
+    research_days = pd.bdate_range("2021-01-04", periods=250)
+    oos_days = pd.to_datetime(["2022-01-03", "2022-01-04"])
+    days = research_days.append(oos_days)
+    rows = []
+    stamps = ("09:31", "11:30", "13:01", "15:00")
+    for day_number, day in enumerate(days):
+        base = 400.0 + day_number * 0.1
+        prices = [
+            base,
+            base + 0.2 * np.sin(day_number / 5),
+            base + 0.15 * np.cos(day_number / 7),
+            base + 0.05 * np.sin(day_number / 3),
+        ]
+        for minute, price in zip(stamps, prices):
+            rows.append({
+                "datetime": pd.Timestamp(f"{day.date()} {minute}"),
+                "trading_date": day,
+                "open": price,
+                "openw": price,
+                "close": price,
+                "closew": price,
+                "highw": price + 0.2,
+                "loww": price - 0.2,
+                "volume": 10.0 + day_number % 5,
+                "total_turnover": 1000.0 + day_number,
+            })
+    frame = pd.DataFrame(rows).set_index("datetime")
+
+    panel = symbol_factor_panel(frame, partition="research_oos")
+
+    assert pd.notna(panel.loc[oos_days[0], "dfp_top3"])
+    altered = frame.copy()
+    altered.loc[altered["trading_date"] == oos_days[1], "close"] += 50.0
+    pd.testing.assert_series_equal(
+        symbol_factor_panel(altered, partition="research_oos").loc[oos_days[0]],
+        panel.loc[oos_days[0]],
+    )
+
+
+def test_strategy_board_plots_every_strategy_and_the_benchmark(tmp_path, monkeypatch):
+    import backtest.engine as engine
+    from strategies.index_catalog import INDEX_BOOKS
+
+    days = pd.to_datetime(["2020-12-31", "2021-01-04"])
+    bench = pd.Series([0.01, -0.02], index=days)
+
+    def place(market, strategy_id, folder):
+        path = tmp_path / "strategies" / strategy_id / folder
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    for offset, book in enumerate(INDEX_BOOKS):
+        folder = place("index", book.ID, "research")
+        pd.DataFrame({
+            "交易日": days,
+            "净收益": bench.to_numpy() + offset * 0.001,
+        }).to_csv(folder / "daily.csv", index=False)
+        pd.DataFrame({"交易日": days, "净收益": bench.to_numpy()}).to_csv(
+            folder / "benchmark.csv", index=False
+        )
+    monkeypatch.setattr(engine.C, "backtest_dir", place)
+    monkeypatch.setattr(
+        engine.C,
+        "study_dir",
+        lambda market, name: tmp_path / "research" / name,
+    )
+
+    plot_dir = engine.write_index_strategy_board(INDEX_BOOKS, 2015, 2021)
+    saved = pd.read_csv(plot_dir.parent / "daily_returns.csv", index_col=0)
+
+    assert list(saved.columns) == [book.NAME for book in INDEX_BOOKS] + ["等权买入持有"]
+    assert sorted(path.name for path in plot_dir.glob("*.png")) == [
+        "2020.png", "2021.png", "performance.png",
+    ]
+
+
+def test_selected_three_strategy_comparison_protocol_is_registered_and_research_only():
+    from research.index.factors.index_tactical_factor_candidates import (
+        load_protocol as load_factor_protocol,
+    )
+    from research.index.strategy_studies.index_selected_strategy_comparison import load_protocol
+    from strategies.index_catalog import INDEX_BOOKS
+
+    protocol = load_protocol()
+    factor_protocol = load_factor_protocol()
+
+    assert protocol["strategies"] == [book.ID for book in INDEX_BOOKS]
+    assert protocol["status"] == "preregistered_selection_comparison"
+    assert protocol["sample"].count("不读取") == 1
+    assert "observed_after" not in protocol
+    assert factor_protocol["status"] == "frozen_research_strategies"

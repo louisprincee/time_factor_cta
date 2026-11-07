@@ -7,7 +7,7 @@ from pathlib import Path as liquidity__Path
 import numpy as liquidity__np
 import pandas as liquidity__pd
 from backtest.engine import newey_west_t as liquidity__newey_west_t
-from research.index import index_market_clock as liquidity__I
+from research.index.shared import index_market_clock as liquidity__I
 from research.time_factor_screen import ols_hac as liquidity__ols_hac
 from tfcta import config as liquidity__C
 liquidity__CONFIG_PATH = liquidity__C.CONFIG_DIR / 'research' / 'index_liquidity_mechanism.json'
@@ -236,7 +236,7 @@ import warnings as positioning__warnings
 from pathlib import Path as positioning__Path
 import numpy as positioning__np
 import pandas as positioning__pd
-from research.index import index_market_clock as positioning__I
+from research.index.shared import index_market_clock as positioning__I
 from research.time_factor_screen import ols_hac as positioning__ols_hac
 from tfcta import config as positioning__C
 positioning__CONFIG_PATH = positioning__C.CONFIG_DIR / 'research' / 'index_positioning_mechanism.json'

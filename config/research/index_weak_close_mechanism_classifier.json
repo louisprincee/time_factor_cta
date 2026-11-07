@@ -1,0 +1,43 @@
+{
+  "id": "index_weak_close_mechanism_classifier",
+  "status": "declared_test_not_a_strategy",
+  "declared_at": "2026-11-07",
+  "authorization": "用户要求实现弱收盘性质判别，确认检查跨指数一致性、日内先涨后跌和 L1 尾盘压力；只做研究期诊断，不改冻结策略。",
+  "sample": "只读取 IF、IH、IC 研究分钟分片和对应的研究期 L1 收盘日汇总。构造特征和计分日期为 2016-01-13 至 2021-12-29；2016 年训练，逐年预测 2017–2021。因 IC 在 2020-02-03 缺少尾盘价差和深度，该日从所有模型与结果中共同排除。最后结果段使用 2021-12-31 研究期开盘，不读 2022 或更晚日期，不读取任何 OOS 分区或账本。",
+  "known_before": "弱收盘后的反转现象和多类指标已在同一研究样本反复检验。此前分别看过横截面 CLV 分歧、high_open、尾盘价差/深度及订单流；它们不能视为新发现。本项只检验三个预先指定信号块合并后，是否能在弱收盘样本内增量区分下一开盘段正收益与非正收益；同样本扩展窗口不构成独立验证。",
+  "question": "在 pooled CLV<0.4 的日子里，跨指数弱收盘广度、日内先涨后跌，以及尾盘 L1 流动性压力，是否能逐年扩展训练地改善下一开盘至再下一开盘正收益的预测？该预测标签只是操作性代理，不等于观测到流动性冲击或信息性下跌。",
+  "definitions": {
+    "market_panel": "先逐品种计算，再按 IF/IH/IC 等权合成；三品种和 L1 数据必须完整，不按收益选择品种。",
+    "market_clv": "逐品种 (closew-loww)/(highw-loww)，再等权平均；弱收盘沿用既有阈值 market_clv<0.4。",
+    "outcome": "信号日 t 已知信息，结果为三品种等权的 (openw[t+2]-openw[t+1])/open[t+1]；正收益为反转代理，零或负收益为延续代理。",
+    "cross_index_breadth": "当日 IF/IH/IC 各自 CLV<0.4 的品种数除以 3；值越高表示弱收盘越广泛。",
+    "intraday_reversal": "复用现有 high_open_z：各品种 (highw-openw)/open*10000，以此前 60 日均值/标准差标准化，至少 40 日，不含当天；再对品种等权平均。较高值表示日内曾上冲、最终收弱的幅度相对较大。",
+    "l1_pressure": "逐品种计算 log(spread_ratio/depth_ratio)，其中 spread_ratio=尾盘30分钟平均相对价差/全天平均相对价差，depth_ratio=尾盘30分钟买一卖一深度均值/全天买一卖一深度均值；再按品种等权平均。值越高表示尾盘价差更宽且/或深度更薄。尾盘不平衡仅作描述，不进入模型。",
+    "models": "仅在 pooled CLV<0.4 的有效日期训练和评分；固定比较 CLV 基线、分别加入 breadth/high_open/L1_pressure 的三个模型，以及同时加入全部三个信号块的联合模型。Logistic L2 C=1.0；每折均值和标准差只从该折训练样本估计；不搜索阈值、符号、窗口或模型。",
+    "validation": "2016 年为首个训练年；2017 年预测时只用 2016 年弱收盘样本训练，之后逐年扩展至 2021 年。逐年及合并报告 ROC AUC、Brier、平衡准确率、反转率、样本数；保留所有模型和年份。",
+    "inference_limit": "预测特征只用于区分收益结果，不据此宣称识别坏消息、强制卖出、流动性供给者或因果机制。"
+  },
+  "coverage_exclusions": [
+    {
+      "date": "2020-02-03",
+      "reason": "IC L1 日汇总的 spread_last30 和 depth_last30 缺失；为保证各模型使用同一日期，该日从所有模型训练和评分中排除。"
+    }
+  ],
+  "method_update": "在正式输出任何分类结果前，检查发现 2020-02-03 的 IC L1 尾盘价差和深度缺失。该日期已事先明确登记为全模型共同排除；其余计分日仍要求 IF/IH/IC L1 特征完整，任何其他缺失均报错。",
+  "parameters": {
+    "instruments": ["IF", "IH", "IC"],
+    "weak_close_threshold": 0.4,
+    "l1_tail_window": "14:30-15:00",
+    "high_open_rolling_window": 60,
+    "high_open_rolling_minimum": 40,
+    "hac_lags": 5,
+    "logistic_C": 1.0,
+    "score_start": "2016-01-13",
+    "score_end": "2021-12-29",
+    "training_years": [2016],
+    "evaluation_years": [2017, 2018, 2019, 2020, 2021],
+    "models": ["clv_baseline", "clv_plus_breadth", "clv_plus_high_open", "clv_plus_l1_pressure", "clv_plus_all"]
+  },
+  "pass": "仅作探索性筛选：联合模型相对 CLV 基线的合并 AUC 提高、Brier 降低，且至少 3/5 个预测年份 Brier 改善，才记为存在待验证的区分信号；否则记为未支持或结果不确定。单个指标、模型或年份不触发策略过滤器，不修改或冻结策略。",
+  "limitations": "所有行情与 L1 样本均已用于既有探索；本项对已有特征的联合建模仍是同样本事后研究，不是干净样本外验证。三指数收益高度相关，市场样本量不是三倍。弱收盘阈值沿用既有策略。L1 仅为一档报价，不代表完整订单簿或投资者身份。正/非正收益标签不是对经济原因的直接观测。"
+}

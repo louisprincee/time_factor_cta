@@ -1,11 +1,14 @@
 """股指策略注册表。"""
-from strategies.index_clv_rally_base_long_2x import BOOK as RALLY_BASE_2X_BOOK
+from strategies.index_clv_breakout_sleeve import BOOK as BREAKOUT_SLEEVE_BOOK
+from strategies.index_tactical_books import FACTOR_TILT_BOOK, TACTICAL_ONLY_BOOK
 
-DEFAULT_BOOK = RALLY_BASE_2X_BOOK
-INDEX_BOOKS = (RALLY_BASE_2X_BOOK,)
-# 只有冻结的策略能跑样本外；冻结状态以各自 JSON 为准。
-INDEX_FROZEN_BOOKS = tuple(book for book in INDEX_BOOKS if book.STATUS == "frozen")
-BOOKS = INDEX_BOOKS
+# 顺序即默认研究对比图图例顺序：纯CLV、CLV因子倾斜、CLV加标准55/20突破。
+INDEX_BOOKS = (
+    TACTICAL_ONLY_BOOK,
+    FACTOR_TILT_BOOK,
+    BREAKOUT_SLEEVE_BOOK,
+)
+DEFAULT_BOOK = INDEX_BOOKS[0]
 
 
 def book_named(name):

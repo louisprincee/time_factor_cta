@@ -1,0 +1,29 @@
+{
+  "id": "index_selected_strategy_comparison",
+  "status": "preregistered_selection_comparison",
+  "declared_at": "2026-11-07",
+  "authorization": "按用户最新选择，仅保留纯CLV、CLV因子倾斜和标准55/20趋势袖套为正式股指策略。该登记为未来同样本统一比较的协议，不代表本次重新回测或独立验证。",
+  "sample": "仅IF/IH/IC研究分区；计分信号日2015-04-16至2021-12-30，最后一笔于2021-12-31开盘结算。预热只读研究分区中的更早数据。不读取2022–2025、任何oos/目录或2026及以后数据。",
+  "strategies": [
+    "index_tactical_clv_only",
+    "index_tactical_clv_factor_select",
+    "index_clv_breakout_sleeve"
+  ],
+  "rules": {
+    "index_tactical_clv_only": "IF/IH/IC等权CLV<0.4时等权持有全部择时预算，否则现金；冲高z>0只将CLV预算乘2。",
+    "index_tactical_clv_factor_select": "CLV<0.4时保留三个品种，按1+有利票分配全部择时预算；票为IF dfp_top3、IC dfp_top3、IC ts_high。因子单元由同一研究样本筛选，报告选择偏差。",
+    "index_clv_breakout_sleeve": "保持纯CLV袖套不变，另加固定0.5总预算的多头55日收盘突破/20日最低价退出袖套，活跃品种等权；收盘确认、次日开盘执行。",
+    "shared": "三本均不做空。统一1000万元、L1开盘后30分钟、整数手、历史费用和一跳滑点、开盘限制、RV20年化20%缩放上限1、10%回撤熔断停10日。"
+  },
+  "comparisons": {
+    "outputs": [
+      "三策略相同计分日的每日净收益和累计净值",
+      "三策略总样本摘要及逐年净收益/Sharpe/最大回撤",
+      "三策略与等权买入持有的总样本及逐年净值/回撤图",
+      "趋势袖套减纯CLV的逐日净收益差及HAC(5) t值"
+    ],
+    "pass_criteria": "不设收益表现门槛、不择优、不调参；完整报告全部保留策略及不利年份。实现验收要求样本一致、无未来数据、三本共用执行与成本口径。不得读取OOS。",
+    "interpretation": "此次策略精简依据已有研究期结果、风险调整表现和规则简约性，不构成新的统计检验。因子单元与趋势变体均在反复查看的样本上选择；其结果不是独立验证或可部署优势。"
+  },
+  "historical_comparison": "原动量底仓比较协议因无复现用途已删除；旧规则和研究期结果仅作为历史记录保留在docs/index_guide.md，不得将其当作本协议结果。"
+}

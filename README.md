@@ -3,11 +3,11 @@
 根据兴业和国泰君安两份研报（`docs/` 下）开展商品和股指期货研究。回测使用整数手数账本，扣历史手续费和每边 1 跳滑点。
 
 - 商品登记两条冻结策略：商品原策略和商品收盘位置策略。规则和实现分别见 [`strategies/commodity_original`](strategies/commodity_original/) 和 [`strategies/commodity_close_location`](strategies/commodity_close_location/)。
-- 股指唯一注册策略是已冻结但尚未做样本外验证的 **`index_clv_rally_base_long_2x`**：21/63/126 日多头票数决定0至半仓底仓，剩余预算只在 pooled CLV<0.4 时启用，冲高z>0时只将CLV部分乘2，风控前目标最高2倍，完全不做空。原1.5倍版本已移除实现，仅保留历史对照结果。冻结只锁定规则，不代表已通过样本外或可部署验证；规则、研究登记和结果见 [`docs/index_guide.md`](docs/index_guide.md)。
-- `index_clv_rally_equal_up_long` 已按用户要求删除实现和配置，历史研究结果仍保留。`index_clv_rally_equal_long` 与 `index_clv_adaptive_long` 的实现也已移除。历史记录见 [`docs/index_research_review.md`](docs/index_research_review.md)。
+- 股指当前只注册三本冻结策略：纯 CLV 等权（默认 **`index_tactical_clv_only`**）、CLV 因子倾斜（`index_tactical_clv_factor_select`）和标准 55/20 突破趋势袖套（`index_clv_breakout_sleeve`）。因子格由同一样本事后筛选且不显著；趋势袖套提高累计收益但降低 Sharpe、加深回撤，增量不显著。冻结不代表独立验证或可部署优势；完整结果和边界见 [`docs/index_guide.md`](docs/index_guide.md)。
+- `index_clv_rally_equal_up_long` 已按用户要求删除实现和配置，历史研究结果仍保留。`index_clv_rally_equal_long` 与 `index_clv_adaptive_long` 的实现也已移除。历史结果和选择偏差记录见 [`docs/index_guide.md`](docs/index_guide.md)。
 - 熊市和品种自身趋势共用 `TREND_WINDOWS = (20, 60, 120)`，并与冻结规格交叉校验。
 - 商品策略和全部研究记录见 [`docs/guide.md`](docs/guide.md)；股指当前规则和参数研究见 [`docs/index_guide.md`](docs/index_guide.md)。`--market index --research` 运行当前冻结的股指策略。
-- 股指历史研究在 [`docs/index_research_review.md`](docs/index_research_review.md)；当前策略规则、研究期结果和证据边界见[`股指策略说明`](docs/index_guide.md)。
+- 股指历史研究、当前策略规则、研究期结果和证据边界统一见[`股指策略说明`](docs/index_guide.md)。
 
 ## 环境
 
@@ -19,10 +19,10 @@ conda activate gu
 
 ## 数据边界
 
-| 分区 | 日期 | 商品 | 股指 |
-|---|---|---|---|
+| 分区   | 日期                                            | 商品                                                                                                             | 股指                                                                                                                             |
+| ------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | 研究期 | 商品 2011–2021；股指 IF/IH/IC 从 2015-04-16 起 | `data/commodity/minute_shards/research/`；账本从 2011 起算，2011–2015 品种池按同一门槛重建，2010 只做因子预热 | `data/index/minute_shards/research/`；三品种共同研究期从 IF、IH、IC 均已上市的首日开始，实际评分日期还需满足数据覆盖和因子预热 |
-| 样本外 | 2022–2025 | `data/commodity/minute_shards/oos/` | `data/index/minute_shards/oos/` |
+| 样本外 | 2022–2025                                      | `data/commodity/minute_shards/oos/`                                                                            | `data/index/minute_shards/oos/`                                                                                                |
 
 `data/` 顶层仅保留 `commodity/` 与 `index/`。每个市场下，研究期在 `research/`，样本外在 `oos/`。回测按请求的年份读取对应分区。研究脚本仍只读研究期，读到样本外路径会抛出 `HoldoutViolation`。样本外尚未出结果。
 
@@ -54,8 +54,8 @@ python -m backtest.engine --research --by-year       # 每年一本新的 1 亿�
 python -m backtest.engine --start 2018 --end 2020
 python -m backtest.engine 商品收盘位置策略 --research
 python -m research.report.strategy_report       # 商品两本冻结策略的图表报告，先跑上面的账本
-python -m backtest.engine --market index --research # 股指冻结策略，2015–2021；固定1000万、L1；固定1000万、L1
-python -m backtest.engine index_clv_rally_base_long_2x --research
+python -m backtest.engine --market index --research # 当前三本股指策略，2015–2021；固定1000万、L1；并写总对比图
+python -m backtest.engine index_tactical_clv_only --research
 python -m backtest.engine --oos
 python -m backtest.engine --market index --oos
 ```
@@ -83,25 +83,18 @@ python -m download.index.getIndexRollYield             # IF / IH / IC 研究期�
 
 股指测试统一维护在 `tests/test_index.py`，不再按研究任务新增测试文件。日常只维护 `main` 分支。
 
-股指研究统一放在 `research/index/`。当前策略位于 `strategies/index_clv_rally_base_long_2x/`，账本由 `backtest.engine` 执行；逐年曲线在 `runs/index/strategies/index_clv_rally_base_long_2x/research/plots/`。历史部件拆分：`python -m research.index.index_adaptive_attribution`；历史底仓对照用 `--base-momentum`，预算转移历史对照与仓位审计用 `--budget-transfer`。
+股指研究统一放在 `research/index/`，按经济机制、因子信号和策略检验分类；唯一入口、目录图和每个子研究对应的协议见 [`research/index/README.md`](research/index/README.md)。策略唯一注册表是 `strategies/index_catalog.py`；账本由 `backtest.engine` 执行。各策略相对基准的图在各自 `plots/`；三策略加基准的总图和逐年图在 `runs/index/research/index_strategy_comparison/plots/`。统一入口不会自动启动研究，也不能用于 OOS；它只把命令转给各自的预登记研究。
 
 ```bash
-python -m research.index.index_allocation_regimes # 历史配置研究与状态诊断，不登记可运行策略
-python -m research.index.index_adaptive_signal_grid # 预登记门槛网格；仅读研究期
-python -m research.index.market_mechanisms liquidity
-python -m research.index.market_mechanisms positioning
-python -m research.index.market_mechanisms positioning --unabsorbed
-python -m research.index.market_mechanisms qvix
-python -m research.index.market_mechanisms intraday-cost
-python -m research.index.spot_reversal long-sample
-python -m research.index.spot_reversal open-pressure
-python -m research.index.weak_close_diagnostics close
-python -m research.index.weak_close_diagnostics price-extremes --shape
-python -m research.index.weak_close_diagnostics path-volume
-python -m research.index.index_time_factor_increment # 三个时间因子在 CLV 之外的增量；2026-11-05 已运行，三个都不支持
+python -m research.index --help
+python -m research.index mechanism clv --shape
+python -m research.index mechanism market liquidity
+python -m research.index mechanism weak-close price-extremes --shape
+python -m research.index factor time-increment
+python -m research.index strategy comparison
 ```
 
-机制子研究写入 `runs/index/research/<名称>/`。历史候选结果仅供查阅，不代表相关策略实现仍可运行。
+机制子研究写入 `runs/index/research/<名称>/`。已退役规则的历史候选结果仅供查阅，不代表相关策略实现仍可运行。
 
 数据下载按市场分开放在 `download/commodity/` 和 `download/index/`。手续费脚本在商品目录，用 `--market index` 下股指。
 
@@ -121,11 +114,11 @@ python -m download.commodity.getFeeHistory --market index --partition research
 
 `runs/` 不进仓库，结构如下：
 
-| 目录 | 内容 |
-|---|---|
+| 目录                                        | 内容                                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `runs/<市场>/strategies/<策略ID>/<区间>/` | `backtest.engine` 写的正式账本。区间是 `research`、`oos`、单年或 `2018-2020` |
-| `runs/<市场>/research/<名称>/` | 机制检验和图表报告。商品策略报告在 `runs/commodity/research/strategy_report/` |
-| `runs/commodity/prepare/` | 分片和品种池准备的验收记录 |
+| `runs/<市场>/research/<名称>/`            | 机制检验和图表报告。商品策略报告在 `runs/commodity/research/strategy_report/`      |
+| `runs/commodity/prepare/`                 | 分片和品种池准备的验收记录                                                           |
 
 商品 L1 流动性检验的预登记规格为 `config/research/commodity_l1_liquidity.json`，结果在 `runs/commodity/research/commodity_l1_liquidity/`。42 个品种文件覆盖不一；仅在各品种属于年度研究池的日期上分析，样本为 2011–2021，34 个品种达到至少 500 个有效日、跨 3 年的门槛，5 个板块达到板块检验门槛。相对尾盘价差扩大在 32/34 个合格品种及全部 5 个可检验板块上显著（BH q≤0.10）；相对深度变薄只在 4/34 个品种和农产品、化工两个板块显著。低收盘位置后的次日盘中反转在 CU、FG、JD、ZN 四个品种及黑色、有色、化工三个板块通过多重检验。控制尾盘买卖不平衡后，反转仍在 15 个品种、4 个板块显著；买卖不平衡本身在农产品、化工、黑色板块预测同方向延续，而非流量反转。流动性恶化与反转增强的交互没有一致证据：价差交互没有合格显著项，深度交互仅化工板块呈预期方向（q=0.074），有色板块反向（q=0.074），品种层面没有显著交互。对中间价 CLV 截断到 [0,1] 的事后稳健性复算没有改变任何 q≤0.10 的合格显著结论；42 个源文件共发现 109 条越界记录，其中 BB 有 18 条极端值，但其样本仅 220 天，不满足品种检验门槛。日汇总不含原始高低价 tick 序列，无法诊断所有越界原因。结果支持尾盘流动性压力代理变差，但不确证“流动性提供导致反转”的机制。以上均为重叠研究期内观察性检验，不是因果识别或样本外验证；仅使用 L1 盘口汇总，不能代表 L2 深度。
 

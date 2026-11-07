@@ -1,6 +1,6 @@
 """三品种 CLV 与时间因子异质性诊断；只读研究期。
 
-    python -m research.index.index_clv_cross_product_factors
+    python -m research.index factor cross-product
 
 规格在 config/research/index_clv_cross_product_factors.json。只做信号层面分析。
 """
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from research.index.index_time_factor_increment import (
+from research.index.factors.index_time_factor_increment import (
     COLUMNS,
     FACTORS,
     SYMBOLS,

@@ -1017,7 +1017,7 @@ def _read_index_oos_symbol(
 
 def _load_index_oos_inputs(start: pd.Timestamp, end: pd.Timestamp):
     """读取请求年份内的 IF/IH/IC 样本外日线和 L1 开盘摘要。"""
-    from research.index.index_execution_10m import opening_quotes
+    from research.index.shared.index_execution_10m import opening_quotes
 
     frames, contract_parts, tick_parts, date_indexes = {}, {}, [], []
     for symbol in INDEX_SYMBOLS:
@@ -1098,24 +1098,35 @@ def run_index(
 ):
     """运行已登记股指策略。研究期只读 research/，样本外只读 oos/，预热历史从研究期接上。"""
     from strategies.index_common import high_open_z, market_close_location
-    from research.index.index_execution_10m import load_opening_quotes, l1_slippage
+    from research.index.shared.index_execution_10m import load_opening_quotes, l1_slippage
 
     if book is None:
-        from strategies.index_catalog import INDEX_BOOKS, INDEX_FROZEN_BOOKS
-        selected = INDEX_FROZEN_BOOKS if int(end) >= C.OOS_START.year else INDEX_BOOKS
+        from strategies.index_catalog import INDEX_BOOKS
+        selected = (
+            tuple(item for item in INDEX_BOOKS if item.STATUS == "frozen")
+            if int(end) >= C.OOS_START.year
+            else INDEX_BOOKS
+        )
         if not selected:
             raise C.HoldoutViolation("当前没有已冻结股指策略可用于样本外回测")
         for item in selected:
             run_index(
                 start, end, by_year=by_year, capital=capital, execution=execution, book=item,
             )
+        if len(selected) > 1 and not by_year:
+            write_index_strategy_board(selected, start, end)
         return
     book.frozen()
     start, end = int(start), int(end)
     if start < 2015 or end > C.DEFAULT_OOS_END.year or start > end:
         raise C.HoldoutViolation(f"股指回测年份须在 2015–{C.DEFAULT_OOS_END.year}，收到 {start}–{end}")
-    if end >= C.OOS_START.year and book.STATUS != "frozen":
-        raise C.HoldoutViolation("股指策略未冻结，不允许运行样本外")
+    if end >= C.OOS_START.year:
+        from strategies.index_catalog import INDEX_BOOKS
+
+        if book.STATUS != "frozen":
+            raise C.HoldoutViolation("股指策略未冻结，不允许运行样本外")
+        if book not in INDEX_BOOKS:
+            raise C.HoldoutViolation("股指策略未列入样本外策略注册表，不允许运行样本外")
     if capital != INDEX_DEFAULT_CAPITAL or execution != INDEX_DEFAULT_EXECUTION:
         raise ValueError("股指口径固定为1000万、l1_30m")
     if by_year and start != end:
@@ -1299,6 +1310,76 @@ def plot_annual_performance(returns, benchmark, out_dir, strategy_name) -> list[
     return paths
 
 
+def _index_result_period(start, end):
+    start, end = int(start), int(end)
+    if (start, end) == (2015, 2021):
+        return "index_research"
+    if (start, end) == (C.OOS_START.year, C.DEFAULT_OOS_END.year):
+        return "oos"
+    if start == end:
+        return start
+    return (start, end)
+
+
+def write_index_strategy_board(books, start, end) -> Path:
+    """把同一区间里多本股指账本画成一张总图和逐年图，每张都含全部策略和等权买入持有。"""
+    if len(books) < 2:
+        raise ValueError("股指对比图至少需要两本策略")
+    _, _, folder, title = period_layout(_index_result_period(start, end))
+    columns = []
+    benchmark = None
+    for book in books:
+        result_dir = C.backtest_dir("index", book.ID, folder)
+        daily = pd.read_csv(result_dir / "daily.csv", parse_dates=["交易日"]).set_index("交易日")
+        bench = pd.read_csv(result_dir / "benchmark.csv", parse_dates=["交易日"]).set_index("交易日")["净收益"]
+        series = pd.to_numeric(daily["净收益"], errors="coerce")
+        bench = pd.to_numeric(bench, errors="coerce")
+        if (
+            series.isna().any()
+            or bench.isna().any()
+            or series.index.has_duplicates
+            or not series.index.equals(bench.index)
+        ):
+            raise ValueError(f"{book.ID} 的净值或基准日期不完整")
+        if benchmark is None:
+            benchmark = bench
+        elif not np.allclose(
+            benchmark.to_numpy(dtype="float64"),
+            bench.reindex(benchmark.index).to_numpy(dtype="float64"),
+            equal_nan=False,
+        ):
+            raise ValueError("股指策略对比的等权买入持有基准不一致")
+        columns.append(series.rename(book.NAME))
+    returns = pd.concat(columns, axis=1)
+    if returns.isna().any().any() or not returns.index.equals(benchmark.index):
+        raise ValueError("股指策略对比日期没有对齐")
+    if folder == "research" and returns.index.max() >= pd.Timestamp(C.OOS_START):
+        raise C.HoldoutViolation("研究期对比图含有样本外日期")
+    returns["等权买入持有"] = benchmark
+    if folder == "research":
+        out = C.study_dir("index", "index_strategy_comparison")
+    else:
+        out = C.backtest_dir("index", "index_strategy_comparison", folder)
+    out.mkdir(parents=True, exist_ok=True)
+    returns.to_csv(out / "daily_returns.csv", encoding="utf-8-sig", float_format="%.10f")
+    plot_dir = out / "plots"
+    plot_performance(
+        returns,
+        plot_dir,
+        title=f"股指策略与等权买入持有 {title}",
+        filename="performance.png",
+    )
+    for year, part in returns.groupby(returns.index.year, sort=True):
+        plot_performance(
+            part,
+            plot_dir,
+            title=f"股指策略与等权买入持有 {year}",
+            filename=f"{year}.png",
+        )
+    print(f"股指策略对比图：{plot_dir}", flush=True)
+    return plot_dir
+
+
 def benchmark_comparison(returns: pd.Series, benchmark: pd.Series) -> dict:
     """策略相对等权买入持有：两者年化、差值、逐日超额 NW t、beta 与年化 alpha。"""
     bench = pd.Series(benchmark).reindex(returns.index).replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -1412,10 +1493,12 @@ def write_results(
     result_dir = C.backtest_dir(market, strategy.ID, folder)
     result_dir.mkdir(parents=True, exist_ok=True)
     chart = pd.DataFrame({label: returns})
+    benchmark_returns = None
     if benchmark is not None:
-        chart["等权买入持有"] = (
+        benchmark_returns = (
             pd.Series(benchmark).reindex(returns.index).replace([np.inf, -np.inf], np.nan).fillna(0.0)
         )
+        chart["等权买入持有"] = benchmark_returns
     plot_performance(
         chart,
         result_dir / "plots",
@@ -1438,6 +1521,11 @@ def write_results(
     }
     for name, table in tables.items():
         table.to_csv(result_dir / name, index=False, encoding="utf-8-sig", float_format="%.10f")
+    if benchmark_returns is not None:
+        pd.DataFrame({
+            "交易日": benchmark_returns.index,
+            "净收益": benchmark_returns.to_numpy(dtype="float64"),
+        }).to_csv(result_dir / "benchmark.csv", index=False, encoding="utf-8-sig", float_format="%.10f")
     print(f"{label} {title}：结果在 {result_dir}", flush=True)
     return summary, annual_rows
 
@@ -1512,14 +1600,18 @@ def main(argv=None):
             parser.error("股指口径固定为1000万、l1_30m")
         if window[0] < 2015 or window[1] > C.DEFAULT_OOS_END.year:
             parser.error(f"股指回测年份须在 2015–{C.DEFAULT_OOS_END.year}")
-        from strategies.index_catalog import INDEX_BOOKS, INDEX_FROZEN_BOOKS
+        from strategies.index_catalog import INDEX_BOOKS
+        frozen_books = tuple(book for book in INDEX_BOOKS if book.STATUS == "frozen")
         if window[1] >= C.OOS_START.year and (
-            (book is None and not INDEX_FROZEN_BOOKS)
-            or (book is not None and book.STATUS != "frozen")
+            (book is None and not frozen_books)
+            or (
+                book is not None
+                and (book.STATUS != "frozen" or book not in INDEX_BOOKS)
+            )
         ):
-            parser.error("当前没有已冻结股指策略可用于样本外回测")
+            parser.error("当前股指策略未列入冻结样本外策略注册表")
         # 样本外只选择冻结策略；研究期默认运行全部登记策略。
-        default_books = INDEX_FROZEN_BOOKS if window[1] >= C.OOS_START.year else INDEX_BOOKS
+        default_books = frozen_books if window[1] >= C.OOS_START.year else INDEX_BOOKS
         books = default_books if book is None else (book,)
         for item in books:
             run_index(
@@ -1529,6 +1621,8 @@ def main(argv=None):
                 execution=execution,
                 book=item,
             )
+        if len(books) > 1 and not args.by_year:
+            write_index_strategy_board(books, *window)
         return
 
     from research.commodity import market_clock_slow_short_20_60_120 as driver

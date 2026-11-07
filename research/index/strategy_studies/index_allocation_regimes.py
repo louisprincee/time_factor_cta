@@ -19,7 +19,7 @@ from backtest.engine import (
     sharpe_ratio,
 )
 from research.time_factor_screen import ols_hac
-from research.index.index_execution_10m import opening_quotes, l1_slippage
+from research.index.shared.index_execution_10m import opening_quotes, l1_slippage
 from strategies.index_common import (
     SYMBOLS,
     close_vol_scale,
@@ -348,7 +348,7 @@ def _allocation_shrinkage(
     ticks: pd.DataFrame,
     book_data: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    from research.index.index_execution_10m import load_opening_quotes, l1_slippage
+    from research.index.shared.index_execution_10m import load_opening_quotes, l1_slippage
 
     returns = ((bars["openw"].shift(-1) - bars["openw"]) / bars["open"]).dropna(how="any")
     scored = returns.loc[
@@ -538,7 +538,7 @@ def _allocation_backtests(
     ticks: pd.DataFrame,
     book_data: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    from research.index.index_execution_10m import load_opening_quotes, l1_slippage
+    from research.index.shared.index_execution_10m import load_opening_quotes, l1_slippage
 
     returns = ((bars["openw"].shift(-1) - bars["openw"]) / bars["open"]).dropna(how="any")
     scored = returns.loc[

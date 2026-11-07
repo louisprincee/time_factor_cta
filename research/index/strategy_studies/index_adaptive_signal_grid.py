@@ -13,8 +13,8 @@ from backtest.engine import (
     performance,
     sharpe_ratio,
 )
-from research.index.index_execution_10m import load_opening_quotes, l1_slippage
-from research.index._adaptive_signal_helpers import (
+from research.index.shared.index_execution_10m import load_opening_quotes, l1_slippage
+from research.index.shared._adaptive_signal_helpers import (
     DRAWDOWN_LIMIT,
     GROSS,
     HALT_DAYS,

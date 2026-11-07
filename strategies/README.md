@@ -1,12 +1,19 @@
 # 当前策略
 
-商品两条冻结策略保持不变。股指唯一注册策略为已冻结的 [`index_clv_rally_base_long_2x`](index_clv_rally_base_long_2x/index_clv_rally_base_long_2x.json)：21/63/126日上涨窗口数量决定50%、33.33%、16.67%、0%的多头底仓，剩余单位预算仅在pooled CLV<0.4时使用；冲高z>0时只把CLV预算乘2。没有空头。缺预热保留多头票，完整零收益不投多票；窗口及预算档位为用户确认，未搜索。历史1.5倍基线仅保留结果和账本，原策略实现、配置及注册已移除。
+商品两条冻结策略保持不变。`strategies/index_catalog.py` 是股指策略的唯一注册表；`index_tactical_books.py` 实现纯 CLV 和因子倾斜两本书，不维护第二份注册列表。股指正式注册且默认运行的策略仅保留以下三本，均只做多 IF/IH/IC：
 
-2倍版已按用户批准冻结，研究期年化18.95%、Sharpe1.49、最大回撤−14.87%，平均实际敞口50.13%；相对预登记历史1.5倍基线的收益、Sharpe和回撤筛选均通过。最大实际敞口201.49%，最大保证金权益占用40.30%，未发生保证金追缴。冻结不等于验证；OOS尚未运行，须用户明确要求后才运行。研究登记和结果在 [`index_guide.md`](../docs/index_guide.md)。
+1. **纯 CLV 等权**（默认，`index_tactical_clv_only`）：市场等权 CLV<0.4 时三品种等权持有全部择时预算，否则现金；冲高 z>0 只将 CLV 预算乘 2。
+2. **CLV 因子倾斜**（`index_tactical_clv_factor_select`）：弱收盘时三品种都参与，预算按 1+有利票分配。因子格由同一研究样本事后筛选，显著性和独立证据不足。
+3. **标准 55/20 突破趋势袖套**（`index_clv_breakout_sleeve`）：在纯 CLV 规则上增加固定 0.5 总预算的多头袖套；收盘高于此前 55 日最高价时入场，收盘低于此前 20 日最低价时退出，活跃品种等权。
+
+研究期指标显示，纯 CLV 风险调整表现最好；标准突破累计收益稍高，但 Sharpe 更低、回撤更深，配对增量不显著。因子倾斜是用户指定保留的唯一因子策略，不能将其同样本的选择结果解释为已验证优势。三本仅有 2015–2021 研究期结果，OOS 尚未运行，不得在用户明确要求前运行。策略选择与证据边界见 [`docs/index_guide.md`](../docs/index_guide.md)。
+
+已退役规则（动量底仓、牛市/MACD/EMA 补半仓、非弱收盘突破）不再属于 `INDEX_BOOKS` 或 OOS 集合，也不能用策略 ID 运行。牛市/MACD/EMA 变体的策略包装和无复现用途的协议已删除，历史规则与结果保留在研究文档中；动量归因逻辑并入历史归因研究脚本。非弱收盘突破的研究 runner 与协议仍保留，仅用于复现历史结果。旧三策略比较协议已删除；当前集合的后续比较须先遵照 [`当前对比预登记`](../config/research/index_selected_strategy_comparison.json)。
 
 ```bash
 python -m backtest.engine --market index --research
-python -m backtest.engine index_clv_rally_base_long_2x --research
+python -m backtest.engine index_tactical_clv_only --research
+python -m research.index strategy comparison
 ```
 
-账本和逐年图在 `runs/index/strategies/index_clv_rally_base_long_2x/research/`；历史1.5倍账本仍在 `runs/index/strategies/index_clv_rally_base_long/research/`。经济和已否定的交易记录见 [`index_guide.md`](../docs/index_guide.md)，退出注册的旧规则见 [`index_research_review.md`](../docs/index_research_review.md)。
+各策略账本及其相对等权买入持有的总图和逐年图位于 `runs/index/strategies/<策略ID>/research/`。当前三策略加基准的总图和逐年图位于 `runs/index/research/index_strategy_comparison/plots/`。

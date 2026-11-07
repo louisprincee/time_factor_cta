@@ -1,0 +1,1 @@
+from strategies.index_tactical_books import FACTOR_TILT_BOOK as BOOK

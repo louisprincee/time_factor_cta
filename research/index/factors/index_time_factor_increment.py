@@ -1,6 +1,6 @@
 """日内时间因子在收盘位置之外的增量检验；只读研究期。
 
-    python -m research.index.index_time_factor_increment
+    python -m research.index factor time-increment
 
 规格在 config/research/index_time_factor_increment.json。2016 年起逐品种结果必须与时间因子筛查一致。
 """

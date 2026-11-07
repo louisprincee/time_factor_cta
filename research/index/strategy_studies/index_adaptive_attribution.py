@@ -1,8 +1,8 @@
 """历史股指部件拆分与当前双半仓底仓对照；只读研究期。
 
-    python -m research.index.index_adaptive_attribution
-    python -m research.index.index_adaptive_attribution --base-momentum
-    python -m research.index.index_adaptive_attribution --budget-transfer
+    python -m research.index strategy attribution
+    python -m research.index strategy attribution --base-momentum
+    python -m research.index strategy attribution --budget-transfer
 
 默认入口复核历史自适应账本；--base-momentum 对照当前底仓，分别读取相应登记。
 """
@@ -27,8 +27,8 @@ from backtest.engine import (
     plot_performance,
     sharpe_ratio,
 )
-from research.index.index_execution_10m import l1_slippage, load_opening_quotes
-from research.index._adaptive_signal_helpers import (
+from research.index.shared.index_execution_10m import l1_slippage, load_opening_quotes
+from research.index.shared._adaptive_signal_helpers import (
     DRAWDOWN_LIMIT,
     GROSS,
     HALT_DAYS,
@@ -42,7 +42,13 @@ from research.index._adaptive_signal_helpers import (
 )
 from research.time_factor_screen import ols_hac
 from strategies.index_allocation import allocation_multipliers
-from strategies.index_common import SYMBOLS, THRESHOLD, close_vol_scale, high_open_z, market_close_location
+from strategies.index_common import (
+    SYMBOLS,
+    THRESHOLD,
+    close_vol_scale,
+    high_open_z,
+    market_close_location,
+)
 from tfcta import config as C
 from tfcta.data import daily_bars, load_shard
 
@@ -56,6 +62,90 @@ LADDER = (("核心", ()), ("+冲高", PARTS[:1]), ("+跳过单边下跌", PARTS[
 LABELS = {"rally": "冲高", "skip_down": "跳过单边下跌", "one_sided_up": "单边上涨",
           "rank_allocation": "收益排名分配", "ewma": "EWMA"}
 REGIME_WINDOW, VOL_HISTORY = 20, 250
+BASE_MOMENTUM_WINDOWS = (21, 63, 126)
+BASE_GROSS = 0.5
+
+
+def _close_to_close(bars):
+    prior = bars["close"].shift(1)
+    return (
+        (bars["closew"] - bars["closew"].shift(1)) / prior.where(prior > 0)
+    ).mean(axis=1, skipna=False)
+
+
+def _base_budget(close_to_close):
+    """复现历史21/63/126日多头预算投票。"""
+    votes = []
+    for window in BASE_MOMENTUM_WINDOWS:
+        momentum = (1.0 + close_to_close).rolling(window, min_periods=window).apply(
+            np.prod, raw=True
+        ) - 1.0
+        votes.append(
+            pd.Series(
+                np.where(momentum.isna() | momentum.gt(0), 1.0, 0.0),
+                index=close_to_close.index,
+            )
+        )
+    return pd.concat(votes, axis=1).sum(axis=1) * (
+        BASE_GROSS / len(BASE_MOMENTUM_WINDOWS)
+    )
+
+
+def budget_transfer_components(
+    market_clv, bars, *, rally_z, rally_multiplier
+):
+    """复现已退役的动量预算转移规则，供历史归因研究使用。"""
+    index = market_clv.index
+    if not isinstance(index, pd.DatetimeIndex):
+        raise TypeError("股指CLV索引必须为DatetimeIndex")
+    if index.has_duplicates or not index.is_monotonic_increasing:
+        raise ValueError("股指信号日期必须唯一升序")
+    if index.empty:
+        raise ValueError("股指信号日期不能为空")
+    C.assert_no_holdout_dates(index, "历史动量归因")
+    if index.min() < pd.Timestamp("2015-04-16") or index.max() > pd.Timestamp(
+        "2021-12-31"
+    ):
+        raise C.HoldoutViolation("历史动量归因日期须在2015-04-16至2021-12-31")
+    if market_clv.isna().any() or not market_clv.between(0, 1).all():
+        raise ValueError("股指CLV缺失或越界")
+
+    fields = ("open", "openw", "highw", "loww", "close", "closew")
+    frames = {
+        field: bars[field].reindex(index=index, columns=list(SYMBOLS))
+        for field in fields
+    }
+    if any(not np.isfinite(frame.to_numpy(dtype=float)).all() for frame in frames.values()):
+        raise ValueError("常驻多头行情未完全对齐")
+    if (
+        frames["open"].le(0).any().any()
+        or frames["close"].le(0).any().any()
+        or frames["highw"].le(frames["loww"]).any().any()
+    ):
+        raise ValueError("常驻多头价格区间无效")
+    if not np.isfinite(rally_multiplier) or rally_multiplier <= 0:
+        raise ValueError("冲高乘数必须为正的有限数")
+    if rally_z is None:
+        rally_z = high_open_z(bars)
+    if not rally_z.index.equals(index):
+        raise ValueError("冲高因子必须与信号日期对齐")
+
+    open_to_open = (
+        (frames["openw"].shift(-1) - frames["openw"]) / frames["open"]
+    ).mean(axis=1, skipna=False)
+    scale = close_vol_scale(open_to_open).fillna(1.0)
+    base = _base_budget(_close_to_close(frames))
+    tilt = pd.Series(
+        np.where(rally_z.gt(0), rally_multiplier, 1.0), index=index
+    )
+    tactical = market_clv.lt(THRESHOLD).astype(float) * (1.0 - base) * tilt
+    parts = pd.DataFrame({
+        "底仓预算": base, "CLV预算": 1.0 - base, "未缩放底仓": base,
+        "未缩放择时": tactical, "波动缩放": scale,
+        "底仓": scale * base, "择时": scale * tactical,
+    })
+    parts["合计"] = parts["底仓"] + parts["择时"]
+    return parts.shift(1).fillna(0.0)
 
 
 def load_protocol() -> dict:
@@ -393,12 +483,6 @@ def _macd_control_sign(returns):
 
 def run_base_momentum(*, budget_transfer=False):
     """一个新规则、两个已知底仓对照；不得据结果选长度。"""
-    from strategies.index_clv_rally_base_long_2x import (
-        _base_budget,
-        _close_to_close,
-        budget_transfer_components,
-    )
-
     study_id = "index_base_budget_transfer" if budget_transfer else "index_base_momentum"
     path = C.CONFIG_DIR / "research" / f"{study_id}.json"
     protocol = json.loads(path.read_text(encoding="utf-8"))

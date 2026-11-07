@@ -1,6 +1,6 @@
 ## 1. 先讲结论
 
-这个项目研究中国商品期货的日内时间维度因子：日内高低点发生的时点、价格在日内停留较久的位置，是否能预测下一交易日收益。商品登记两条冻结策略。股指在用的是未冻结的多头底仓CLV预算转移 `index_clv_rally_base_long`，规则、经济解释和研究期账本见 [`index_guide.md`](index_guide.md)。下文的股指机制检验是实验室记录，结论已经收进那份说明。冻结只固定规则，不代表样本外验证或实盘优势。
+这个项目研究中国商品期货的日内时间维度因子：日内高低点发生的时点、价格在日内停留较久的位置，是否能预测下一交易日收益。商品登记两条冻结策略。股指当前只注册三本冻结策略：纯 CLV 等权（默认）、CLV 因子倾斜和标准 55/20 突破趋势袖套；规则、历史对比、经济解释和证据边界见 [`index_guide.md`](index_guide.md)。下文的股指机制检验是实验室记录，结论已经收进那份说明。冻结只固定规则，不代表样本外验证或实盘优势。
 
 策略使用 20、60、120 日趋势窗口。研究期是商品 2011–2021，2022–2025 是样本外，开始看之前不打开。
 
@@ -191,7 +191,7 @@ N=250、M=55 是报告参数范围中的中间取值，不是从最终策略收�
 
 若只预先下载、暂不查看股指 OOS tick，使用 `python -m download.index.getIndexL1 --partition oos --start 2022-01-01 --end 2025-12-31`。此模式只写原始 tick 到 `data/index/external_rqdata/oos/l1_ticks/`，不生成日汇总、回测或机制统计；OOS 数据保持未读取状态。
 
-`python -m research.index.index_close_location_mechanism` 按 `config/research/index_close_location_mechanism.json` 检验股指收盘位置、当日振幅、次日收益与 L1 流动性关系。它只读 IF/IH/IC 研究期分片和 2015-04-16–2021-12-31 L1 下载；评分区间从 2016-01-13 开始，不读取 2022 及以后。该机制检验使用已看过的股指研究期，仅作探索性诊断，不是样本外验证。
+`python -m research.index mechanism clv` 按 `config/research/index_close_location_mechanism.json` 检验股指收盘位置、当日振幅、次日收益与 L1 流动性关系。它只读 IF/IH/IC 研究期分片和 2015-04-16–2021-12-31 L1 下载；评分区间从 2016-01-13 开始，不读取 2022 及以后。该机制检验使用已看过的股指研究期，仅作探索性诊断，不是样本外验证。
 
 商品 L1 仍用 `python -m download.commodity.getCommodityL1 --pool` 下载 2011–2021 逐年研究池主力的日汇总；该脚本不保存原始 tick。
 
@@ -253,7 +253,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 
 ### 股指：反转来自哪里（2026-10-27）
 
-`python -m research.index.market_mechanisms liquidity`，登记在 `config/research/index_liquidity_mechanism.json`，结果在 `runs/index/index_liquidity_mechanism/`。用 IF/IH/IC 主力 2015-04-16–2021 的全部 L1 逐笔和沪深300、上证50、中证500 现货日线，下面是 2016 年以后的数字。
+`python -m research.index mechanism market liquidity`，登记在 `config/research/index_liquidity_mechanism.json`，结果在 `runs/index/index_liquidity_mechanism/`。用 IF/IH/IC 主力 2015-04-16–2021 的全部 L1 逐笔和沪深300、上证50、中证500 现货日线，下面是 2016 年以后的数字。
 
 | 解释 | 关键预测 | 结果 | 判断 |
 |---|---|---|---|
@@ -267,7 +267,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 
 ### 股指：会员持仓和持仓量（2026-10-27）
 
-`python -m research.index.market_mechanisms positioning`，登记在 `config/research/index_positioning_mechanism.json`，结果在 `runs/index/index_positioning_mechanism/`。只用股指期货：中金所每天公布的前 20 名会员多空持仓（`download.index.getMemberRank`），以及各合约持仓量之和。到期日和到期前一天排除。
+`python -m research.index mechanism market positioning`，登记在 `config/research/index_positioning_mechanism.json`，结果在 `runs/index/index_positioning_mechanism/`。只用股指期货：中金所每天公布的前 20 名会员多空持仓（`download.index.getMemberRank`），以及各合约持仓量之和。到期日和到期前一天排除。
 
 | 假说 | 预测 | 结果 | 判断 |
 |---|---|---|---|
@@ -345,7 +345,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 
 都是事后提出、研究期内的诊断，没有读 2022 年及以后。
 
-**相对位置还是绝对幅度**（`python -m research.index.index_close_location_mechanism --shape`，登记 `config/research/index_close_location_shape.json`，结果 `runs/index/index_close_location_shape/`）。市场层面，2016 年起，账本口径下一段收益：
+**相对位置还是绝对幅度**（`python -m research.index mechanism clv --shape`，登记 `config/research/index_close_location_shape.json`，结果 `runs/index/index_close_location_shape/`）。市场层面，2016 年起，账本口径下一段收益：
 
 - 收盘位置 CLV 斜率 −41.6bp（t −3.35）；控制振幅后不变（−41.8bp，t −3.37）；振幅本身 t −0.3。
 - 收盘距最低价的幅度 d_low 单独 t −2.73，但它和 CLV 是一回事：用过去 20 日振幅标准化后，d_low t −1.8、距高点回落幅度 d_high t +2.4，同时放进去和 CLV 一起回归时 d_high 归零（t 0.08），CLV 仍 t −2.22。
@@ -361,7 +361,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 - 高波动状态放大：交乘 t −1.6，方向对但不显著。
 - 剔除 2015-06 到 2016-02 股灾救市熔断后仍 t −3.0；2016–2021 逐年斜率全为负，单年只有 2016 显著。
 
-股指时间因子复现及其与收盘位置的增量检验，历史结果见 [`index_research_review.md`](index_research_review.md)。
+股指时间因子复现及其与收盘位置的增量检验，历史结果和选择偏差说明见 [`index_guide.md`](index_guide.md)。
 
 **IF/IH/IC 之间的敞口分配（历史诊断，代码与规格已删除）**。当时冻结股指策略的信号不变，只改三个品种的乘数（和为 3，总敞口不变），同一账本、成本和熔断：
 
@@ -392,7 +392,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 
 阈值 0.3–0.5 是平台，0.5 以上明显变差，与单边反转一致；没有一个变体在配对上显著好于 clv < 0.5。线性加仓和振幅门槛降低了 beta 和回撤，但收益也同比下降。8 个变体按 8 次试验算 DSR 都在 0.85–0.99，样本只有 1,450 天左右，区分力很弱。
 
-**现货 T+1 开盘卖压**（`python -m research.index.spot_reversal open-pressure`，登记 `config/research/index_spot_open_pressure.json`，结果 `runs/index/index_spot_open_pressure/`，跑于 2026-10-28）。沪深300、上证50、中证500 的 1 分钟线，2015-04-16 至 2021-12-31，不读 2022 及以后。开盘半小时 = 上午前 30 根（第 30 根时刻中位数 10:00）。主结论用结果日 2016-01-04 起，1,460 天。2020-04-20 的 IF、IC 分钟开盘与日线偏差 2.5% 和 0.65%，这一天剔除；其余日子中位偏差为 0。这是回归，没有手续费和滑点。
+**现货 T+1 开盘卖压**（`python -m research.index mechanism spot open-pressure`，登记 `config/research/index_spot_open_pressure.json`，结果 `runs/index/index_spot_open_pressure/`，跑于 2026-10-28）。沪深300、上证50、中证500 的 1 分钟线，2015-04-16 至 2021-12-31，不读 2022 及以后。开盘半小时 = 上午前 30 根（第 30 根时刻中位数 10:00）。主结论用结果日 2016-01-04 起，1,460 天。2020-04-20 的 IF、IC 分钟开盘与日线偏差 2.5% 和 0.65%，这一天剔除；其余日子中位偏差为 0。这是回归，没有手续费和滑点。
 
 | 预测（2016 起） | 结果 | 判断 |
 |---|---|---|
@@ -407,7 +407,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 
 ### 股指：反转的经济渠道和风险管理候选（2026-10-28）
 
-**经济渠道**（`python -m research.index.index_close_location_mechanism --channels`，登记 `config/research/index_reversal_channels.json`，结果 `runs/index/index_reversal_channels/`；融资和北向数据由 `python -m download.index.getMarketFlows` 下载到 `data/index/external_rqdata/flows/market_flows.csv`）。2016 年起，市场层面，次日盘中收益：
+**经济渠道**（`python -m research.index mechanism clv --channels`，登记 `config/research/index_reversal_channels.json`，结果 `runs/index/index_reversal_channels/`；融资和北向数据由 `python -m download.index.getMarketFlows` 下载到 `data/index/external_rqdata/flows/market_flows.csv`）。2016 年起，市场层面，次日盘中收益：
 
 | 渠道 | 结果 | 判断 |
 |---|---|---|
@@ -460,7 +460,7 @@ IF/IH/IC 主力历史 tick 已覆盖 2015-04-16–2021-12-31，每个品种 1,63
 
 品种之间调权重没有差别。整本缩放把 2015 年从 −11.9% 变成 +5.2%，最大回撤因此少了一半；2016 起年化从 20.4% 降到 18.7%，回撤 −17.5% 对 −17.1%，配对 t −1.01。多出来的 Sharpe 是少做了 2015 年的高波动日子，不是三个品种里分出了好坏。没有改冻结规则。
 
-**流动性提供补偿**（`python -m research.index.index_close_location_mechanism --provision`，登记 `config/research/index_liquidity_provision.json`，结果 `runs/index/index_liquidity_provision/`；成分股面板由 `python -m download.index.getConstituents` 下载到 `data/index/external_rqdata/constituents/`，1,274 只沪深300/中证500 成分股、124 万个股日）。RiceQuant 当前权限没有期权价格和 ETF 份额，Nagel 的 VIX 用期货 5 分钟已实现波动代替。
+**流动性提供补偿**（`python -m research.index mechanism clv --provision`，登记 `config/research/index_liquidity_provision.json`，结果 `runs/index/index_liquidity_provision/`；成分股面板由 `python -m download.index.getConstituents` 下载到 `data/index/external_rqdata/constituents/`，1,274 只沪深300/中证500 成分股、124 万个股日）。RiceQuant 当前权限没有期权价格和 ETF 份额，Nagel 的 VIX 用期货 5 分钟已实现波动代替。
 
 Nagel (2012) 的检验，2016 年起：
 
@@ -469,7 +469,7 @@ Nagel (2012) 的检验，2016 年起：
 - 反转毛收益 (0.5 − clv) × 次日盘中 对过去 20 日波动 t 2.0（2015 起 0.3）。
 - 结论：方向一致但不稳健，2015 年股灾里最高波动的日子并没有更强的反转；不能说证明了 Nagel。
 
-**QVIX**（`python -m download.index.getQvix` 再 `python -m research.index.market_mechanisms qvix`，登记 `config/research/index_qvix_reversal.json`，结果 `runs/index/index_qvix_reversal/`）。期权论坛的 50ETF 期权波动率指数。研究期文件是 2015-02-09 至 2021-12-31，1,680 天；OOS 文件归入 `data/index/external_rqdata/oos/volatility/`，不用于研究。与米筐官方中国波指重叠的 70 天相关 1.000、中位比 1.000。信号日用当天 QVIX 收盘，预测下一交易日盘中。
+**QVIX**（`python -m download.index.getQvix` 再 `python -m research.index mechanism market qvix`，登记 `config/research/index_qvix_reversal.json`，结果 `runs/index/index_qvix_reversal/`）。期权论坛的 50ETF 期权波动率指数。研究期文件是 2015-02-09 至 2021-12-31，1,680 天；OOS 文件归入 `data/index/external_rqdata/oos/volatility/`，不用于研究。与米筐官方中国波指重叠的 70 天相关 1.000、中位比 1.000。信号日用当天 QVIX 收盘，预测下一交易日盘中。
 
 | 检验（2016 起 / 含 2015） | 结果 | 判断 |
 |---|---|---|
@@ -491,7 +491,7 @@ Nagel (2012) 的检验，2016 年起：
 - 沪深300 和中证500 成分股的次日反弹差 t −0.1，不支持“小盘散户更强”。
 - 结论：被迫平仓（融资偿还）的股票反弹更多，这是最直接的“非信息性卖压被补回”的证据，但它在强收盘日也存在，不专属于市场弱收盘日。
 
-**指数层面的数量检验**（`python -m research.index.index_close_location_mechanism --forced`，登记 `config/research/index_forced_selling.json`，结果 `runs/index/index_forced_selling/`）。把成分股当天的融资净偿还按对应指数加总（IF 用沪深300、IH 用上证50、IC 用中证500），除以成分股成交额，再对过去 250 个交易日（不含当天）做 z 值，市场序列是三个 z 的等权。主检验是 2016-01-04 起、次日盘中、融资偿还占比与收盘位置的交乘。只读研究期，没有读 2022 及以后。
+**指数层面的数量检验**（`python -m research.index mechanism clv --forced`，登记 `config/research/index_forced_selling.json`，结果 `runs/index/index_forced_selling/`）。把成分股当天的融资净偿还按对应指数加总（IF 用沪深300、IH 用上证50、IC 用中证500），除以成分股成交额，再对过去 250 个交易日（不含当天）做 z 值，市场序列是三个 z 的等权。主检验是 2016-01-04 起、次日盘中、融资偿还占比与收盘位置的交乘。只读研究期，没有读 2022 及以后。
 
 | 检验（2016 起 / 含 2015） | 结果 | 判断 |
 |---|---|---|
